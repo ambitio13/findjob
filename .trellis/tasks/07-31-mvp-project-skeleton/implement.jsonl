@@ -1,0 +1,14 @@
+{"file": ".trellis/spec/README.md", "reason": "Global product and stack direction for the MVP."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Cross-layer quality rules and MVP scope boundaries."}
+{"file": ".trellis/spec/shared/dependencies.md", "reason": "Approved baseline stack and dependency selection rules."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for required FastAPI and agent files."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Expected backend module layout."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "FastAPI API boundary and async workflow contract guidance."}
+{"file": ".trellis/spec/backend/database.md", "reason": "PostgreSQL and Redis ownership rules."}
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "Model gateway and lightweight agent runtime decisions."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for React and Ant Design Pro work."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Ant Design Pro component and UI boundary rules."}
+{"file": ".trellis/spec/frontend/table-detail-views.md", "reason": "Job table and detail workflow requirements."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Frontend API and async agent-run integration rules."}
+{"file": ".trellis/spec/big-question/agent-framework-selection.md", "reason": "MVP agent framework and model gateway decision."}
+

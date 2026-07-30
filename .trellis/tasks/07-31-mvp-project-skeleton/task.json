@@ -1,0 +1,31 @@
+{
+  "id": "mvp-project-skeleton",
+  "name": "mvp-project-skeleton",
+  "title": "MVP Project Skeleton",
+  "description": "Build the first FastAPI React Ant Design Pro project skeleton with model gateway and lightweight agent runtime foundations.",
+  "status": "in_progress",
+  "dev_type": "feature",
+  "scope": "fullstack",
+  "package": null,
+  "priority": "P1",
+  "creator": "coldnight",
+  "assignee": "coldnight",
+  "createdAt": "2026-07-31",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "backend/",
+    "frontend/",
+    "docker-compose.yml",
+    ".trellis/spec/"
+  ],
+  "notes": "Planning task for the first MVP coding handoff. Other agents should read prd.md, design.md, implement.md, implement.jsonl, and check.jsonl before coding.",
+  "meta": {}
+}

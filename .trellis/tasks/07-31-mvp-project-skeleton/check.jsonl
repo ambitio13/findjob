@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/README.md", "reason": "Verify implementation stays aligned with MVP scope."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Check cross-layer safety and quality."}
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend verification checklist."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Check API shape and route boundaries."}
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "Check model gateway and agent runtime boundaries."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Frontend verification checklist."}
+{"file": ".trellis/spec/frontend/table-detail-views.md", "reason": "Check job table/detail MVP workflow."}
+{"file": ".trellis/spec/big-question/agent-framework-selection.md", "reason": "Check selected agent framework direction is followed."}
+
