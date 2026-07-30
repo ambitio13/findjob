@@ -8,7 +8,7 @@ PostgreSQL owns durable business state:
 - uploaded resumes and parsed resume versions;
 - discovered job postings and platform metadata;
 - JD analysis results and ranking decisions;
-- generated resumes, HR messages, and interview plans;
+- generated rewrite snippets, HR messages, and interview plans;
 - application records and status transitions;
 - agent runs, steps, tool calls, approvals, and audit events.
 
@@ -41,4 +41,3 @@ temporary session context, queue coordination, and hot tool results.
 - Every schema change must include a migration.
 - Migrations must be reversible or have a documented rollback plan.
 - Backfills must be chunked and observable for large datasets.
-

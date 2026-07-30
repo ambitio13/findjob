@@ -23,7 +23,8 @@ Use Ant Design Pro for operational screens:
 - Keep table columns scannable: platform, company, title, location/base, salary,
   match score, risk score, status, updated time, and next action.
 - Use detail views for long JD text, resume diffs, generated messages, and
-  analysis reasoning.
+  analysis reasoning. In MVP, show resume rewrite snippets rather than a full
+  generated resume document.
 - Make generated content editable before approval.
 - Use badges, tags, and progress states for AI work, but include enough text for
   accessibility and clarity.
@@ -34,4 +35,3 @@ Use Ant Design Pro for operational screens:
 - Do not trigger external platform actions from a plain table row click.
 - Do not hide approval actions inside a generic chat message.
 - Do not duplicate backend decision rules inside display components.
-

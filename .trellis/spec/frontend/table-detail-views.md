@@ -31,12 +31,12 @@ Each job detail should show:
 - analysis summary, risks, salary interpretation, growth/stability notes;
 - matched resume facts;
 - generated HR opening message;
-- generated or tailored resume artifact;
+- generated resume optimization suggestions and rewrite snippets;
 - application timeline and agent run history.
 
 ## Interaction Rules
 
 - Keep analysis, generated artifacts, and external execution visually separate.
-- Users must be able to inspect the generated message/resume before approval.
+- Users must be able to inspect generated messages and resume rewrite snippets
+  before approval.
 - Preserve record IDs in routes or query state so refresh and sharing are stable.
-

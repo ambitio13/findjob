@@ -12,7 +12,7 @@ Frontend checks are for UX only. Backend authorization remains authoritative.
 - Hide or disable actions the user cannot perform.
 - Explain when a platform account, credential, or approval is required.
 - Ask for explicit confirmation before any external side effect.
-- Show the exact job, platform, resume version, and message/resume artifact
+- Show the exact job, platform, resume version, and message/rewrite artifact
   involved in an approval.
 
 ## Sensitive Data
@@ -21,4 +21,3 @@ Frontend checks are for UX only. Backend authorization remains authoritative.
   error-reporting breadcrumbs.
 - Do not store platform credentials in frontend state beyond the immediate form
   interaction.
-

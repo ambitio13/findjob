@@ -64,6 +64,17 @@ the rest conversationally.
 - Existing spec files were a generic Next.js/oRPC/Drizzle scaffold and have
   been rewritten around the actual initiation direction: FastAPI, React, Ant
   Design Pro, PostgreSQL, Redis, Docker, and production-grade agent engineering.
+- Agent framework decision for MVP: build a lightweight internal PiAgent-style
+  layered runtime with planner, executor, reflector, tool registry, memory, and
+  model gateway. Do not start with a high-level agent framework.
+- Model access decision for MVP: use an OpenAI-compatible model gateway,
+  initially configured for DeepSeek. Business code must not call provider SDKs
+  directly.
+- Product scope decision for MVP: JD is manually entered or imported by the
+  user. Do not build platform automation yet.
+- Resume output decision for MVP: generate JD analysis, resume optimization
+  suggestions, rewrite snippets, HR opening messages, and skill-gap plans. A
+  full customized resume export tool is deferred.
 - Examples are based on project initiation artifacts and proposed initial source
   layout. After product code lands, specs should be revised with real file paths
   and source examples.

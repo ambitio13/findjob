@@ -8,16 +8,17 @@ define the baseline until real source files establish tighter local patterns.
 
 ## Source-Backed Product Constraints
 
-The project must support resume parsing, job discovery, JD analysis, tailored
-resume/message generation, application tracking, and interview preparation.
+The project must support resume parsing, manual JD entry/import, JD analysis,
+resume optimization snippets, HR message generation, application tracking, and
+interview preparation.
 These flows are defined in `项目立项/业务.md` and must be treated as one connected
 domain rather than isolated screens.
 
 ## Quality Rules
 
 - Design around explicit state transitions. Examples: job discovered, analyzed,
-  approved for application, resume generated, message generated, sent, replied,
-  rejected, interview planned.
+  approved for application, rewrite snippet generated, message generated, sent,
+  replied, rejected, interview planned.
 - Do not hide irreversible actions behind a generic agent response. Submission
   and messaging code must have a typed request, permission check, audit log, and
   retry policy.
@@ -37,4 +38,3 @@ domain rather than isolated screens.
 - Can a failed or cancelled long-running agent task be resumed or explained?
 - Are table and detail views backed by stable IDs rather than display text?
 - Is there a test or documented manual check for the user-visible workflow?
-

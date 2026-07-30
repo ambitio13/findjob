@@ -23,11 +23,10 @@ production-ready agent layer.
 - FastAPI route handlers should validate transport concerns, then delegate to
   domain services.
 - Domain services own business decisions such as job scoring, JD analysis,
-  resume tailoring, and application-state transitions.
+  resume optimization suggestions, and application-state transitions.
 - Agent orchestration must be represented as durable runs and steps, not hidden
   inside one untracked model call.
 - Tool adapters must validate schemas, enforce permissions, use idempotency
   keys, and return structured results.
 - PostgreSQL is the durable source of truth. Redis is for cache, locks, queues,
   rate limits, and temporary session context.
-

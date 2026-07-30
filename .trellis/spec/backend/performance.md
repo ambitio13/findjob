@@ -2,14 +2,14 @@
 
 ## Long-Running Work
 
-Job discovery, JD analysis, resume generation, and platform automation can be
+Job discovery, JD analysis, rewrite-snippet generation, and platform automation can be
 slow. Do not run long workflows as untracked synchronous request work.
 
 Use background workers or durable agent runs for:
 
 - crawling or searching job platforms;
 - batch JD analysis;
-- resume tailoring for multiple jobs;
+- resume optimization snippet generation for multiple jobs;
 - interview-preparation plan generation;
 - retries after external-platform failures.
 
@@ -39,4 +39,3 @@ version, and prompt/model version when those change the result.
 The initiation notes explicitly call out high concurrency, cache breakdown, and
 capacity protection. Plan for rate limits, backpressure, queue depth monitoring,
 and graceful degradation before broad platform automation.
-

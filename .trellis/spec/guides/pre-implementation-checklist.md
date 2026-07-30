@@ -5,8 +5,8 @@ Run this checklist before implementing a feature.
 ## Scope
 
 - Which product flow does this belong to: profile, resume parsing, job search,
-  JD analysis, resume/message generation, application tracking, HR follow-up,
-  or interview preparation?
+  JD analysis, resume rewrite snippet generation, HR message generation,
+  application tracking, HR follow-up, or interview preparation?
 - Which layer owns the decision: frontend display, backend domain service,
   agent planner, tool adapter, database, cache, or worker?
 - Is this feature only preparing an action, or can it perform an external
@@ -33,4 +33,3 @@ Run this checklist before implementing a feature.
 - What integration or manual check proves the user workflow?
 - What log or metric would help debug failure in production?
 - Does the UI expose enough state for the user to understand what happened?
-

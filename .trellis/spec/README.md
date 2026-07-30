@@ -23,9 +23,13 @@ Build a production-grade AI agent for job seekers. The system helps users:
 - upload and parse resumes;
 - find and screen jobs across multiple platforms;
 - analyze each JD for risk, salary, growth, stability, and fit;
-- generate JD-specific resumes and short HR opening messages;
+- generate resume optimization suggestions, rewrite snippets, and short HR
+  opening messages for a JD;
 - record job opportunities and application state for later review;
 - produce interview-preparation and skill-gap plans from the target JD.
+
+MVP scope: users manually enter or import JDs. Platform automation and complete
+customized resume export are deferred.
 
 The product must protect user autonomy. Any external action that changes state
 outside this system, such as sending a message or submitting a resume, must be
@@ -68,4 +72,3 @@ project later explicitly adopts them.
   as sensitive data.
 - Prefer boring, inspectable architecture over hidden magic: typed contracts,
   persisted state transitions, structured logs, and repeatable tests.
-
