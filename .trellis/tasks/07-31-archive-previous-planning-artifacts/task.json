@@ -3,7 +3,7 @@
   "name": "archive-previous-planning-artifacts",
   "title": "Archive Previous Planning Artifacts",
   "description": "Close and archive completed predecessor planning/task artifacts before starting v1 fixes.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
