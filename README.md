@@ -60,6 +60,13 @@ alembic upgrade head           # 需要本地 PostgreSQL
 uvicorn app.main:app --reload --port 8000
 ```
 
+队列 Worker（另开终端，消费模型任务）：
+
+```bash
+cd backend && . .venv/bin/activate
+arq app.queue.worker.WorkerSettings
+```
+
 前端：
 
 ```bash
@@ -76,6 +83,9 @@ pnpm dev                       # http://localhost:5173，已代理 /api 到 8000
 | --- | --- | --- |
 | `DATABASE_URL` | PostgreSQL 连接串 | `postgresql+psycopg://app:app@localhost:5432/job_search_agent` |
 | `REDIS_URL` | Redis 连接串 | `redis://localhost:6379/0` |
+| `QUEUE_NAMESPACE` | arq 队列命名空间（多环境共享 Redis 时隔离） | `job-search-agent` |
+| `QUEUE_JOB_TIMEOUT` | 单个队列任务执行超时（秒） | `300` |
+| `QUEUE_MAX_RETRIES` | 任务失败重试次数 | `2` |
 | `MODEL_PROVIDER` | `auto` / `fake` / `deepseek` / `openai` | `auto` |
 | `MODEL_API_KEY` | 模型 API Key，留空则自动用 Fake 提供者 | 空 |
 | `MODEL_BASE_URL` | OpenAI 兼容 Base URL | `https://api.deepseek.com` |

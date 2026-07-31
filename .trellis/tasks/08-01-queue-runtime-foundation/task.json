@@ -3,7 +3,7 @@
   "name": "queue-runtime-foundation",
   "title": "Queue Runtime Foundation",
   "description": "Introduce Redis-backed async queue runtime, worker process, job status contracts, enqueue helpers, and deployment/test infrastructure.",
-  "status": "planning",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "coldnight",
   "assignee": "coldnight",
   "createdAt": "2026-08-01",
-  "completedAt": null,
+  "completedAt": "2026-08-01",
   "branch": null,
   "base_branch": "master",
   "worktree_path": null,
@@ -21,6 +21,6 @@
   "children": [],
   "parent": "08-01-async-queue-architecture-upgrade",
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Accepted on 2026-08-01. Queue runtime foundation added arq-backed queue modules, worker entrypoint, smoke payload/handler, queue settings, Docker worker service, README/env docs, and tests. Fixed arq handler signature to accept ctx before payload. Quality gates passed: backend ruff check/format, backend pytest, frontend lint/type-check/build, task validate, git diff --check.",
   "meta": {}
 }

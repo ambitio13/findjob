@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     # --- Redis ---
     redis_url: str = "redis://localhost:6379/0"
 
+    # --- Queue (arq worker runtime) ---
+    # Redis is reused as the queue transport. The namespace prefixes arq queue
+    # and job keys so multiple environments can share one Redis instance.
+    queue_namespace: str = "job-search-agent"
+    queue_job_timeout: int = 300  # seconds; hard cap per job execution
+    queue_max_retries: int = 2  # arq retry attempts on uncaught handler errors
+
     # --- Model gateway ---
     # Provider is resolved at gateway construction time: when the API key is
     # empty or the provider is explicitly ``fake``, tests run without network.

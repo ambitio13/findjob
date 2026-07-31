@@ -41,6 +41,9 @@ services:
       APP_ENV: ${APP_ENV:-local}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://app:app@postgres:5432/job_search_agent}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      QUEUE_NAMESPACE: ${QUEUE_NAMESPACE:-job-search-agent}
+      QUEUE_JOB_TIMEOUT: ${QUEUE_JOB_TIMEOUT:-300}
+      QUEUE_MAX_RETRIES: ${QUEUE_MAX_RETRIES:-2}
       MODEL_PROVIDER: ${MODEL_PROVIDER:-auto}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.deepseek.com}
       MODEL_API_KEY: ${MODEL_API_KEY:-}
@@ -48,6 +51,30 @@ services:
       RESUME_UPLOAD_DIR: ${RESUME_UPLOAD_DIR:-/data/resumes}
     ports:
       - "8000:8000"
+    volumes:
+      - resume_data:/data/resumes
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: arq app.queue.worker.WorkerSettings
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://app:app@postgres:5432/job_search_agent}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      QUEUE_NAMESPACE: ${QUEUE_NAMESPACE:-job-search-agent}
+      QUEUE_JOB_TIMEOUT: ${QUEUE_JOB_TIMEOUT:-300}
+      QUEUE_MAX_RETRIES: ${QUEUE_MAX_RETRIES:-2}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-auto}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.deepseek.com}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_DEFAULT_MODEL: ${MODEL_DEFAULT_MODEL:-deepseek-chat}
+      RESUME_UPLOAD_DIR: ${RESUME_UPLOAD_DIR:-/data/resumes}
     volumes:
       - resume_data:/data/resumes
 
