@@ -284,3 +284,36 @@ Converted POST /api/v1/jobs/parse from a synchronous blocking model call to an e
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Async resume fact extraction (enqueue-and-poll)
+
+**Date**: 2026-08-01
+**Task**: Async resume fact extraction (enqueue-and-poll)
+**Branch**: `master`
+
+### Summary
+
+Migrated resume fact extraction from FastAPI BackgroundTasks (upload) and synchronous blocking (re-extract) to the shared Redis-arq worker queue. Both endpoints now create a durable queued AgentRun before enqueue and return immediately; the worker executes model work in a separate process. Added ResumeFactExtractionPayload (references resume_id/version_id, no raw text crosses queue boundary), split extract_resume_facts into extract_resume_facts_with_run mirroring the JD parse pattern, registered the resume_fact_extraction worker handler, and added enqueue-failure → failed-run flip. Sanitization preserved: only counts/lengths in run/step metadata. Frontend re-extract copy updated to reflect async behavior; existing polling logic already handles pending→running→succeeded/failed. New test_resume_extraction_api.py (API+worker two-layer) and rewritten test_resume_upload.py extraction tests use patched get_queue so no real Redis is required.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a4ec9bb` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

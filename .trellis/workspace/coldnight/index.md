@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
+- **Total Sessions**: 8
 - **Last Active**: 2026-08-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~286 | Active |
+| `journal-1.md` | ~319 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-08-01 | Async resume fact extraction (enqueue-and-poll) | `a4ec9bb` | `master` |
 | 7 | 2026-08-01 | Async JD paste parsing (enqueue-and-poll) | `2dad958` | `master` |
 | 6 | 2026-08-01 | Resume upload timeout resilience | `25cab10`, `5115439` | `master` |
 | 5 | 2026-08-01 | JD paste auto-parsing workflow | `824920a` | `master` |
