@@ -6,13 +6,14 @@ import type {
   JobCreate,
   JobListOut,
   JobOut,
-  ManualJdAnalysisDemoResponse,
   AgentRunOut,
   ResumeDetailOut,
   ResumeListOut,
   ResumeVersionListItem,
   UserProfile,
   UserProfileUpdate,
+  JobAnalysisListOut,
+  RunJdAnalysisResponse,
 } from "@/types";
 
 const baseURL = "/api/v1";
@@ -60,16 +61,6 @@ export async function getAgentRun(id: string): Promise<AgentRunOut> {
   return data;
 }
 
-export async function runManualJdAnalysisDemo(
-  jdText: string,
-): Promise<ManualJdAnalysisDemoResponse> {
-  const { data } = await apiClient.post<ManualJdAnalysisDemoResponse>(
-    "/agent-runs/manual-jd-analysis-demo",
-    { jd_text: jdText },
-  );
-  return data;
-}
-
 // --- Current user profile ---
 
 export async function getCurrentUser(): Promise<UserProfile> {
@@ -114,6 +105,33 @@ export async function listResumeVersions(
 ): Promise<ResumeVersionListItem[]> {
   const { data } = await apiClient.get<ResumeVersionListItem[]>(
     `/resumes/${resumeId}/versions`,
+  );
+  return data;
+}
+
+// --- Resume-aware JD analysis ---
+
+export async function runJdAnalysis(
+  jobId: string,
+  resumeVersionId: string,
+): Promise<RunJdAnalysisResponse> {
+  const { data } = await apiClient.post<RunJdAnalysisResponse>(
+    `/jobs/${jobId}/analyses`,
+    { resume_version_id: resumeVersionId },
+  );
+  return data;
+}
+
+export async function listJobAnalyses(
+  jobId: string,
+  page = 1,
+  pageSize = 20,
+): Promise<JobAnalysisListOut> {
+  const { data } = await apiClient.get<JobAnalysisListOut>(
+    `/jobs/${jobId}/analyses`,
+    {
+      params: { page, page_size: pageSize },
+    },
   );
   return data;
 }

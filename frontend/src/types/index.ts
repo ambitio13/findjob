@@ -52,13 +52,6 @@ export interface AgentRunOut {
   result: Record<string, unknown> | null;
 }
 
-export interface ManualJdAnalysisDemoResponse {
-  agent_run: AgentRunOut;
-  artifact_id: string;
-  artifact_type: string;
-  content: string;
-}
-
 // --- Current user profile & job-search preferences ---
 
 export interface UserProfile {
@@ -134,4 +127,97 @@ export interface ResumeDetailOut {
   storage_uri: string | null;
   created_at: string | null;
   latest_version: ResumeVersionOut | null;
+}
+
+// --- Resume-aware JD analysis (mirrors backend schemas/jd_analysis.py) ---
+
+export type JdAnalysisSeverity = "low" | "medium" | "high";
+
+export type JdAnalysisEvidenceSource = "jd" | "resume" | "profile";
+
+export type JdAnalysisRecommendation =
+  | "strong_match"
+  | "possible_match"
+  | "weak_match"
+  | "not_enough_info";
+
+export interface JdAnalysisRiskPoint {
+  title: string;
+  detail: string;
+  severity: JdAnalysisSeverity;
+}
+
+export interface JdAnalysisEvidence {
+  claim: string;
+  source: JdAnalysisEvidenceSource;
+  quote?: string | null;
+}
+
+/**
+ * Validated structured output produced by the model gateway. Mirrors
+ * `JdAnalysisModelOutput` in backend/app/schemas/jd_analysis.py.
+ */
+export interface JdAnalysisModelOutput {
+  role_summary: string;
+  responsibilities: string[];
+  hard_requirements: string[];
+  nice_to_have_requirements: string[];
+  resume_match_evidence: JdAnalysisEvidence[];
+  risk_points: JdAnalysisRiskPoint[];
+  salary_note: string;
+  growth_note: string;
+  stability_note: string;
+  match_score: number | null;
+  risk_score: number | null;
+  skill_gaps: string[];
+  interview_preparation: string[];
+  recommendation: JdAnalysisRecommendation;
+}
+
+/** Body of POST /api/v1/jobs/{job_id}/analyses. */
+export interface RunJdAnalysisRequest {
+  resume_version_id: string;
+}
+
+/** Outbound view of a persisted JobAnalysis row. */
+export interface JobAnalysisOut {
+  id: string;
+  job_id: string;
+  agent_run_id?: string | null;
+  match_score?: number | null;
+  risk_score?: number | null;
+  summary?: string | null;
+  salary_analysis?: Record<string, unknown> | null;
+  growth_analysis?: Record<string, unknown> | null;
+  stability_analysis?: Record<string, unknown> | null;
+  created_at?: string | null;
+}
+
+/** Outbound view of a persisted GeneratedArtifact row. */
+export interface GeneratedArtifactOut {
+  id: string;
+  user_id?: string | null;
+  job_id?: string | null;
+  resume_version_id?: string | null;
+  agent_run_id?: string | null;
+  artifact_type: string;
+  source_ids?: Record<string, unknown> | null;
+  prompt_version?: string | null;
+  model_name?: string | null;
+  content: string;
+  created_at?: string | null;
+}
+
+/** Response shape for POST /jobs/{job_id}/analyses (design.md §5.1). */
+export interface RunJdAnalysisResponse {
+  agent_run: AgentRunOut;
+  analysis: JobAnalysisOut;
+  artifact: GeneratedArtifactOut;
+  structured: JdAnalysisModelOutput;
+}
+
+/** Paginated list of analyses for a job (design.md §5.2). */
+export interface JobAnalysisListOut {
+  meta: Record<string, unknown>;
+  items: JobAnalysisOut[];
 }
