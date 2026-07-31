@@ -72,13 +72,13 @@ agent workflow:
 - [x] If analysis data exists in the database for a job, the job detail frontend
   can load and display it without requiring the current page session to have
   held the original POST response.
-- [ ] Resume upload produces durable parsed text and structured facts, and
+- [x] Resume upload produces durable parsed text and structured facts, and
   initiates a candidate profile draft/update path.
-- [ ] Profile editing uses explicit text-entry fields instead of a vague JSON
+- [x] Profile editing uses explicit text-entry fields instead of a vague JSON
   constraints textarea.
-- [ ] JD creation supports paste-first parsing before or alongside manual
+- [x] JD creation supports paste-first parsing before or alongside manual
   correction.
-- [ ] All changes preserve user ownership boundaries through `get_current_user`
+- [x] All changes preserve user ownership boundaries through `get_current_user`
   and scoped repository queries.
 
 ## Out of Scope
