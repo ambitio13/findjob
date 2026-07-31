@@ -217,3 +217,37 @@ Implemented paste-first JD parsing: POST /api/v1/jobs/parse drives a 6-step Agen
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Resume upload timeout resilience
+
+**Date**: 2026-08-01
+**Task**: Resume upload timeout resilience
+**Branch**: `master`
+
+### Summary
+
+Accepted and archived the P0 resume upload timeout task. Upload now saves resumes before scheduling model-backed extraction, exposes extraction lifecycle state, normalizes timeout copy, and passed backend/frontend quality gates.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `25cab10` | (see git log) |
+| `5115439` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
