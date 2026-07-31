@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Upload and listing API boundary."}
+{"file": ".trellis/spec/backend/database.md", "reason": "Resume and ResumeVersion persistence rules."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "Resume data sensitivity and ownership."}
+{"file": ".trellis/spec/backend/logging.md", "reason": "Sensitive resume-content redaction."}
+{"file": ".trellis/spec/backend/type-safety.md", "reason": "Pydantic schema and validation rules."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Upload and list UI conventions."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Frontend loading/error states."}
+

@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "Model Gateway and Agent Runtime rules."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Endpoint and async workflow contracts."}
+{"file": ".trellis/spec/backend/database.md", "reason": "JobAnalysis and GeneratedArtifact persistence rules."}
+{"file": ".trellis/spec/backend/type-safety.md", "reason": "Pydantic structured output contracts."}
+{"file": ".trellis/spec/frontend/ai-sdk-integration.md", "reason": "Agent run and generated content UI rules."}
+{"file": ".trellis/spec/frontend/table-detail-views.md", "reason": "Job detail analysis display expectations."}
+{"file": ".trellis/spec/big-question/agent-framework-selection.md", "reason": "MVP framework decision and provider boundary."}
+

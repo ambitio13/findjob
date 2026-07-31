@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend upload and persistence tests."}
+{"file": ".trellis/spec/backend/database.md", "reason": "Check resume version source-of-truth handling."}
+{"file": ".trellis/spec/backend/logging.md", "reason": "Check sensitive content is not logged."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Check upload UI states."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Check Ant Design upload/list patterns."}
+

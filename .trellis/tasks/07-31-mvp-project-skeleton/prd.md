@@ -129,6 +129,30 @@ Provide commands for:
 - [ ] MVP scope excludes platform automation and complete resume export.
 - [ ] Tests or smoke checks prove backend and frontend start successfully.
 
+## Review Correction
+
+This task should not be treated as completion of the usable business MVP.
+It is a project skeleton task only.
+
+Current implementation status after review:
+
+- Agent runtime exists structurally, but the JD-analysis flow is still a smoke
+  workflow. Even when a real API key is configured, the demo flow does not yet
+  call the model to produce real analysis.
+- Model Gateway exists and can select DeepSeek when configured, but product
+  Agent flows have not been wired to model-backed planning, analysis, or
+  artifact generation.
+- User profile and role/preference APIs are placeholders.
+- Resume upload, storage, parsing, versioning API, and frontend upload workflow
+  are not implemented.
+- Generated resume rewrite snippets, HR opening messages, and skill-gap plans
+  are placeholders or future artifact types, not functional product flows.
+
+Do not archive this task as "business MVP complete". It may be accepted only as
+"runnable skeleton complete" after checks pass. The usable MVP requires follow-up
+tasks for model-backed JD analysis, user profile, resume upload/parsing, and
+artifact generation.
+
 ## Out of Scope
 
 - Automated job-platform crawling or login.
@@ -150,4 +174,3 @@ and all files listed in implement.jsonl before coding. Implement only the MVP
 project skeleton described here. Do not add platform automation or complete
 resume export.
 ```
-
