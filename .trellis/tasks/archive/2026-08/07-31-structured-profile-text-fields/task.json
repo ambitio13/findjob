@@ -3,7 +3,7 @@
   "name": "structured-profile-text-fields",
   "title": "Structured Profile Text Fields",
   "description": "Replace vague profile constraints with explicit required and optional text fields.",
-  "status": "done",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
