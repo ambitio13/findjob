@@ -1,0 +1,401 @@
+"""Phase 4 orchestration + API tests for the resume-aware JD analysis workflow.
+
+Covers the persistence + API integration layer (design.md §5, §9, §11):
+
+- successful run via the API: 201, response carries agent_run(succeeded) +
+  analysis + artifact + structured; DB has AgentRun + AgentStep(s) +
+  JobAnalysis + GeneratedArtifact; artifact source_ids includes job_id and
+  resume_version_id.
+- failed model validation: a stub gateway returning invalid JSON → 502, a
+  FAILED AgentRun + failed AgentStep persisted, no JobAnalysis /
+  GeneratedArtifact created.
+- 404 for missing/cross-user job; 404 for missing/cross-user resume version;
+  422 for a resume version with no raw text.
+- GET list pagination + user scoping (cross-user job is 404; only the owner's
+  analyses come back).
+
+Tests use the shared ``client`` fixture (truncated test DB, fake provider).
+The stub gateway for the failure path is wired in via FastAPI dependency
+overrides, matching how the existing suite overrides nothing else.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_model_gateway_dep
+from app.db.models.models import (
+    AgentRun,
+    AgentStep,
+    GeneratedArtifact,
+    JobAnalysis,
+    JobPosting,
+    Resume,
+    ResumeVersion,
+    UserProfile,
+)
+from app.db.session import SessionLocal
+from app.main import app
+from app.models_gateway.base import ChatRequest, ChatResponse, ChatUsage, ModelGateway
+
+# ---------------------------------------------------------------------------
+# DB helpers (mirror test_jd_analysis_contracts.py so fixtures stay independent)
+# ---------------------------------------------------------------------------
+
+
+def _make_user(db: Session, user_id: str = "phase4_user") -> UserProfile:
+    user = UserProfile(id=user_id, display_name="Phase4 用户")
+    db.add(user)
+    db.flush()
+    return user
+
+
+def _make_resume(
+    db: Session,
+    user_id: str,
+    raw_text: str,
+    filename: str = "r.txt",
+) -> tuple[Resume, ResumeVersion]:
+    resume = Resume(user_id=user_id, filename=filename)
+    db.add(resume)
+    db.flush()
+    version = ResumeVersion(
+        resume_id=resume.id,
+        version_no=1,
+        raw_text=raw_text,
+        parsed_facts={"_parser": "text", "_parser_status": "parsed"},
+    )
+    db.add(version)
+    db.flush()
+    return resume, version
+
+
+def _make_job(
+    db: Session,
+    user_id: str,
+    jd_raw: str = "Senior Python backend engineer. Build APIs with FastAPI.",
+) -> JobPosting:
+    job = JobPosting(
+        user_id=user_id,
+        company="Acme",
+        title="Backend Engineer",
+        jd_raw=jd_raw,
+    )
+    db.add(job)
+    db.flush()
+    return job
+
+
+def _seed(
+    user_id: str = "phase4_user",
+    *,
+    raw_text: str = "张三\nPython 5年 FastAPI",
+    jd_raw: str = "Senior Python backend engineer. Build APIs with FastAPI.",
+) -> dict[str, str]:
+    """Seed a user + resume + version + job, returning their IDs."""
+    with SessionLocal() as db:
+        _make_user(db, user_id)
+        resume, version = _make_resume(db, user_id, raw_text)
+        job = _make_job(db, user_id, jd_raw=jd_raw)
+        db.commit()
+        return {
+            "user_id": user_id,
+            "resume_id": resume.id,
+            "resume_version_id": version.id,
+            "job_id": job.id,
+        }
+
+
+def _headers(user_id: str) -> dict[str, str]:
+    return {"X-User-Id": user_id}
+
+
+def _run(client: TestClient, job_id: str, version_id: str, user: str) -> Any:
+    return client.post(
+        f"/api/v1/jobs/{job_id}/analyses",
+        json={"resume_version_id": version_id},
+        headers=_headers(user),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stub gateway for the model-validation-failure path
+# ---------------------------------------------------------------------------
+
+
+class _InvalidStubGateway(ModelGateway):
+    """Gateway that returns malformed JSON to drive the 502 path."""
+
+    provider_name = "stub"
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        return ChatResponse(
+            content="not valid json {",
+            model="stub-model",
+            provider=self.provider_name,
+            request_id=request.request_id,
+            latency_ms=0,
+            usage=ChatUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+
+@pytest.fixture()
+def invalid_gateway_override():
+    """Override ``get_model_gateway_dep`` with the invalid-output stub."""
+    stub = _InvalidStubGateway()
+    app.dependency_overrides[get_model_gateway_dep] = lambda: stub
+    try:
+        yield stub
+    finally:
+        app.dependency_overrides.pop(get_model_gateway_dep, None)
+
+
+# ---------------------------------------------------------------------------
+# Successful run
+# ---------------------------------------------------------------------------
+
+
+def test_run_analysis_success_creates_all_entities(client: TestClient) -> None:
+    ids = _seed("ok_user")
+    resp = _run(client, ids["job_id"], ids["resume_version_id"], "ok_user")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+
+    # Response shape (design §5.1).
+    assert body["agent_run"]["status"] == "succeeded"
+    assert body["agent_run"]["workflow_type"] == "resume_aware_jd_analysis"
+    assert body["agent_run"]["id"]
+    assert body["analysis"]["job_id"] == ids["job_id"]
+    assert body["analysis"]["agent_run_id"] == body["agent_run"]["id"]
+    assert body["artifact"]["artifact_type"] == "jd_analysis"
+    assert body["artifact"]["prompt_version"] == "jd-analysis-v1"
+    assert body["artifact"]["model_name"]
+    # Structured output is echoed and validated.
+    structured = body["structured"]
+    assert structured["match_score"] is not None
+    assert 0 <= structured["match_score"] <= 100
+
+    # Artifact source provenance (design §4/§5.1).
+    source_ids = body["artifact"]["source_ids"]
+    assert source_ids["job_id"] == ids["job_id"]
+    assert source_ids["resume_version_id"] == ids["resume_version_id"]
+    assert source_ids["resume_id"] == ids["resume_id"]
+    assert source_ids["user_id"] == "ok_user"
+    assert source_ids["model_request_id"]
+    assert source_ids["provider"]
+
+    # AgentRun.result carries the source-context + output IDs (design §5.1, §7).
+    result = body["agent_run"]["result"]
+    assert result["job_id"] == ids["job_id"]
+    assert result["resume_version_id"] == ids["resume_version_id"]
+    assert result["analysis_id"] == body["analysis"]["id"]
+    assert result["artifact_id"] == body["artifact"]["id"]
+    assert "source_context" in result
+    assert "truncation" in result["source_context"]
+
+    # DB: all four entity types exist for this run.
+    run_id = body["agent_run"]["id"]
+    with SessionLocal() as db:
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
+        step_names = {s.name for s in steps}
+        assert step_names == {"load_context", "analyze_with_model", "persist_outputs"}
+        assert all(s.status == "succeeded" for s in steps)
+
+        analysis = db.get(JobAnalysis, body["analysis"]["id"])
+        assert analysis is not None
+        assert analysis.job_id == ids["job_id"]
+        # Scores coerce int -> float (column is Float).
+        assert isinstance(analysis.match_score, float)
+        assert isinstance(analysis.risk_score, float)
+        # JSON note blobs mapped from the validated output.
+        assert analysis.salary_analysis == {"note": structured["salary_note"]}
+        assert analysis.growth_analysis == {"note": structured["growth_note"]}
+        assert analysis.stability_analysis == {"note": structured["stability_note"]}
+        assert analysis.summary
+
+        artifact = db.get(GeneratedArtifact, body["artifact"]["id"])
+        assert artifact is not None
+        assert artifact.artifact_type == "jd_analysis"
+        assert artifact.prompt_version == "jd-analysis-v1"
+        assert artifact.source_ids["job_id"] == ids["job_id"]
+        assert artifact.source_ids["resume_version_id"] == ids["resume_version_id"]
+
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "succeeded"
+
+
+def test_run_analysis_no_raw_prompt_or_resume_content_logged(client: TestClient) -> None:
+    """No raw full prompt or full resume content may land in persisted rows."""
+    raw_resume = "SUPER_SECRET_RESUME_TOKEN_42"
+    ids = _seed("no_log_user", raw_text=raw_resume)
+    resp = _run(client, ids["job_id"], ids["resume_version_id"], "no_log_user")
+    assert resp.status_code == 201, resp.text
+    run_id = resp.json()["agent_run"]["id"]
+
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        # AgentRun.result must not embed the raw resume text or the prompt body.
+        result_blob = repr(run.result) + (run.error or "")
+        assert "SUPER_SECRET_RESUME_TOKEN_42" not in result_blob
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
+        for step in steps:
+            step_blob = repr(step.result) + (step.error or "")
+            assert "SUPER_SECRET_RESUME_TOKEN_42" not in step_blob
+        artifact = (
+            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run_id))
+            .scalars()
+            .first()
+        )
+        assert artifact is not None
+        assert "SUPER_SECRET_RESUME_TOKEN_42" not in artifact.source_ids.__repr__()
+        assert "SUPER_SECRET_RESUME_TOKEN_42" not in artifact.content
+
+
+# ---------------------------------------------------------------------------
+# Model validation failure -> 502
+# ---------------------------------------------------------------------------
+
+
+def test_run_analysis_model_invalid_returns_502_and_persists_failed_run(
+    client: TestClient, invalid_gateway_override: _InvalidStubGateway
+) -> None:
+    ids = _seed("bad_model_user")
+    resp = _run(client, ids["job_id"], ids["resume_version_id"], "bad_model_user")
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["detail"] == "model returned invalid analysis"
+
+    with SessionLocal() as db:
+        runs = (
+            db.execute(select(AgentRun).where(AgentRun.user_id == "bad_model_user")).scalars().all()
+        )
+        assert len(runs) == 1
+        run = runs[0]
+        assert run.status == "failed"
+        assert run.error == "model returned invalid analysis"
+        assert run.result["failure"] == "model_invalid"
+
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run.id)).scalars().all()
+        assert len(steps) >= 2
+        analyze_step = next(s for s in steps if s.name == "analyze_with_model")
+        assert analyze_step.status == "failed"
+        # No raw prompt/resume content in the failed step.
+        assert "raw_text" not in (analyze_step.result or {})
+
+        # Failure path must NOT create JobAnalysis / GeneratedArtifact.
+        analyses = (
+            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run.id))
+            .scalars()
+            .all()
+        )
+        assert analyses == []
+        artifacts = (
+            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run.id))
+            .scalars()
+            .all()
+        )
+        assert artifacts == []
+
+
+# ---------------------------------------------------------------------------
+# Ownership / data-quality errors
+# ---------------------------------------------------------------------------
+
+
+def test_run_analysis_404_for_missing_job(client: TestClient) -> None:
+    ids = _seed("no_job_user")
+    resp = _run(client, "nonexistent_job", ids["resume_version_id"], "no_job_user")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "job not found"
+
+
+def test_run_analysis_404_for_cross_user_job(client: TestClient) -> None:
+    ids_owner = _seed("owner_x")
+    ids_intruder = _seed("intruder_x")
+    resp = _run(
+        client,
+        ids_owner["job_id"],
+        ids_intruder["resume_version_id"],
+        "intruder_x",
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "job not found"
+
+
+def test_run_analysis_404_for_missing_resume_version(client: TestClient) -> None:
+    ids = _seed("no_ver_user")
+    resp = _run(client, ids["job_id"], "nonexistent_ver", "no_ver_user")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "resume version not found"
+
+
+def test_run_analysis_404_for_cross_user_resume_version(client: TestClient) -> None:
+    ids_owner = _seed("rv_owner")
+    ids_intruder = _seed("rv_intruder")
+    resp = _run(
+        client,
+        ids_intruder["job_id"],
+        ids_owner["resume_version_id"],
+        "rv_intruder",
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "resume version not found"
+
+
+def test_run_analysis_422_for_empty_raw_text(client: TestClient) -> None:
+    ids = _seed("empty_text_user", raw_text="")
+    resp = _run(client, ids["job_id"], ids["resume_version_id"], "empty_text_user")
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "resume version has no parsed text"
+
+
+# ---------------------------------------------------------------------------
+# GET list
+# ---------------------------------------------------------------------------
+
+
+def test_list_analyses_pagination_and_user_scoping(client: TestClient) -> None:
+    ids = _seed("list_user")
+    # Create three analyses for the owner.
+    for _ in range(3):
+        resp = _run(client, ids["job_id"], ids["resume_version_id"], "list_user")
+        assert resp.status_code == 201, resp.text
+
+    # page_size=2 -> 2 items, total=3.
+    resp = client.get(
+        f"/api/v1/jobs/{ids['job_id']}/analyses",
+        params={"page": 1, "page_size": 2},
+        headers=_headers("list_user"),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["meta"]["total"] == 3
+    assert len(body["items"]) == 2
+    # Newest first: created_at descending.
+    assert body["items"][0]["created_at"] >= body["items"][1]["created_at"]
+
+    # page 2 -> the remaining 1 item.
+    resp2 = client.get(
+        f"/api/v1/jobs/{ids['job_id']}/analyses",
+        params={"page": 2, "page_size": 2},
+        headers=_headers("list_user"),
+    )
+    assert resp2.status_code == 200
+    assert len(resp2.json()["items"]) == 1
+
+
+def test_list_analyses_404_for_cross_user_job(client: TestClient) -> None:
+    ids_owner = _seed("list_owner")
+    _seed("list_intruder")
+    resp = client.get(
+        f"/api/v1/jobs/{ids_owner['job_id']}/analyses",
+        headers=_headers("list_intruder"),
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "job not found"
