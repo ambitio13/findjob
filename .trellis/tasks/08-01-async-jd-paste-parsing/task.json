@@ -3,7 +3,7 @@
   "name": "async-jd-paste-parsing",
   "title": "Async JD Paste Parsing",
   "description": "Move /jobs/parse from synchronous model waiting to enqueue-and-poll with visible AgentRun steps and parsed draft results.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

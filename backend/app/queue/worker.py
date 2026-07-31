@@ -22,7 +22,7 @@ from __future__ import annotations
 from arq.worker import Function
 
 from app.core.config import get_settings
-from app.queue.handlers import smoke
+from app.queue.handlers import jd_paste_parsing, smoke
 from app.queue.runtime import get_redis_settings
 
 _settings = get_settings()
@@ -40,6 +40,14 @@ def _functions() -> list[Function]:
         Function(
             name="smoke",
             coroutine=smoke,
+            timeout_s=_settings.queue_job_timeout,
+            keep_result_s=3600,
+            keep_result_forever=False,
+            max_tries=_settings.queue_max_retries + 1,
+        ),
+        Function(
+            name="jd_paste_parsing",
+            coroutine=jd_paste_parsing,
             timeout_s=_settings.queue_job_timeout,
             keep_result_s=3600,
             keep_result_forever=False,

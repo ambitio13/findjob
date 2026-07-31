@@ -4,12 +4,15 @@ This module owns the JD paste parsing workflow. It mirrors the resume-fact
 extraction orchestration pattern (``resume_fact_service.py``) but is scoped to
 a paste action that creates no ``JobPosting``:
 
-- :func:`parse_jd`: the deterministic orchestration transaction. It creates an
-  ``AgentRun`` (``workflow_type="jd_paste_parsing"``), drives the fixed steps
-  (``load_context`` → ``build_prompt_context`` → ``call_model`` →
-  ``validate_model_output`` → ``persist_outputs`` → ``complete_run``), persists
-  ``AgentStep`` rows, and translates model/provider/schema failures into a
-  recoverable failed run.
+- :func:`parse_jd_with_run`: the deterministic orchestration transaction. It
+  accepts an *already-created* ``AgentRun`` (``workflow_type="jd_paste_parsing"``,
+  status ``queued`` or ``running``), drives the fixed steps (``load_context`` →
+  ``build_prompt_context`` → ``call_model`` → ``validate_model_output`` →
+  ``persist_outputs`` → ``complete_run``), persists ``AgentStep`` rows, and
+  translates model/provider/schema failures into a recoverable failed run.
+- :func:`parse_jd`: legacy synchronous entry point that creates the run itself
+  and then delegates to :func:`parse_jd_with_run`. Kept for backward
+  compatibility with the old synchronous API path and contract tests.
 
 Ownership / failure contract (design.md):
 
@@ -86,16 +89,20 @@ class JdParseOutcome:
     raw_jd: str
 
 
-async def parse_jd(
+async def parse_jd_with_run(
     db: Session,
-    current_user: UserProfile,
+    run: AgentRun,
+    *,
+    user_id: str,
     raw_jd: str,
     platform_hint: str | None,
     gateway: ModelGateway,
 ) -> JdParseOutcome:
-    """Drive the JD paste parsing workflow end to end.
+    """Drive the JD paste parsing workflow using an *existing* ``AgentRun``.
 
-    Fixed steps:
+    This is the worker entry point. The API layer (or a test) creates the
+    ``AgentRun`` row with ``status="queued"`` before calling this function;
+    the worker handler flips it to ``running`` on entry. Fixed steps:
 
     1. ``load_context`` — record sanitized input metadata (raw_jd_len,
        platform_hint).
@@ -108,17 +115,18 @@ async def parse_jd(
        live in the API response, not in step metadata).
     6. ``complete_run`` — finalize run status and metadata.
 
+    On success the parsed fields are written into ``AgentRun.result`` under the
+    ``fields`` key so the frontend can hydrate them by polling the run detail
+    endpoint (``GET /agent-runs/{id}/detail``).
+
     The API layer assumes blank ``raw_jd`` was already rejected (422). This
     service does not create a skipped-status branch for invalid input.
     """
-    started_at = datetime.now(UTC)
-    run = agent_run_repo.create_run(
-        db,
-        user_id=current_user.id,
-        workflow_type=WORKFLOW_TYPE,
-        status="running",
-        started_at=started_at,
-    )
+    # Flip queued → running on entry (no-op if already running from a retry).
+    if run.started_at is None:
+        run.started_at = datetime.now(UTC)
+    agent_run_repo.update_status(db, run, status="running")
+    db.flush()
 
     executor = JdPasteExecutor(gateway)
 
@@ -148,7 +156,7 @@ async def parse_jd(
             finished_at=datetime.now(UTC),
             error=error,
             result={
-                "user_id": current_user.id,
+                "user_id": user_id,
                 "failure": "parse_failed",
                 **result,
             },
@@ -268,7 +276,8 @@ async def parse_jd(
     )
 
     # Step 5 — persist_outputs. No JobPosting to write (parse-then-create);
-    # the parsed draft lives in the API response. Step records counts only.
+    # the parsed draft lives in the run result so the frontend can hydrate it.
+    # Step records counts only.
     field_count = _count_non_empty_fields(output)
     uncertain_count = len(output.uncertain_fields)
     agent_run_repo.add_step(
@@ -299,7 +308,7 @@ async def parse_jd(
         status="succeeded",
         finished_at=datetime.now(UTC),
         result={
-            "user_id": current_user.id,
+            "user_id": user_id,
             "field_count": field_count,
             "uncertain_count": uncertain_count,
             "provider": execution.provider,
@@ -309,6 +318,10 @@ async def parse_jd(
             "source_context": {
                 "truncation": execution.truncation,
             },
+            "fields": output.model_dump(mode="json"),
+            "extraction": _build_extraction(
+                run, status="succeeded", provider=execution.provider, model=execution.model
+            ).model_dump(mode="json"),
         },
     )
 
@@ -322,6 +335,38 @@ async def parse_jd(
             run, status="succeeded", provider=execution.provider, model=execution.model
         ),
         raw_jd=raw_jd,
+    )
+
+
+async def parse_jd(
+    db: Session,
+    current_user: UserProfile,
+    raw_jd: str,
+    platform_hint: str | None,
+    gateway: ModelGateway,
+) -> JdParseOutcome:
+    """Legacy synchronous entry point — creates the ``AgentRun`` then delegates.
+
+    Creates an ``AgentRun`` with ``status="running"`` and delegates to
+    :func:`parse_jd_with_run`. Kept for backward compatibility with the old
+    synchronous API path and contract tests that exercise the service directly
+    without going through the queue.
+    """
+    started_at = datetime.now(UTC)
+    run = agent_run_repo.create_run(
+        db,
+        user_id=current_user.id,
+        workflow_type=WORKFLOW_TYPE,
+        status="running",
+        started_at=started_at,
+    )
+    return await parse_jd_with_run(
+        db,
+        run,
+        user_id=current_user.id,
+        raw_jd=raw_jd,
+        platform_hint=platform_hint,
+        gateway=gateway,
     )
 
 

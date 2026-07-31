@@ -10,7 +10,7 @@ import type {
   AgentRunDetailOut,
   ApplyProfileDraftRequest,
   ApplyProfileDraftResponse,
-  JdParseResponse,
+  JdParseSubmitResponse,
   ResumeDetailOut,
   ResumeListOut,
   ResumeVersionListItem,
@@ -50,21 +50,25 @@ export async function createJob(payload: JobCreate): Promise<JobOut> {
   return data;
 }
 
-// --- JD paste parsing (parse-then-create) ---
+// --- JD paste parsing (parse-then-create, enqueue-and-poll) ---
 
 /**
- * Parse raw JD text into structured draft fields via the model gateway. Model
- * failures are recoverable: the endpoint returns HTTP 200 with a failed run
- * and empty typed fields so the caller can fall back to manual entry.
+ * Submit raw JD text for asynchronous parsing. The endpoint creates a
+ * ``queued`` AgentRun, enqueues a worker job, and returns immediately with
+ * HTTP 202. Poll ``getAgentRunDetail(run.id)`` until terminal status, then
+ * hydrate fields from ``result.fields``.
  */
 export async function parseJobJd(
   rawJd: string,
   platform?: string,
-): Promise<JdParseResponse> {
-  const { data } = await apiClient.post<JdParseResponse>("/jobs/parse", {
-    raw_jd: rawJd,
-    ...(platform ? { platform } : {}),
-  });
+): Promise<JdParseSubmitResponse> {
+  const { data } = await apiClient.post<JdParseSubmitResponse>(
+    "/jobs/parse",
+    {
+      raw_jd: rawJd,
+      ...(platform ? { platform } : {}),
+    },
+  );
   return data;
 }
 

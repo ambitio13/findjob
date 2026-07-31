@@ -9,13 +9,14 @@ existence.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db_session, get_model_gateway_dep
 from app.db.models.models import JobPosting, UserProfile
-from app.db.repositories import generated_artifact_repo, job_analysis_repo, job_repo
+from app.db.repositories import agent_run_repo, generated_artifact_repo, job_analysis_repo, job_repo
 from app.models_gateway.base import ModelGateway
 from app.schemas.api import JobCreate, JobListOut, JobOut, PaginatedMeta
 from app.schemas.jd_analysis import (
@@ -27,9 +28,8 @@ from app.schemas.jd_analysis import (
     RunJdAnalysisRequest,
     RunJdAnalysisResponse,
 )
-from app.schemas.jd_parse import JdParseRequest, JdParseResponse, JdParseRunSummary
+from app.schemas.jd_parse import JdParseRequest, JdParseRunSummary, JdParseSubmitResponse
 from app.services.jd_analysis_service import run_resume_aware_jd_analysis
-from app.services.jd_parse_service import parse_jd
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -90,34 +90,72 @@ def get_job(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/parse", response_model=JdParseResponse)
+@router.post("/parse", response_model=JdParseSubmitResponse, status_code=202)
 async def parse_job_jd(
     payload: JdParseRequest,
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
-    gateway: ModelGateway = Depends(get_model_gateway_dep),
-) -> JdParseResponse:
-    """Parse raw JD text into structured draft fields (parse-then-create).
+) -> JdParseSubmitResponse:
+    """Submit raw JD text for asynchronous parsing (enqueue-and-poll).
 
-    The route is a thin transport layer: it validates the body (blank ``raw_jd``
-    → 422 before service entry), resolves the current user, and delegates to
-    the service orchestrator. Model/provider/schema failures are recoverable:
-    the endpoint returns HTTP 200 with a failed run and empty typed fields so
-    the user can fall back to manual entry.
+    Creates a ``queued`` ``AgentRun`` (``workflow_type="jd_paste_parsing"``)
+    with sanitized request metadata, enqueues a ``JdPasteParsePayload`` to the
+    worker queue, and returns immediately with the run reference. The frontend
+    polls ``GET /agent-runs/{run_id}/detail`` until the run reaches a terminal
+    status, then hydrates the parsed fields from ``AgentRun.result.fields``.
+
+    If Redis is unavailable the run is flipped to ``failed`` before returning
+    so the user is never left with a silent spinner. The raw JD text is never
+    persisted to PostgreSQL — it lives only in the transient queue entry.
     """
-    outcome = await parse_jd(
-        db=db,
-        current_user=current_user,
-        raw_jd=payload.raw_jd,
-        platform_hint=payload.platform,
-        gateway=gateway,
+    from app.queue.payloads import JdPasteParsePayload
+    from app.queue.runtime import enqueue_workflow
+    from app.services.jd_parse_service import WORKFLOW_TYPE
+
+    # Create the durable AgentRun in queued state *before* enqueue so
+    # PostgreSQL stays the source of truth (design.md queue contract).
+    run = agent_run_repo.create_run(
+        db,
+        user_id=current_user.id,
+        workflow_type=WORKFLOW_TYPE,
+        status="queued",
+        result={
+            "user_id": current_user.id,
+            "raw_jd_len": len(payload.raw_jd),
+            "platform": payload.platform,
+        },
     )
-    return JdParseResponse(
-        status=outcome.status,
-        run=JdParseRunSummary.model_validate(outcome.run),
-        fields=outcome.fields,
-        extraction=outcome.extraction,
-        raw_jd=outcome.raw_jd,
+    db.commit()
+    db.refresh(run)
+
+    # Enqueue the parse job. If Redis is down, flip the run to failed so the
+    # frontend sees a terminal state instead of polling forever.
+    idempotency_key = f"jd_paste:{run.id}"
+    enqueue_payload = JdPasteParsePayload(
+        workflow_type="jd_paste_parsing",
+        user_id=current_user.id,
+        agent_run_id=run.id,
+        idempotency_key=idempotency_key,
+        raw_jd=payload.raw_jd,
+        platform=payload.platform,
+    )
+    try:
+        await enqueue_workflow(enqueue_payload, job_id=idempotency_key)
+    except Exception:
+        agent_run_repo.update_status(
+            db,
+            run,
+            status="failed",
+            finished_at=datetime.now(UTC),
+            error="queue enqueue failed",
+        )
+        db.commit()
+        db.refresh(run)
+
+    return JdParseSubmitResponse(
+        run=JdParseRunSummary.model_validate(run),
+        raw_jd=payload.raw_jd,
+        platform=payload.platform,
     )
 
 

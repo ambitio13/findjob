@@ -14,9 +14,9 @@ Shared contract (design.md):
 - :func:`fail_run` is the shared guard that flips a run to ``failed`` with a
   sanitized error message when a handler raises.
 
-This module currently contains only the smoke handler. Real workflow handlers
-(jd_paste_parsing, resume_fact_extraction, resume_aware_jd_analysis) are added
-by their respective migration tasks.
+This module contains the foundation smoke handler plus workflow handlers added
+by async migration tasks. Resume fact extraction and resume-aware JD analysis
+will be added by their respective migration tasks.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from typing import Any
 from app.core.logging import get_logger
 from app.db.repositories import agent_run_repo
 from app.db.session import SessionLocal
-from app.queue.payloads import SmokePayload
+from app.queue.payloads import JdPasteParsePayload, SmokePayload
 
 _log = get_logger("app.queue.handlers")
 
@@ -93,3 +93,79 @@ async def smoke(
         db.commit()
         _log.info("queue.smoke_succeeded", agent_run_id=payload.agent_run_id)
         return run.id
+
+
+async def jd_paste_parsing(
+    ctx: dict[str, Any],
+    payload: JdPasteParsePayload | dict[str, Any],
+) -> str:
+    """JD paste parsing worker handler — executes the parse workflow.
+
+    Receives the raw JD text + platform hint in the payload (there is no
+    durable parent row at parse time), opens its own DB session, re-loads the
+    queued ``AgentRun`` by ID, re-checks user ownership, and delegates to
+    :func:`app.services.jd_parse_service.parse_jd_with_run` for the fixed-step
+    orchestration (model call → validation → sanitized step/run persistence).
+
+    The model gateway is constructed inside the worker via
+    :func:`app.models_gateway.factory.get_model_gateway` so no request-scoped
+    dependency is passed across the queue boundary.
+
+    On any uncaught exception the shared :func:`fail_run` guard flips the run
+    to ``failed`` with a sanitized error so it never stays stuck on
+    ``running``.
+    """
+    _ = ctx
+    if isinstance(payload, dict):
+        payload = JdPasteParsePayload.model_validate(payload)
+
+    # Construct the model gateway inside the worker process.
+    from app.models_gateway.factory import get_model_gateway
+    from app.services.jd_parse_service import parse_jd_with_run
+
+    gateway = get_model_gateway()
+
+    try:
+        with SessionLocal() as db:
+            run = agent_run_repo.get_run(db, payload.agent_run_id)
+            if run is None:
+                _log.warning(
+                    "queue.jd_paste_parsing_missing_run",
+                    agent_run_id=payload.agent_run_id,
+                )
+                return "missing_run"
+
+            # Re-check ownership: a cross-user payload must not execute.
+            if run.user_id != payload.user_id:
+                _log.warning(
+                    "queue.jd_paste_parsing_owner_mismatch",
+                    agent_run_id=payload.agent_run_id,
+                    payload_user=payload.user_id,
+                    run_user=run.user_id,
+                )
+                fail_run(payload.agent_run_id, error="ownership mismatch")
+                return "ownership_mismatch"
+
+            await parse_jd_with_run(
+                db,
+                run,
+                user_id=payload.user_id,
+                raw_jd=payload.raw_jd,
+                platform_hint=payload.platform,
+                gateway=gateway,
+            )
+            _log.info(
+                "queue.jd_paste_parsing_completed",
+                agent_run_id=payload.agent_run_id,
+                status=run.status,
+            )
+            return run.id
+    except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
+        _log.warning(
+            "queue.jd_paste_parsing_error",
+            agent_run_id=payload.agent_run_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        fail_run(payload.agent_run_id, error="jd paste parsing failed")
+        return "failed"

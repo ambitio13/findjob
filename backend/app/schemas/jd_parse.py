@@ -81,3 +81,22 @@ class JdParseResponse(BaseModel):
     fields: JdPasteFactsModelOutput
     extraction: JdParseExtraction
     raw_jd: str
+
+
+class JdParseSubmitResponse(BaseModel):
+    """Immediate response for ``POST /api/v1/jobs/parse`` (enqueue-and-poll).
+
+    The endpoint creates a ``queued`` ``AgentRun`` and enqueues the parse job
+    to the worker queue, then returns immediately with this response. The
+    frontend polls ``GET /agent-runs/{run_id}/detail`` (or
+    ``GET /agent-runs/{run_id}``) until the run reaches a terminal status
+    (``succeeded`` or ``failed``), then hydrates the parsed fields from
+    ``AgentRun.result.fields`` on success.
+
+    ``raw_jd`` is echoed back so the form retains the user's input while
+    polling. ``platform`` is echoed for symmetry.
+    """
+
+    run: JdParseRunSummary
+    raw_jd: str
+    platform: str | None = None

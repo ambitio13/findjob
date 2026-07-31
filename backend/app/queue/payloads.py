@@ -67,3 +67,22 @@ class SmokePayload(WorkflowPayload):
     """
 
     workflow_type: Literal["smoke"] = "smoke"
+
+
+class JdPasteParsePayload(WorkflowPayload):
+    """Payload for the JD paste parsing workflow.
+
+    Carries the raw JD text because — unlike resume fact extraction, which can
+    re-read ``ResumeVersion.raw_text`` — a JD paste parse has no durable parent
+    row at enqueue time (the ``JobPosting`` is created *after* parsing
+    succeeds). The raw text lives only in the Redis queue entry, which arq
+    expires automatically; it is never persisted to PostgreSQL. The worker
+    handler passes it to the service orchestrator, which sanitizes all step
+    and run metadata so only ``raw_jd_len`` (not the text) is stored on
+    ``AgentRun`` / ``AgentStep`` rows.
+    """
+
+    workflow_type: Literal["jd_paste_parsing"] = "jd_paste_parsing"
+
+    raw_jd: str
+    platform: str | None = None

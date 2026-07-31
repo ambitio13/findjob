@@ -81,7 +81,25 @@ export interface JdParseRunSummary {
   error: string | null;
 }
 
-/** Response shape for POST /api/v1/jobs/parse. */
+/**
+ * Immediate response for POST /api/v1/jobs/parse (enqueue-and-poll).
+ * The endpoint creates a ``queued`` AgentRun, enqueues the parse job, and
+ * returns immediately with HTTP 202. The frontend polls the run detail until
+ * terminal status, then hydrates ``fields`` from ``AgentRun.result.fields``.
+ */
+export interface JdParseSubmitResponse {
+  run: JdParseRunSummary;
+  raw_jd: string;
+  platform: string | null;
+}
+
+/** Terminal run statuses — once reached, JD parse polling can stop. */
+export const TERMINAL_JD_PARSE_STATUSES: ReadonlySet<string> = new Set([
+  "succeeded",
+  "failed",
+]);
+
+/** Response shape for POST /api/v1/jobs/parse (legacy synchronous flow). */
 export interface JdParseResponse {
   status: "succeeded" | "failed";
   run: JdParseRunSummary;

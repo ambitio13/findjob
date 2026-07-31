@@ -1,18 +1,25 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ModalForm,
   ProFormText,
   ProFormTextArea,
 } from "@ant-design/pro-components";
 import { Alert, Button, Input, Space, Typography, message } from "antd";
-import { apiErrorMessage, createJob, parseJobJd } from "@/api/client";
+import {
+  apiErrorMessage,
+  createJob,
+  getAgentRunDetail,
+  parseJobJd,
+} from "@/api/client";
 import type {
   JdNormalized,
   JdNormalizedExtraction,
   JdParseDraftFields,
   JdParseRunSummary,
+  JdParseSubmitResponse,
   JobCreate,
 } from "@/types";
+import { TERMINAL_JD_PARSE_STATUSES } from "@/types";
 
 interface Props {
   open: boolean;
@@ -35,14 +42,49 @@ const EMPTY_FIELDS: JdParseDraftFields = {
   uncertain_fields: [],
 };
 
+/** Polling interval for non-terminal JD parse status (milliseconds). */
+const JD_PARSE_POLL_MS = 3000;
+
 /**
- * Two-phase paste-first job creation modal:
- *  1. Paste raw JD → click "智能解析" → model parses structured draft fields.
+ * Safely coerce an unknown value (from the JSON ``result`` column) into the
+ * typed draft-fields shape. If the shape is missing or malformed (e.g. an
+ * older run without ``fields``), fall back to empty fields so the UI never
+ * crashes on hydration.
+ */
+function hydrateFields(result: Record<string, unknown> | null): JdParseDraftFields {
+  if (!result) return EMPTY_FIELDS;
+  const raw = result.fields;
+  if (typeof raw !== "object" || raw === null) return EMPTY_FIELDS;
+  // Shallow-merge over the empty shape so missing keys get their defaults.
+  return { ...EMPTY_FIELDS, ...(raw as Partial<JdParseDraftFields>) };
+}
+
+/**
+ * Safely coerce the ``extraction`` block from ``AgentRun.result`` into the
+ * typed provenance shape. Returns ``null`` on malformed/missing data so the
+ * save path falls back to ``jd_normalized=null`` (manual entry).
+ */
+function hydrateExtraction(
+  result: Record<string, unknown> | null,
+): JdNormalizedExtraction | null {
+  if (!result) return null;
+  const raw = result.extraction;
+  if (typeof raw !== "object" || raw === null) return null;
+  return raw as JdNormalizedExtraction;
+}
+
+/**
+ * Two-phase paste-first job creation modal (enqueue-and-poll):
+ *  1. Paste raw JD → click "智能解析" → the endpoint enqueues a parse job and
+ *     returns immediately with a ``queued`` AgentRun. The modal polls the run
+ *     detail until terminal status, then hydrates the draft fields from
+ *     ``AgentRun.result.fields`` on success.
  *  2. Edit the pre-filled fields (company/title required) → save creates the
  *     JobPosting with the parsed draft persisted in ``jd_normalized``.
  *
- * Parse failure is recoverable: a warning is shown with a link to the run
- * detail, and the user proceeds to manual entry with empty fields.
+ * Parse failure is recoverable: a warning is shown with the run ID, and the
+ * user proceeds to manual entry with empty fields. A retry button lets them
+ * re-submit the same JD without retyping.
  */
 export function JobCreateModal({ open, onClose, onCreated }: Props) {
   const [submitting, setSubmitting] = useState(false);
@@ -54,41 +96,114 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
   );
   const [runSummary, setRunSummary] = useState<JdParseRunSummary | null>(null);
   const [rawJd, setRawJd] = useState("");
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollTokenRef = useRef(0);
+  const [messageApi, contextHolder] = message.useMessage();
 
+  const stopPolling = () => {
+    pollTokenRef.current += 1;
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  /**
+   * Poll ``GET /agent-runs/{id}/detail`` until the run reaches a terminal
+   * status (``succeeded`` or ``failed``). On success, hydrate the draft fields
+   * and extraction from ``AgentRun.result``. On failure, surface a warning and
+   * let the user fall back to manual entry or retry. Mirrors the recursive
+   * ``setTimeout`` + ``active`` flag pattern in ``ResumeDetailPage``.
+   */
+  const pollRunDetail = (runId: string) => {
+    const token = pollTokenRef.current;
+
+    const poll = async () => {
+      try {
+        const detail = await getAgentRunDetail(runId);
+        if (token !== pollTokenRef.current) return;
+        setRunSummary({ id: detail.id, status: detail.status, error: detail.error });
+        if (TERMINAL_JD_PARSE_STATUSES.has(detail.status)) {
+          setParsing(false);
+          if (detail.status === "succeeded") {
+            setFields(hydrateFields(detail.result));
+            setExtraction(hydrateExtraction(detail.result));
+            setParsed(true);
+            messageApi.success("解析完成，请确认并补充字段");
+          } else {
+            // Recoverable failure: keep empty fields so the user can fall
+            // back to manual entry, and surface the failed run for inspection.
+            setFields(EMPTY_FIELDS);
+            setExtraction(null);
+            setParsed(true);
+            messageApi.warning("解析未成功，可手动填写字段或重试");
+          }
+          return;
+        }
+        pollTimerRef.current = setTimeout(poll, JD_PARSE_POLL_MS);
+      } catch {
+        // Network blips during polling are non-fatal; retry on next tick.
+        if (token === pollTokenRef.current) {
+          pollTimerRef.current = setTimeout(poll, JD_PARSE_POLL_MS);
+        }
+      }
+    };
+
+    pollTimerRef.current = setTimeout(poll, JD_PARSE_POLL_MS);
+  };
   const handleParse = async () => {
     if (!rawJd.trim()) {
-      message.warning("请先粘贴 JD 原文");
+      messageApi.warning("请先粘贴 JD 原文");
       return;
     }
+    stopPolling();
     setParsing(true);
+    setRunSummary(null);
+    setExtraction(null);
+    setFields(EMPTY_FIELDS);
     try {
-      const res = await parseJobJd(rawJd);
+      const res: JdParseSubmitResponse = await parseJobJd(rawJd);
       setRunSummary(res.run);
-      setExtraction(res.extraction);
-      if (res.status === "succeeded") {
-        setFields(res.fields);
-        setParsed(true);
-        message.success("解析完成，请确认并补充字段");
-      } else {
-        // Recoverable failure: keep the (empty) fields so the user can fall
-        // back to manual entry, and surface the failed run for inspection.
-        setFields(EMPTY_FIELDS);
-        setParsed(true);
-        message.warning("解析未成功，可手动填写字段");
+      // If the enqueue itself failed (Redis down), the backend flips the run
+      // to ``failed`` before returning — surface that immediately.
+      if (TERMINAL_JD_PARSE_STATUSES.has(res.run.status)) {
+        setParsing(false);
+        if (res.run.status === "succeeded") {
+          setFields(hydrateFields(null));
+          setParsed(true);
+          messageApi.success("解析完成，请确认并补充字段");
+        } else {
+          setFields(EMPTY_FIELDS);
+          setParsed(true);
+          messageApi.warning("解析未成功，可手动填写字段或重试");
+        }
+        return;
       }
+      // The run is ``queued`` — start polling until terminal status.
+      pollRunDetail(res.run.id);
     } catch (err) {
-      message.error(apiErrorMessage(err));
-    } finally {
       setParsing(false);
+      messageApi.error(apiErrorMessage(err));
     }
   };
 
   const handleReset = () => {
+    stopPolling();
+    setParsing(false);
     setParsed(false);
     setFields(EMPTY_FIELDS);
     setExtraction(null);
     setRunSummary(null);
     setRawJd("");
+  };
+
+  const handleSkipParse = () => {
+    stopPolling();
+    setParsing(false);
+    setParsed(true);
+    setExtraction(null);
+    setRunSummary(null);
+    setFields(EMPTY_FIELDS);
   };
 
   return (
@@ -128,13 +243,14 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
           handleReset();
           return true;
         } catch (err) {
-          message.error(apiErrorMessage(err));
+          messageApi.error(apiErrorMessage(err));
           return false;
         } finally {
           setSubmitting(false);
         }
       }}
     >
+      {contextHolder}
       {!parsed ? (
         <>
           <ProFormTextArea
@@ -149,18 +265,18 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
           />
           <Space>
             <Button type="primary" loading={parsing} onClick={handleParse}>
-              智能解析
+              {parsing ? "解析中…" : "智能解析"}
             </Button>
-            <Button
-              onClick={() => {
-                setParsed(true);
-                setExtraction(null);
-                setRunSummary(null);
-              }}
-            >
-              跳过解析，手动填写
-            </Button>
+            <Button onClick={handleSkipParse}>跳过解析，手动填写</Button>
           </Space>
+          {parsing && runSummary && (
+            <Alert
+              type="info"
+              showIcon
+              message={`已提交解析任务，正在轮询运行状态…（运行 ID: ${runSummary.id}）`}
+              style={{ marginTop: 12 }}
+            />
+          )}
         </>
       ) : (
         <>
@@ -173,7 +289,7 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
                 <span>
                   运行 ID:{" "}
                   <Typography.Text code>{runSummary.id}</Typography.Text>
-                  （可前往「Agent 运行」查看轨迹），请手动填写字段后保存。
+                  （可前往「Agent 运行」查看轨迹），请手动填写字段后保存，或点击下方「重新解析」重试。
                 </span>
               }
               style={{ marginBottom: 12 }}
