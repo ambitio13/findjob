@@ -113,11 +113,96 @@ export interface UserProfileUpdate {
 
 // --- Resumes ---
 
+/** Contact info extracted from the resume (mirrors backend Contact). */
+export interface ResumeContact {
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
+/** One education entry (mirrors backend EducationItem). */
+export interface ResumeEducationItem {
+  school: string | null;
+  degree: string | null;
+  major: string | null;
+  period: string | null;
+}
+
+/** One work experience entry (mirrors backend WorkExperienceItem). */
+export interface ResumeWorkExperienceItem {
+  company: string | null;
+  title: string | null;
+  period: string | null;
+  summary: string | null;
+}
+
+/** One project entry (mirrors backend ProjectItem). */
+export interface ResumeProjectItem {
+  name: string | null;
+  role: string | null;
+  summary: string | null;
+}
+
+/** A field the model could not confidently extract (mirrors UncertainField). */
+export interface ResumeUncertainField {
+  field: string;
+  reason: string | null;
+}
+
+/**
+ * Validated structured facts extracted by the model. Mirrors
+ * `ResumeFactsModelOutput` in backend/app/schemas/resume_facts.py. All fields
+ * are optional to tolerate sparse resumes.
+ */
+export interface ResumeFacts {
+  contact: ResumeContact | null;
+  education: ResumeEducationItem[];
+  work_experience: ResumeWorkExperienceItem[];
+  projects: ResumeProjectItem[];
+  skills: string[];
+  years_of_experience: number | null;
+  target_direction: string | null;
+  locations: string[];
+  strengths: string[];
+  highlights: string[];
+  uncertain_fields: ResumeUncertainField[];
+}
+
+/** Extraction status recorded in `parsed_facts._extraction`. */
+export type ResumeExtractionStatus =
+  | "succeeded"
+  | "failed"
+  | "needs_confirmation"
+  | "not_run";
+
+/** The `_extraction` telemetry block inside `parsed_facts`. */
+export interface ResumeExtractionInfo {
+  status: ResumeExtractionStatus;
+  extracted_at: string;
+  run_id?: string;
+  prompt_version?: string;
+  provider?: string;
+  model?: string;
+}
+
+/**
+ * The full `parsed_facts` shape stored on a ResumeVersion. Parser telemetry
+ * (`_parser`, `_parser_status`) is always present after upload; `facts` and
+ * `_extraction` appear after the extraction workflow runs.
+ */
+export interface ResumeParsedFacts {
+  _parser?: string;
+  _parser_status?: string;
+  _extraction?: ResumeExtractionInfo;
+  facts?: ResumeFacts;
+  [key: string]: unknown;
+}
+
 /** Full resume version, including extracted ``raw_text``. Detail view only. */
 export interface ResumeVersionOut {
   id: string;
   version_no: number;
-  parsed_facts: Record<string, unknown> | null;
+  parsed_facts: ResumeParsedFacts | null;
   raw_text: string | null;
   created_at: string | null;
 }

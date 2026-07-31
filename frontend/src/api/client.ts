@@ -127,6 +127,17 @@ export async function listResumeVersions(
   return data;
 }
 
+/** Re-run structured fact extraction on an existing resume version. */
+export async function reextractResumeFacts(
+  resumeId: string,
+  versionId: string,
+): Promise<ResumeDetailOut> {
+  const { data } = await apiClient.post<ResumeDetailOut>(
+    `/resumes/${resumeId}/versions/${versionId}/extract`,
+  );
+  return data;
+}
+
 // --- Resume-aware JD analysis ---
 
 export async function runJdAnalysis(

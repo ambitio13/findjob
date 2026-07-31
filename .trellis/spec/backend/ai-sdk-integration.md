@@ -34,6 +34,22 @@ project starts platform automation or long-running human-in-the-loop flows. The
 internal runtime must keep planner, executor, reflector, tools, memory, and
 model gateway replaceable.
 
+## Inline Extraction on Upload
+
+When a model-backed extraction runs inline during a non-agent request (e.g.
+resume upload triggers resume fact extraction), the same AgentRun/AgentStep
+trail must be persisted. The caller's failure contract differs by entry point:
+
+- **Upload path** (`raise_on_failure=False`): extraction failure persists a
+  failed `AgentRun` and writes `_extraction.status="failed"`, but the upload
+  itself still returns 201. The resume + raw text are already saved and usable.
+- **Re-extract endpoint** (`raise_on_failure=True`): extraction failure
+  persists a failed `AgentRun` and then returns 502 to the caller, because
+  extraction is the primary action.
+
+This split prevents model failures from breaking file uploads while keeping
+explicit re-extraction honest about its outcome.
+
 ## Model Gateway
 
 All model access must go through a backend model gateway. Do not call DeepSeek,

@@ -111,7 +111,16 @@ def _profile_to_dict(profile: UserProfile) -> dict[str, Any]:
 
 
 def _resume_to_dict(resume: Resume, version: ResumeVersion) -> dict[str, Any]:
-    """Project a resume + version into the resume dict for the prompt."""
+    """Project a resume + version into the resume dict for the prompt.
+
+    The typed ``facts`` key exposes the structured resume facts (when extraction
+    has run) as a clean object, separate from the parser telemetry
+    (``_parser``/``_parser_status``/``_extraction``) that lives inside
+    ``parsed_facts``. When no facts have been extracted yet (e.g. unsupported
+    format, or a resume uploaded before extraction shipped), ``facts`` is an
+    empty dict so the prompt degrades gracefully to reasoning over ``raw_text``
+    only (design §7: facts may be absent for MVP).
+    """
     facts = version.parsed_facts or {}
     return {
         "resume_id": resume.id,
@@ -121,6 +130,7 @@ def _resume_to_dict(resume: Resume, version: ResumeVersion) -> dict[str, Any]:
         "parser_name": facts.get("_parser"),
         "raw_text": version.raw_text or "",
         "parsed_facts": facts,
+        "facts": facts.get("facts") or {},
     }
 
 

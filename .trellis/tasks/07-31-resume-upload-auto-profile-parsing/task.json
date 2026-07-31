@@ -3,7 +3,7 @@
   "name": "resume-upload-auto-profile-parsing",
   "title": "Resume Upload Auto Profile Parsing",
   "description": "Automatically parse uploaded resumes into resume facts and user profile draft fields.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

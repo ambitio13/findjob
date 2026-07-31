@@ -17,7 +17,7 @@ from typing import Any
 
 from app.models_gateway.base import ChatMessage
 
-PROMPT_VERSION = "jd-analysis-v1"
+PROMPT_VERSION = "jd-analysis-v2"
 
 # Conservative MVP caps. Resume text tends to be denser than JD text, so the
 # resume cap is larger; both are well under typical model context windows.
@@ -61,10 +61,16 @@ Output rules (strict):
   add prose, markdown fences, or commentary outside the JSON.
 - Base every claim on the provided profile, resume text, or JD. Cite the
   source for each piece of evidence using one of: "jd", "resume", "profile".
-- NEVER invent resume facts. If the resume text does not state a skill,
-  experience, or qualification, do not assert that the candidate has it. If a
-  claim is uncertain, omit the quote and explain the uncertainty in a
-  risk_points entry instead.
+- When the resume includes structured facts (contact, education,
+  work_experience, projects, skills, years_of_experience, target_direction,
+  locations, strengths, highlights), prefer reasoning over those typed facts
+  for precise claims (skills, experience level, direction). Fall back to
+  raw_text only for details the facts do not cover. Treat the facts as the
+  authoritative extraction of the resume; do not re-derive them from raw_text.
+- NEVER invent resume facts. If neither the structured facts nor the resume
+  text states a skill, experience, or qualification, do not assert that the
+  candidate has it. If a claim is uncertain, omit the quote and explain the
+  uncertainty in a risk_points entry instead.
 - Evidence quotes must be verbatim snippets from the cited source document.
   If you cannot find an exact quote, omit the quote field for that evidence.
 - When resume raw text is provided, set match_score and risk_score (0-100).
@@ -105,6 +111,12 @@ def build_jd_analysis_messages(
     resume_text, resume_dropped = _truncate(resume_raw, resume_cap)
     jd_text, jd_dropped = _truncate(jd_raw, jd_cap)
 
+    # Typed structured facts extracted from the resume (may be empty when
+    # extraction has not run or the format was unsupported). Rendered as a
+    # separate block so the model can reason over facts in addition to
+    # raw_text, per the v2 prompt instructions.
+    resume_facts = resume.get("facts") or {}
+
     profile_lines = [
         f"user_id: {context.user_id}",
         f"display_name: {profile.get('display_name') or ''}",
@@ -123,6 +135,7 @@ def build_jd_analysis_messages(
         f"filename: {resume.get('filename') or ''}",
         f"parser_status: {resume.get('parser_status') or ''}",
         f"parsed_facts: {resume.get('parsed_facts') or {}}",
+        f"facts: {resume_facts}",
         "raw_text:",
         resume_text,
     ]

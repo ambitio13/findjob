@@ -27,6 +27,11 @@ from app.models_gateway.base import (
 # inspecting provider-specific metadata.
 _JD_ANALYSIS_MARKER = "career-focused JD analysis assistant"
 
+# Marker present in the resume fact extraction system prompt built by
+# ``build_resume_fact_messages``. Routes the fake gateway to the extraction
+# branch without inspecting provider-specific metadata.
+_RESUME_FACT_MARKER = "resume fact extraction assistant"
+
 
 class FakeModelGateway(ModelGateway):
     provider_name = "fake"
@@ -47,6 +52,23 @@ class FakeModelGateway(ModelGateway):
                 latency_ms=1,
                 usage=usage,
                 raw={"jd_analysis": True},
+            )
+
+        if _is_resume_fact_prompt(request.messages):
+            content = json.dumps(_RESUME_FACT_FAKE_OUTPUT, ensure_ascii=False)
+            usage = ChatUsage(
+                prompt_tokens=len(content) + sum(len(m.content) for m in request.messages),
+                completion_tokens=len(content),
+                total_tokens=len(content) * 2,
+            )
+            return ChatResponse(
+                content=content,
+                model=request.model or "fake-model",
+                provider=self.provider_name,
+                request_id=request.request_id,
+                latency_ms=1,
+                usage=usage,
+                raw={"resume_fact_extraction": True},
             )
 
         joined = " | ".join(m.content for m in request.messages)
@@ -83,6 +105,15 @@ def _is_jd_analysis_prompt(messages: list) -> bool:
     return any(_JD_ANALYSIS_MARKER in m.content for m in messages)
 
 
+def _is_resume_fact_prompt(messages: list) -> bool:
+    """True when the message set looks like a resume fact extraction prompt.
+
+    Detection relies on the marker the resume fact system message injects,
+    mirroring ``_is_jd_analysis_prompt``.
+    """
+    return any(_RESUME_FACT_MARKER in m.content for m in messages)
+
+
 # Deterministic, schema-valid JD-analysis payload. Every required field is set
 # and scores are within ``[0, 100]`` so ``JdAnalysisModelOutput.model_validate``
 # always passes. Keeping it constant makes executor assertions stable.
@@ -106,6 +137,36 @@ _JD_ANALYSIS_FAKE_OUTPUT = {
     "skill_gaps": ["Kafka"],
     "interview_preparation": ["Review Kafka basics"],
     "recommendation": "possible_match",
+}
+
+
+# Deterministic, schema-valid resume fact extraction payload. Every field is
+# optional, but we populate the common ones so the executor and smoke tests can
+# run fully offline and assertions are stable. Keeping it constant makes
+# executor assertions stable.
+_RESUME_FACT_FAKE_OUTPUT = {
+    "contact": {"name": "张三", "email": "zhangsan@example.com", "phone": "13800000000"},
+    "education": [
+        {"school": "某大学", "degree": "本科", "major": "计算机科学", "period": "2016-2020"},
+    ],
+    "work_experience": [
+        {
+            "company": "某公司",
+            "title": "后端工程师",
+            "period": "2020-至今",
+            "summary": "负责后端 API 设计与实现。",
+        },
+    ],
+    "projects": [
+        {"name": "简历投递 Agent", "role": "后端", "summary": "构建自动化投递系统。"},
+    ],
+    "skills": ["Python", "FastAPI", "PostgreSQL"],
+    "years_of_experience": 5,
+    "target_direction": "后端工程",
+    "locations": ["北京"],
+    "strengths": ["系统设计", "Python 生态"],
+    "highlights": ["主导核心服务重构"],
+    "uncertain_fields": [],
 }
 
 

@@ -1,10 +1,13 @@
-"""Resumes router: upload, list, detail, and version listing.
+"""Resumes router: upload, list, detail, version listing, and re-extract.
 
 All endpoints are scoped to the current user. Uploaded files are persisted to
 local disk and a ``Resume`` + ``ResumeVersion`` row pair is created per upload.
 Parser output is honest: ``raw_text`` is real extracted text;
-``parsed_facts`` stores parser telemetry only (no invented facts). Resume
-content is never logged; only IDs and lengths are logged.
+``parsed_facts`` stores parser telemetry only (no invented facts). After a
+successful text extraction, an auditable model-backed resume fact extraction
+runs inline (see ``resume_fact_service``), writing typed ``facts`` + an
+``_extraction`` status block into ``parsed_facts``. Resume content is never
+logged; only IDs and lengths are logged.
 """
 
 from __future__ import annotations
@@ -12,11 +15,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_db_session
+from app.api.deps import get_current_user, get_db_session, get_model_gateway_dep
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.models.models import UserProfile
 from app.db.repositories import resume_repo
+from app.models_gateway.base import ModelGateway
 from app.schemas.api import PaginatedMeta
 from app.schemas.resume import (
     ResumeDetailOut,
@@ -25,7 +29,7 @@ from app.schemas.resume import (
     ResumeVersionListItem,
     ResumeVersionOut,
 )
-from app.services import resume_parser, resume_storage
+from app.services import resume_fact_service, resume_parser, resume_storage
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 _log = get_logger("app.api.v1.resumes")
@@ -36,11 +40,18 @@ async def upload_resume(
     file: UploadFile = File(...),
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
+    gateway: ModelGateway = Depends(get_model_gateway_dep),
 ) -> ResumeDetailOut:
-    """Upload a resume file, parse it, and return the created detail.
+    """Upload a resume file, parse it, extract structured facts, and return detail.
 
     Validates extension and size before reading the body. The file is persisted
     to local disk; a ``Resume`` and its first ``ResumeVersion`` are created.
+    After text extraction succeeds, an auditable model-backed resume fact
+    extraction runs inline. When upload returns, extraction has either succeeded
+    or failed and the ``parsed_facts._extraction`` block plus ``AgentRun`` are
+    already readable. Extraction failure does not make an already-saved upload
+    look like a file failure; the resume is returned with
+    ``_extraction.status="failed"``.
     """
     settings = get_settings()
     filename = file.filename or ""
@@ -92,6 +103,13 @@ async def upload_resume(
     )
     db.commit()
     db.refresh(resume)
+    db.refresh(version)
+
+    # Inline structured fact extraction. Runs only when raw_text is non-empty;
+    # unsupported formats yield status=not_run. A model failure persists a
+    # failed AgentRun but does not break the upload — the resume + raw text are
+    # already saved and usable.
+    await resume_fact_service.extract_resume_facts(db, resume, version, gateway)
     db.refresh(version)
 
     _log.info(
@@ -174,6 +192,41 @@ def list_resume_versions(
         )
         for v in versions
     ]
+
+
+@router.post(
+    "/{resume_id}/versions/{version_id}/extract",
+    response_model=ResumeDetailOut,
+)
+async def reextract_resume_facts(
+    resume_id: str,
+    version_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+    gateway: ModelGateway = Depends(get_model_gateway_dep),
+) -> ResumeDetailOut:
+    """Re-run structured fact extraction on an existing resume version.
+
+    User-scoped (404 on cross-user). Creates a fresh ``AgentRun`` and refreshes
+    ``parsed_facts.facts`` on the existing ``raw_text``. Unlike upload,
+    extraction is the primary action: a model/provider/schema failure persists
+    a failed ``AgentRun`` and then returns 502.
+    """
+    resume, version = resume_fact_service.load_resume_version_for_user(
+        db, current_user, resume_id, version_id
+    )
+    await resume_fact_service.extract_resume_facts(
+        db, resume, version, gateway, raise_on_failure=True
+    )
+    db.refresh(version)
+    return ResumeDetailOut(
+        id=resume.id,
+        filename=resume.filename,
+        mime_type=resume.mime_type,
+        storage_uri=resume.storage_uri,
+        created_at=resume.created_at,
+        latest_version=_version_out(version),
+    )
 
 
 # --- helpers ---------------------------------------------------------------

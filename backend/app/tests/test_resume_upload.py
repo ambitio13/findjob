@@ -118,8 +118,10 @@ def test_upload_rtf_is_accepted_but_unsupported(client: TestClient) -> None:
     assert latest["raw_text"] == ""
     facts = latest["parsed_facts"]
     assert facts["_parser_status"] == "unsupported"
-    # Only parser telemetry keys are present; no resume facts are invented.
-    assert set(facts.keys()) <= {"_parser", "_parser_status"}
+    # Only parser telemetry + extraction status keys are present; no resume
+    # facts are invented.
+    assert set(facts.keys()) <= {"_parser", "_parser_status", "_extraction"}
+    assert facts["_extraction"]["status"] == "not_run"
 
 
 def test_upload_html_is_rejected(client: TestClient) -> None:
@@ -287,3 +289,150 @@ def test_raw_text_never_appears_in_logs(
     assert secret_marker not in captured
     # The upload log line should mention raw_text_len (a length), not the text.
     assert "raw_text_len" in captured
+
+
+# ---------------------------------------------------------------------------
+# 12-15: structured fact extraction on upload + re-extract
+# ---------------------------------------------------------------------------
+
+
+def test_upload_txt_triggers_facts_extraction(client: TestClient) -> None:
+    # Test 12: .txt upload -> parsed_facts.facts + _extraction.status=succeeded.
+    resp = _upload(client, "resume.txt", _txt_bytes(), user="u_extract")
+    assert resp.status_code == 201, resp.text
+    latest = resp.json()["latest_version"]
+    facts = latest["parsed_facts"]
+    assert facts["_extraction"]["status"] == "succeeded"
+    assert "run_id" in facts["_extraction"]
+    assert facts["facts"]["contact"]["name"] == "张三"
+    assert "Python" in facts["facts"]["skills"]
+
+
+def test_upload_rtf_skips_extraction_not_run(client: TestClient) -> None:
+    # Test 13: .rtf upload -> _extraction.status=not_run, no facts key.
+    resp = _upload(client, "resume.rtf", b"{\\rtf1 legacy}", user="u_notrun")
+    assert resp.status_code == 201
+    facts = resp.json()["latest_version"]["parsed_facts"]
+    assert facts["_extraction"]["status"] == "not_run"
+    assert "facts" not in facts
+
+
+def test_reextract_refreshes_facts(client: TestClient) -> None:
+    # Test 14: POST /resumes/{id}/versions/{vid}/extract re-runs extraction.
+    upload = _upload(client, "resume.txt", _txt_bytes(), user="u_reextract")
+    assert upload.status_code == 201
+    body = upload.json()
+    resume_id = body["id"]
+    version_id = body["latest_version"]["id"]
+    original_run = body["latest_version"]["parsed_facts"]["_extraction"]["run_id"]
+
+    resp = client.post(
+        f"/api/v1/resumes/{resume_id}/versions/{version_id}/extract",
+        headers={"X-User-Id": "u_reextract"},
+    )
+    assert resp.status_code == 200, resp.text
+    facts = resp.json()["latest_version"]["parsed_facts"]
+    assert facts["_extraction"]["status"] == "succeeded"
+    # A fresh run was created.
+    assert facts["_extraction"]["run_id"] != original_run
+    assert facts["facts"]["contact"]["name"] == "张三"
+
+
+def test_reextract_404_for_other_user(client: TestClient) -> None:
+    # Test 15: re-extract is user-scoped; cross-user returns 404.
+    upload = _upload(client, "resume.txt", _txt_bytes(), user="owner_re")
+    assert upload.status_code == 201
+    body = upload.json()
+    resume_id = body["id"]
+    version_id = body["latest_version"]["id"]
+
+    intruder = client.post(
+        f"/api/v1/resumes/{resume_id}/versions/{version_id}/extract",
+        headers={"X-User-Id": "intruder_re"},
+    )
+    assert intruder.status_code == 404
+
+
+def test_extraction_secret_not_in_agent_run_result(client: TestClient) -> None:
+    # Test 16: the secret resume token must not leak into AgentRun/Step rows.
+    secret_marker = "SUPER_SECRET_RESUME_TOKEN"
+    content = f"name: {secret_marker}\nPython 5年".encode()
+    resp = _upload(client, "secret.txt", content, user="u_leak")
+    assert resp.status_code == 201
+    run_id = resp.json()["latest_version"]["parsed_facts"]["_extraction"]["run_id"]
+
+    # Fetch the run + steps via the agent-runs API and assert no leakage.
+    run_resp = client.get(
+        f"/api/v1/agent-runs/{run_id}",
+        headers={"X-User-Id": "u_leak"},
+    )
+    assert run_resp.status_code == 200
+    blob = run_resp.json()
+    import json as _json
+
+    assert secret_marker not in _json.dumps(blob, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# 17: upload with a failing gateway still returns 201 + _extraction.status=failed
+# ---------------------------------------------------------------------------
+
+
+def test_upload_extraction_failure_still_returns_201(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Model failure during upload must not break the upload itself.
+
+    The upload contract (design §4) says: when extraction fails during upload,
+    the resume + raw_text are already saved, ``_extraction.status="failed"``
+    is persisted, and the upload still returns 201. This is the critical upload
+    boundary: extraction failure is never a file failure.
+    """
+    import json as _json
+
+    from app.api.deps import get_model_gateway_dep
+    from app.main import app
+    from app.models_gateway.base import ChatRequest, ChatResponse, ModelGateway
+
+    class _RaisingGateway(ModelGateway):
+        """Gateway that raises on every chat() call."""
+
+        provider_name = "raising-test"
+
+        async def chat(self, request: ChatRequest) -> ChatResponse:
+            raise RuntimeError("simulated provider outage")
+
+    stub = _RaisingGateway()
+    app.dependency_overrides[get_model_gateway_dep] = lambda: stub
+    try:
+        resp = _upload(client, "resume.txt", _txt_bytes(), user="u_fail_extract")
+    finally:
+        app.dependency_overrides.pop(get_model_gateway_dep, None)
+
+    # Upload itself must succeed — the file was saved and raw_text extracted.
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    latest = body["latest_version"]
+    assert latest["version_no"] == 1
+    assert "张三" in latest["raw_text"]
+
+    # Extraction failed but the resume is usable.
+    facts = latest["parsed_facts"]
+    assert facts["_extraction"]["status"] == "failed"
+    assert "run_id" in facts["_extraction"]
+    # No typed facts written on failure.
+    assert "facts" not in facts
+
+    # The failed AgentRun is persisted and auditable via the agent-runs API.
+    run_id = facts["_extraction"]["run_id"]
+    run_resp = client.get(
+        f"/api/v1/agent-runs/{run_id}",
+        headers={"X-User-Id": "u_fail_extract"},
+    )
+    assert run_resp.status_code == 200
+    run_blob = run_resp.json()
+    assert run_blob["status"] == "failed"
+    assert run_blob["workflow_type"] == "resume_fact_extraction"
+
+    # Resume content must never leak into the run result, even on failure.
+    assert "张三" not in _json.dumps(run_blob, ensure_ascii=False)

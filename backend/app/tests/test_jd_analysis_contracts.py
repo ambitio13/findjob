@@ -232,7 +232,7 @@ def _make_context(
 
 
 def test_prompt_version_constant() -> None:
-    assert PROMPT_VERSION == "jd-analysis-v1"
+    assert PROMPT_VERSION == "jd-analysis-v2"
 
 
 def test_build_messages_returns_system_and_user() -> None:
@@ -258,6 +258,45 @@ def test_build_messages_includes_all_source_sections() -> None:
     assert "## REQUIRED OUTPUT" in user
     assert "张三" in user
     assert "Python backend engineer" in user
+
+
+def test_build_messages_includes_facts_line_in_resume_section() -> None:
+    """The v2 prompt renders a ``facts:`` line in the RESUME section.
+
+    When the resume context carries typed facts, the prompt must surface them
+    so the model can reason over the structured extraction in addition to
+    raw_text.
+    """
+    ctx = _make_context()
+    ctx.resume["facts"] = {
+        "contact": {"name": "张三"},
+        "skills": ["Python", "FastAPI"],
+        "years_of_experience": 5,
+    }
+    result = build_jd_analysis_messages(ctx)
+    user = result.messages[1].content
+    assert "facts:" in user
+    assert "张三" in user
+    assert "Python" in user
+    assert "FastAPI" in user
+
+
+def test_build_messages_facts_degrades_to_empty_when_absent() -> None:
+    """When no typed facts exist, the facts line renders as ``facts: {}``."""
+    ctx = _make_context()
+    # No 'facts' key on the resume dict (pre-extraction resume).
+    ctx.resume.pop("facts", None)
+    result = build_jd_analysis_messages(ctx)
+    user = result.messages[1].content
+    assert "facts: {}" in user
+
+
+def test_build_messages_system_prompt_references_structured_facts() -> None:
+    """The v2 system prompt instructs the model to prefer structured facts."""
+    result = build_jd_analysis_messages(_make_context())
+    system = result.messages[0].content
+    assert "structured facts" in system
+    assert "authoritative extraction" in system
 
 
 def test_build_messages_includes_schema_in_user_message() -> None:
@@ -362,7 +401,9 @@ def test_load_context_context_carries_all_design_section7_fields(client: TestCli
     §7 requires ``user_id``, ``profile``, ``job``, and a ``resume`` sub-dict
     with ``resume_id``, ``resume_version_id``, ``filename``,
     ``parser_status``, ``raw_text``, ``parsed_facts``. This is the single
-    end-to-end check that the loader assembles the full contract.
+    end-to-end check that the loader assembles the full contract. The ``facts``
+    key (v2) is also asserted: it exposes the typed structured facts when
+    present and degrades to ``{}`` when absent.
     """
     with SessionLocal() as db:
         _make_user(db, "ctx_fields")
@@ -386,6 +427,9 @@ def test_load_context_context_carries_all_design_section7_fields(client: TestCli
         assert "parser_status" in ctx.resume
         assert "raw_text" in ctx.resume
         assert "parsed_facts" in ctx.resume
+        # v2: facts key is always present (degrades to {} when no facts).
+        assert "facts" in ctx.resume
+        assert ctx.resume["facts"] == {}
 
 
 def test_load_context_rejects_missing_job(client: TestClient) -> None:
@@ -556,7 +600,10 @@ def test_load_context_degrades_gracefully_for_sparse_profile(client: TestClient)
 
 
 def test_load_context_handles_none_parsed_facts(client: TestClient) -> None:
-    """parsed_facts=None must not crash the loader (design §7: dict | None)."""
+    """parsed_facts=None must not crash the loader (design §7: dict | None).
+
+    The v2 ``facts`` key degrades to ``{}`` when no structured facts exist.
+    """
     with SessionLocal() as db:
         _make_user(db, "facts_none")
         resume = Resume(user_id="facts_none", filename="r.txt")
@@ -581,6 +628,8 @@ def test_load_context_handles_none_parsed_facts(client: TestClient) -> None:
         # parser_status is derived from parsed_facts and must also degrade.
         assert ctx.resume["parser_status"] is None
         assert ctx.resume["raw_text"] == "Python 5年"
+        # v2: facts degrades to {} when parsed_facts is None.
+        assert ctx.resume["facts"] == {}
 
 
 def test_load_context_handles_empty_parsed_facts(client: TestClient) -> None:
@@ -606,13 +655,16 @@ def test_load_context_handles_empty_parsed_facts(client: TestClient) -> None:
         ctx = _load_context(db, fresh_user, job.id, version.id)
         assert ctx.resume["parsed_facts"] == {}
         assert ctx.resume["parser_status"] is None
+        # v2: facts degrades to {} when parsed_facts is empty.
+        assert ctx.resume["facts"] == {}
 
 
 def test_load_context_resume_dict_has_all_design_fields(client: TestClient) -> None:
     """context.resume must carry every field design §7 lists for the resume.
 
     Locks in: resume_id, resume_version_id, filename, parser_status, raw_text,
-    parsed_facts — the full provenance the prompt and artifact need.
+    parsed_facts — the full provenance the prompt and artifact need. The v2
+    ``facts`` key exposes the typed structured facts when present.
     """
     with SessionLocal() as db:
         _make_user(db, "resume_fields")
@@ -644,6 +696,51 @@ def test_load_context_resume_dict_has_all_design_fields(client: TestClient) -> N
             "_parser_status": "parsed",
             "skills": ["Go"],
         }
+        # v2: facts degrades to {} when the typed facts key is absent.
+        assert resume_dict["facts"] == {}
+
+
+def test_load_context_resume_dict_exposes_typed_facts(client: TestClient) -> None:
+    """When ``parsed_facts.facts`` exists, the loader surfaces it as ``facts``.
+
+    This locks in the v2 contract: after resume fact extraction runs, the
+    typed facts object is available as a clean ``facts`` key on the resume
+    context dict, separate from the parser telemetry living inside
+    ``parsed_facts``.
+    """
+    typed_facts = {
+        "contact": {"name": "张三", "email": None, "phone": None},
+        "skills": ["Python", "FastAPI"],
+        "years_of_experience": 5,
+    }
+    with SessionLocal() as db:
+        _make_user(db, "typed_facts")
+        resume = Resume(user_id="typed_facts", filename="cv.txt")
+        db.add(resume)
+        db.flush()
+        version = ResumeVersion(
+            resume_id=resume.id,
+            version_no=1,
+            raw_text="张三 Python 5年",
+            parsed_facts={
+                "_parser": "text",
+                "_parser_status": "parsed",
+                "_extraction": {"status": "succeeded"},
+                "facts": typed_facts,
+            },
+        )
+        db.add(version)
+        job = _make_job(db, "typed_facts")
+        db.commit()
+
+    with SessionLocal() as db:
+        fresh_user = db.get(UserProfile, "typed_facts")
+        assert fresh_user is not None
+        ctx = _load_context(db, fresh_user, job.id, version.id)
+        assert ctx.resume["facts"] == typed_facts
+        # parsed_facts still carries the full block (telemetry + facts).
+        assert ctx.resume["parsed_facts"]["facts"] == typed_facts
+        assert ctx.resume["parsed_facts"]["_extraction"]["status"] == "succeeded"
 
 
 # ---------------------------------------------------------------------------

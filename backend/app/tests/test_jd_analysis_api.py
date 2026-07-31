@@ -193,7 +193,7 @@ def test_run_analysis_success_creates_all_entities(client: TestClient) -> None:
     assert body["analysis"]["job_id"] == ids["job_id"]
     assert body["analysis"]["agent_run_id"] == body["agent_run"]["id"]
     assert body["artifact"]["artifact_type"] == "jd_analysis"
-    assert body["artifact"]["prompt_version"] == "jd-analysis-v1"
+    assert body["artifact"]["prompt_version"] == "jd-analysis-v2"
     assert body["artifact"]["model_name"]
     # Structured output is echoed and validated.
     structured = body["structured"]
@@ -248,7 +248,7 @@ def test_run_analysis_success_creates_all_entities(client: TestClient) -> None:
         artifact = db.get(GeneratedArtifact, body["artifact"]["id"])
         assert artifact is not None
         assert artifact.artifact_type == "jd_analysis"
-        assert artifact.prompt_version == "jd-analysis-v1"
+        assert artifact.prompt_version == "jd-analysis-v2"
         assert artifact.source_ids["job_id"] == ids["job_id"]
         assert artifact.source_ids["resume_version_id"] == ids["resume_version_id"]
 

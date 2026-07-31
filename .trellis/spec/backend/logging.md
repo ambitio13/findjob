@@ -41,6 +41,16 @@ Never log:
 
 Log hashes, short IDs, counts, or redacted summaries instead.
 
+### AgentStep result sanitization
+
+`AgentStep.result` and `AgentRun.result` are persisted to PostgreSQL and may be
+served via the agent-runs API. They must never contain raw resume text, full
+prompt content, or any user-private data. Persist only sanitized metadata:
+counts (e.g. `raw_text_len`), provider/model/prompt_version telemetry, latency,
+and error categories. The same invariant applies to failure trails — a failed
+step must record the failure category and error message, never the resume
+content that was being processed.
+
 ## Metrics
 
 Track at least:
