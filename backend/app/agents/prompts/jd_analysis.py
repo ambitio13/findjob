@@ -126,7 +126,14 @@ def build_jd_analysis_messages(
         f"salary_min: {profile.get('salary_min')}",
         f"salary_max: {profile.get('salary_max')}",
         f"strengths: {profile.get('strengths') or []}",
-        f"constraints: {profile.get('constraints') or {}}",
+        f"deal_breakers: {profile.get('deal_breakers') or ''}",
+        f"preferred_company_types: {profile.get('preferred_company_types') or ''}",
+        f"preferred_industries: {profile.get('preferred_industries') or ''}",
+        f"work_mode_preference: {profile.get('work_mode_preference') or ''}",
+        f"commute_preference: {profile.get('commute_preference') or ''}",
+        f"career_goals: {profile.get('career_goals') or ''}",
+        f"resume_tailoring_notes: {profile.get('resume_tailoring_notes') or ''}",
+        f"availability_notes: {profile.get('availability_notes') or ''}",
     ]
 
     resume_lines = [

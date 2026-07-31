@@ -104,12 +104,11 @@ def test_repeated_get_me_does_not_bump_updated_at(client: TestClient) -> None:
 
 
 def test_json_fields_round_trip(client: TestClient) -> None:
-    # Test 7: JSON fields (preferred_locations, strengths, constraints)
-    # round-trip through PATCH -> GET.
+    # Test 7: JSON fields (preferred_locations, strengths) round-trip through
+    # PATCH -> GET. Named constraint fields are tested separately below.
     payload: dict[str, Any] = {
         "preferred_locations": ["北京", "上海", "杭州"],
         "strengths": ["Python", "系统设计", "团队协作"],
-        "constraints": {"remote": True, "max_commute_min": 45},
     }
     patch = client.patch(
         "/api/v1/users/me",
@@ -123,7 +122,105 @@ def test_json_fields_round_trip(client: TestClient) -> None:
     body = got.json()
     assert body["preferred_locations"] == ["北京", "上海", "杭州"]
     assert body["strengths"] == ["Python", "系统设计", "团队协作"]
-    assert body["constraints"] == {"remote": True, "max_commute_min": 45}
+
+
+def test_named_constraints_round_trip(client: TestClient) -> None:
+    # Named constraint fields are sent as typed sub-fields, stored in the
+    # ``constraints`` JSON column, and read back as ``named_constraints``.
+    payload: dict[str, Any] = {
+        "named_constraints": {
+            "deal_breakers": "不接受996",
+            "preferred_company_types": "外企",
+            "work_mode_preference": "远程优先",
+        },
+    }
+    patch = client.patch(
+        "/api/v1/users/me",
+        json=payload,
+        headers={"X-User-Id": "named_user"},
+    )
+    assert patch.status_code == 200
+    body = patch.json()
+    assert body["named_constraints"]["deal_breakers"] == "不接受996"
+    assert body["named_constraints"]["preferred_company_types"] == "外企"
+    assert body["named_constraints"]["work_mode_preference"] == "远程优先"
+
+    # Re-fetch to confirm persistence.
+    got = client.get("/api/v1/users/me", headers={"X-User-Id": "named_user"})
+    assert got.status_code == 200
+    got_body = got.json()
+    assert got_body["named_constraints"]["deal_breakers"] == "不接受996"
+    assert got_body["named_constraints"]["preferred_company_types"] == "外企"
+    assert got_body["named_constraints"]["work_mode_preference"] == "远程优先"
+
+
+def test_named_constraints_clear_single_field(client: TestClient) -> None:
+    # Sending a named constraint field as null clears just that key, leaving
+    # other named fields intact (PATCH null-clears semantics).
+    client.patch(
+        "/api/v1/users/me",
+        json={
+            "named_constraints": {
+                "deal_breakers": "不接受996",
+                "career_goals": "技术专家",
+            },
+        },
+        headers={"X-User-Id": "clear_user"},
+    )
+    resp = client.patch(
+        "/api/v1/users/me",
+        json={"named_constraints": {"deal_breakers": None}},
+        headers={"X-User-Id": "clear_user"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["named_constraints"]["deal_breakers"] is None
+    assert body["named_constraints"]["career_goals"] == "技术专家"
+
+
+def test_legacy_constraints_preserved(client: TestClient) -> None:
+    # Legacy unknown keys inside ``constraints`` (not in the v1 named set)
+    # must survive a named-constraints update and surface as
+    # ``legacy_constraints`` (read-only).
+    from sqlalchemy import select
+
+    from app.db.models.models import UserProfile
+    from app.db.session import SessionLocal
+
+    # Seed a profile with a legacy constraints dict directly in the DB.
+    with SessionLocal() as db:
+        user = UserProfile(
+            id="legacy_user",
+            display_name="老用户",
+            constraints={"remote": True, "equity": True},
+        )
+        db.add(user)
+        db.commit()
+
+    # The GET response should show legacy_constraints and empty named.
+    got = client.get("/api/v1/users/me", headers={"X-User-Id": "legacy_user"})
+    assert got.status_code == 200
+    body = got.json()
+    assert body["legacy_constraints"] == {"remote": True, "equity": True}
+    assert body["named_constraints"]["deal_breakers"] is None
+
+    # Update a named field — legacy keys must survive.
+    patch = client.patch(
+        "/api/v1/users/me",
+        json={"named_constraints": {"deal_breakers": "不接受996"}},
+        headers={"X-User-Id": "legacy_user"},
+    )
+    assert patch.status_code == 200
+    pbody = patch.json()
+    assert pbody["named_constraints"]["deal_breakers"] == "不接受996"
+    assert pbody["legacy_constraints"] == {"remote": True, "equity": True}
+
+    # Confirm the DB still has the legacy keys.
+    with SessionLocal() as db:
+        row = db.execute(select(UserProfile).where(UserProfile.id == "legacy_user")).scalar_one()
+        assert row.constraints["remote"] is True
+        assert row.constraints["equity"] is True
+        assert row.constraints["deal_breakers"] == "不接受996"
 
 
 # ---------------------------------------------------------------------------

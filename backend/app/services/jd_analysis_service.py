@@ -95,7 +95,14 @@ def _job_to_dict(job: JobPosting) -> dict[str, Any]:
 
 
 def _profile_to_dict(profile: UserProfile) -> dict[str, Any]:
-    """Project a ``UserProfile`` into the compact profile dict for the prompt."""
+    """Project a ``UserProfile`` into the compact profile dict for the prompt.
+
+    Named constraint fields are flattened to top-level keys so the prompt
+    renders them as clear labels rather than an opaque ``constraints`` blob.
+    Legacy unknown keys inside ``constraints`` are not surfaced to the model
+    (they are read-only back-compat data for the UI).
+    """
+    raw_constraints = profile.constraints or {}
     return {
         "id": profile.id,
         "display_name": profile.display_name,
@@ -106,7 +113,14 @@ def _profile_to_dict(profile: UserProfile) -> dict[str, Any]:
         "salary_min": profile.salary_min,
         "salary_max": profile.salary_max,
         "strengths": profile.strengths,
-        "constraints": profile.constraints,
+        "deal_breakers": raw_constraints.get("deal_breakers"),
+        "preferred_company_types": raw_constraints.get("preferred_company_types"),
+        "preferred_industries": raw_constraints.get("preferred_industries"),
+        "work_mode_preference": raw_constraints.get("work_mode_preference"),
+        "commute_preference": raw_constraints.get("commute_preference"),
+        "career_goals": raw_constraints.get("career_goals"),
+        "resume_tailoring_notes": raw_constraints.get("resume_tailoring_notes"),
+        "availability_notes": raw_constraints.get("availability_notes"),
     }
 
 

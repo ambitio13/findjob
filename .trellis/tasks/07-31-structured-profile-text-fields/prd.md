@@ -40,12 +40,12 @@ than select controls.
 
 ## Acceptance Criteria
 
-- [ ] The profile page no longer asks the user to edit raw JSON constraints.
-- [ ] Required and optional fields are clearly separated.
-- [ ] All fields in this version are editable as text inputs/textareas unless a
+- [x] The profile page no longer asks the user to edit raw JSON constraints.
+- [x] Required and optional fields are clearly separated.
+- [x] All fields in this version are editable as text inputs/textareas unless a
   field already has a stable existing typed representation.
-- [ ] Existing user profile data remains readable after the change.
-- [ ] JD analysis prompt context receives the updated explicit profile fields.
+- [x] Existing user profile data remains readable after the change.
+- [x] JD analysis prompt context receives the updated explicit profile fields.
 
 ## Notes
 

@@ -8,6 +8,8 @@ import type {
   JobOut,
   AgentRunOut,
   AgentRunDetailOut,
+  ApplyProfileDraftRequest,
+  ApplyProfileDraftResponse,
   ResumeDetailOut,
   ResumeListOut,
   ResumeVersionListItem,
@@ -134,6 +136,23 @@ export async function reextractResumeFacts(
 ): Promise<ResumeDetailOut> {
   const { data } = await apiClient.post<ResumeDetailOut>(
     `/resumes/${resumeId}/versions/${versionId}/extract`,
+  );
+  return data;
+}
+
+/**
+ * Preview (confirm=false) or apply (confirm=true) a resume version's
+ * extracted facts as profile updates. Returns a field-level diff so the
+ * UI can show what will change before the user confirms.
+ */
+export async function applyProfileDraft(
+  resumeId: string,
+  versionId: string,
+  payload: ApplyProfileDraftRequest,
+): Promise<ApplyProfileDraftResponse> {
+  const { data } = await apiClient.post<ApplyProfileDraftResponse>(
+    `/resumes/${resumeId}/versions/${versionId}/apply-profile-draft`,
+    payload,
   );
   return data;
 }

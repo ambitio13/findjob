@@ -8,13 +8,15 @@ import {
   ProFormText,
   ProFormTextArea,
 } from "@ant-design/pro-components";
-import { message, Spin } from "antd";
+import { Alert, message, Spin, Tag, Typography } from "antd";
 import {
   apiErrorMessage,
   getCurrentUser,
   updateCurrentUser,
 } from "@/api/client";
-import type { UserProfile, UserProfileUpdate } from "@/types";
+import type { ProfileConstraints, UserProfile, UserProfileUpdate } from "@/types";
+
+const { Text } = Typography;
 
 // Job-search direction options shared between the profile form and the jobs
 // module. Kept inline for the MVP; move to a shared constants module if more
@@ -30,11 +32,80 @@ const CAREER_DIRECTION_OPTIONS = [
   { label: "其他", value: "other" },
 ];
 
-// Transform an inbound UserProfile into initial ProForm values. JSON list
-// fields become arrays; the free-form constraints dict becomes a JSON string
-// for editing in a textarea (MVP keeps constraints simple).
+// The 8 named constraint fields rendered as text inputs in the form. Each
+// entry maps a storage key to its UI label, component type, and placeholder.
+// The order here determines the on-screen layout.
+const NAMED_CONSTRAINT_FIELDS: {
+  key: keyof ProfileConstraints;
+  label: string;
+  placeholder: string;
+  tooltip: string;
+  textarea: boolean;
+}[] = [
+  {
+    key: "deal_breakers",
+    label: "一票否决项",
+    placeholder: "例如：不接受 996、不接受频繁出差",
+    tooltip: "哪些条件一旦不满足你就不会考虑这个机会？",
+    textarea: true,
+  },
+  {
+    key: "preferred_company_types",
+    label: "偏好公司类型",
+    placeholder: "例如：外企、上市公司、初创公司",
+    tooltip: "你更倾向哪类公司？",
+    textarea: false,
+  },
+  {
+    key: "preferred_industries",
+    label: "偏好行业",
+    placeholder: "例如：互联网、金融科技、新能源",
+    tooltip: "你感兴趣的行业方向。",
+    textarea: false,
+  },
+  {
+    key: "work_mode_preference",
+    label: "工作模式偏好",
+    placeholder: "例如：远程优先、混合办公、坐班",
+    tooltip: "期望的工作模式。",
+    textarea: false,
+  },
+  {
+    key: "commute_preference",
+    label: "通勤偏好",
+    placeholder: "例如：单程不超过 45 分钟",
+    tooltip: "对通勤时长或距离的要求。",
+    textarea: false,
+  },
+  {
+    key: "career_goals",
+    label: "职业目标",
+    placeholder: "例如：3 年内成为技术专家，带 5 人小团队",
+    tooltip: "你希望未来 1-3 年达成的目标。",
+    textarea: true,
+  },
+  {
+    key: "resume_tailoring_notes",
+    label: "简历投递备注",
+    placeholder: "例如：投外企时突出英语能力",
+    tooltip: "投递简历时需要特别调整或强调的内容。",
+    textarea: true,
+  },
+  {
+    key: "availability_notes",
+    label: "到岗/签证备注",
+    placeholder: "例如：可立即到岗、需 H1B 签证",
+    tooltip: "到岗时间或工作签证相关的说明。",
+    textarea: false,
+  },
+];
+
+// Transform an inbound UserProfile into initial ProForm values. Named
+// constraint fields are flattened to top-level form keys so each input can
+// bind directly.
 function toInitialValues(p: UserProfile): Record<string, unknown> {
-  return {
+  const nc = p.named_constraints ?? ({} as ProfileConstraints);
+  const values: Record<string, unknown> = {
     display_name: p.display_name,
     email: p.email ?? undefined,
     career_direction: p.career_direction ?? undefined,
@@ -43,16 +114,18 @@ function toInitialValues(p: UserProfile): Record<string, unknown> {
     salary_min: p.salary_min ?? undefined,
     salary_max: p.salary_max ?? undefined,
     strengths: p.strengths ?? [],
-    constraints:
-      p.constraints && Object.keys(p.constraints).length > 0
-        ? JSON.stringify(p.constraints, null, 2)
-        : undefined,
   };
+  for (const f of NAMED_CONSTRAINT_FIELDS) {
+    values[f.key] = nc[f.key] ?? undefined;
+  }
+  return values;
 }
 
 // Build the PATCH payload from submitted form values. Only fields the user
 // actually edited are sent (undefined values are dropped), matching backend
-// PATCH semantics where omitted fields are left untouched.
+// PATCH semantics where omitted fields are left untouched. For named
+// constraint fields, an empty string clears the key (sends null) while a
+// non-empty string sets it.
 function toUpdatePayload(
   values: Record<string, unknown>,
 ): UserProfileUpdate {
@@ -83,20 +156,19 @@ function toUpdatePayload(
         : null;
   if (values.strengths !== undefined)
     payload.strengths = (values.strengths as string[]) ?? null;
-  if (values.constraints !== undefined) {
-    const raw = values.constraints ? String(values.constraints).trim() : "";
-    if (raw === "") {
-      payload.constraints = null;
-    } else {
-      try {
-        payload.constraints = JSON.parse(raw) as Record<string, unknown>;
-      } catch {
-        // Let the backend reject malformed JSON via 422 rather than crashing
-        // the form; surface a clear message below.
-        throw new Error("constraints 不是合法的 JSON");
-      }
-    }
+
+  // Collect named constraint fields that were present in the form. Only
+  // include keys the user interacted with (value !== undefined).
+  const nc: Partial<ProfileConstraints> = {};
+  let hasNamed = false;
+  for (const f of NAMED_CONSTRAINT_FIELDS) {
+    if (values[f.key] === undefined) continue;
+    hasNamed = true;
+    const raw = String(values[f.key]).trim();
+    nc[f.key] = raw === "" ? null : raw;
   }
+  if (hasNamed) payload.named_constraints = nc;
+
   return payload;
 }
 
@@ -105,6 +177,9 @@ export function ProfileForm() {
   const [initialValues, setInitialValues] = useState<Record<string, unknown>>(
     {},
   );
+  const [legacyConstraints, setLegacyConstraints] = useState<
+    Record<string, unknown> | null
+  >(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,7 +187,10 @@ export function ProfileForm() {
       setLoading(true);
       try {
         const profile = await getCurrentUser();
-        if (!cancelled) setInitialValues(toInitialValues(profile));
+        if (!cancelled) {
+          setInitialValues(toInitialValues(profile));
+          setLegacyConstraints(profile.legacy_constraints ?? null);
+        }
       } catch (err) {
         message.error(apiErrorMessage(err));
       } finally {
@@ -132,6 +210,10 @@ export function ProfileForm() {
     );
   }
 
+  const legacyKeys = legacyConstraints
+    ? Object.keys(legacyConstraints)
+    : [];
+
   return (
     <ProForm<UserProfileUpdate>
       layout="horizontal"
@@ -145,13 +227,12 @@ export function ProfileForm() {
           const payload = toUpdatePayload(
             values as unknown as Record<string, unknown>,
           );
-          await updateCurrentUser(payload);
+          const updated = await updateCurrentUser(payload);
+          setLegacyConstraints(updated.legacy_constraints ?? null);
           message.success("画像已更新");
           return true;
         } catch (err) {
-          message.error(
-            err instanceof Error ? err.message : apiErrorMessage(err),
-          );
+          message.error(apiErrorMessage(err));
           return false;
         }
       }}
@@ -210,14 +291,62 @@ export function ProfileForm() {
             allowClear
           />
         </ProFormGroup>
-        <ProFormTextArea
-          name="constraints"
-          label="其他约束"
-          width="xl"
-          placeholder='例如：{"remote": true, "max_commute_min": 45}'
-          fieldProps={{ autoSize: { minRows: 3, maxRows: 8 } }}
-          tooltip="JSON 格式；留空则清除。可描述远程、通勤时长等偏好。"
-        />
+      </ProCard>
+
+      <ProCard
+        title="求职约束与备注"
+        bordered
+        headerBordered
+        style={{ marginTop: 16 }}
+      >
+        <ProFormGroup labelLayout="default" style={{ flexDirection: "column" }}>
+          {NAMED_CONSTRAINT_FIELDS.map((f) =>
+            f.textarea ? (
+              <ProFormTextArea
+                key={f.key}
+                name={f.key}
+                label={f.label}
+                width="xl"
+                placeholder={f.placeholder}
+                tooltip={f.tooltip}
+                fieldProps={{ autoSize: { minRows: 2, maxRows: 6 } }}
+              />
+            ) : (
+              <ProFormText
+                key={f.key}
+                name={f.key}
+                label={f.label}
+                width="xl"
+                placeholder={f.placeholder}
+                tooltip={f.tooltip}
+                allowClear
+              />
+            ),
+          )}
+        </ProFormGroup>
+
+        {legacyKeys.length > 0 ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginTop: 16 }}
+            message="历史遗留约束（只读）"
+            description={
+              <div>
+                <Text type="secondary">
+                  以下约束来自旧版数据，不支持在此表单编辑。如需修改请清除后使用上方字段重新填写。
+                </Text>
+                <div style={{ marginTop: 8 }}>
+                  {legacyKeys.map((k) => (
+                    <Tag key={k} style={{ marginBottom: 4 }}>
+                      {k}: {JSON.stringify(legacyConstraints![k])}
+                    </Tag>
+                  ))}
+                </div>
+              </div>
+            }
+          />
+        ) : null}
       </ProCard>
     </ProForm>
   );

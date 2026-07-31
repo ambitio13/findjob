@@ -80,6 +80,23 @@ export interface AgentRunDetailOut {
 
 // --- Current user profile & job-search preferences ---
 
+/**
+ * Named constraint fields stored inside the `constraints` JSON column. Each
+ * field is a plain string (or null when unset). The backend defines these
+ * 8 keys as the known v1 set; any other keys in `constraints` are treated
+ * as legacy and exposed read-only via `legacy_constraints`.
+ */
+export interface ProfileConstraints {
+  deal_breakers: string | null;
+  preferred_company_types: string | null;
+  preferred_industries: string | null;
+  work_mode_preference: string | null;
+  commute_preference: string | null;
+  career_goals: string | null;
+  resume_tailoring_notes: string | null;
+  availability_notes: string | null;
+}
+
 export interface UserProfile {
   id: string;
   display_name: string;
@@ -90,7 +107,10 @@ export interface UserProfile {
   salary_min: number | null;
   salary_max: number | null;
   strengths: string[] | null;
-  constraints: Record<string, unknown> | null;
+  /** Typed v1 constraint fields. */
+  named_constraints: ProfileConstraints;
+  /** Unknown constraint keys preserved from legacy data (read-only). */
+  legacy_constraints: Record<string, unknown> | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -98,6 +118,9 @@ export interface UserProfile {
 /**
  * Partial update payload. All fields optional; omitting a field leaves it
  * untouched, sending `null` clears the underlying nullable column.
+ *
+ * `named_constraints` is itself a partial structure — only non-undefined
+ * keys within it are applied by the backend.
  */
 export interface UserProfileUpdate {
   display_name?: string;
@@ -108,7 +131,7 @@ export interface UserProfileUpdate {
   salary_min?: number | null;
   salary_max?: number | null;
   strengths?: string[] | null;
-  constraints?: Record<string, unknown> | null;
+  named_constraints?: Partial<ProfileConstraints>;
 }
 
 // --- Resumes ---
@@ -341,4 +364,30 @@ export interface JobAnalysisDetailOut {
 export interface JobAnalysisListOut {
   meta: Record<string, unknown>;
   items: JobAnalysisDetailOut[];
+}
+
+// --- Profile draft apply (resume → profile) ---
+
+/** Body of POST /resumes/{resume_id}/versions/{version_id}/apply-profile-draft. */
+export interface ApplyProfileDraftRequest {
+  confirm?: boolean;
+  overwrite?: boolean;
+}
+
+/** One field-level diff returned by the draft-apply endpoint. */
+export interface ProfileDraftFieldDiff {
+  field: string;
+  current_value: unknown;
+  draft_value: unknown;
+  will_change: boolean;
+  blocked_reason: string | null;
+}
+
+/** Response shape for the draft-apply endpoint. */
+export interface ApplyProfileDraftResponse {
+  applied: boolean;
+  confirm: boolean;
+  overwrite: boolean;
+  diffs: ProfileDraftFieldDiff[];
+  updated_profile: Record<string, unknown> | null;
 }

@@ -208,7 +208,14 @@ def _make_context(
             "salary_min": 20000,
             "salary_max": 40000,
             "strengths": ["Python"],
-            "constraints": {"remote": True},
+            "deal_breakers": "不接受996",
+            "preferred_company_types": "外企",
+            "preferred_industries": "互联网",
+            "work_mode_preference": "远程优先",
+            "commute_preference": "通勤1小时内",
+            "career_goals": "技术专家",
+            "resume_tailoring_notes": "突出后端经验",
+            "availability_notes": "随时到岗",
         },
         job={
             "id": "job_1",
@@ -534,6 +541,9 @@ def test_load_context_profile_carries_all_design_fields(client: TestClient) -> N
     The loader projects the current user's ``UserProfile`` into the prompt
     context; this locks in that all profile fields (including the optional
     preference fields used by the prompt) survive the projection.
+
+    Named constraint fields are flattened to top-level keys; legacy unknown
+    keys (those not in the v1 named set) are not surfaced to the model.
     """
     with SessionLocal() as db:
         user = UserProfile(
@@ -546,7 +556,18 @@ def test_load_context_profile_carries_all_design_fields(client: TestClient) -> N
             salary_min=25000,
             salary_max=50000,
             strengths=["Python", "FastAPI"],
-            constraints={"remote": True, "equity": True},
+            constraints={
+                "deal_breakers": "不接受996",
+                "preferred_company_types": "外企",
+                "preferred_industries": "互联网",
+                "work_mode_preference": "远程优先",
+                "commute_preference": "通勤1小时内",
+                "career_goals": "技术专家",
+                "resume_tailoring_notes": "突出后端经验",
+                "availability_notes": "随时到岗",
+                # Legacy unknown key — must NOT appear in the prompt dict.
+                "remote": True,
+            },
         )
         db.add(user)
         _, version = _make_resume(db, "profile_full", "Python 5年")
@@ -567,7 +588,18 @@ def test_load_context_profile_carries_all_design_fields(client: TestClient) -> N
         assert profile["salary_min"] == 25000
         assert profile["salary_max"] == 50000
         assert profile["strengths"] == ["Python", "FastAPI"]
-        assert profile["constraints"] == {"remote": True, "equity": True}
+        # Named constraint fields are flattened to top-level keys.
+        assert profile["deal_breakers"] == "不接受996"
+        assert profile["preferred_company_types"] == "外企"
+        assert profile["preferred_industries"] == "互联网"
+        assert profile["work_mode_preference"] == "远程优先"
+        assert profile["commute_preference"] == "通勤1小时内"
+        assert profile["career_goals"] == "技术专家"
+        assert profile["resume_tailoring_notes"] == "突出后端经验"
+        assert profile["availability_notes"] == "随时到岗"
+        # Legacy keys are not surfaced to the model.
+        assert "constraints" not in profile
+        assert "remote" not in profile
 
 
 def test_load_context_degrades_gracefully_for_sparse_profile(client: TestClient) -> None:

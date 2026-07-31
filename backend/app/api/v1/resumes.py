@@ -22,6 +22,7 @@ from app.db.models.models import UserProfile
 from app.db.repositories import resume_repo
 from app.models_gateway.base import ModelGateway
 from app.schemas.api import PaginatedMeta
+from app.schemas.profile_draft import ApplyProfileDraftRequest, ApplyProfileDraftResponse
 from app.schemas.resume import (
     ResumeDetailOut,
     ResumeListOut,
@@ -29,7 +30,7 @@ from app.schemas.resume import (
     ResumeVersionListItem,
     ResumeVersionOut,
 )
-from app.services import resume_fact_service, resume_parser, resume_storage
+from app.services import profile_draft_service, resume_fact_service, resume_parser, resume_storage
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 _log = get_logger("app.api.v1.resumes")
@@ -227,6 +228,31 @@ async def reextract_resume_facts(
         created_at=resume.created_at,
         latest_version=_version_out(version),
     )
+
+
+@router.post(
+    "/{resume_id}/versions/{version_id}/apply-profile-draft",
+    response_model=ApplyProfileDraftResponse,
+)
+def apply_profile_draft(
+    resume_id: str,
+    version_id: str,
+    payload: ApplyProfileDraftRequest,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> ApplyProfileDraftResponse:
+    """Preview or apply resume facts to the current user's profile.
+
+    User-scoped (404 on cross-user resume/version access). Default
+    ``confirm=false`` returns a preview diff without writing. ``confirm=true``
+    writes allowed changes through the same repository path used by
+    ``PATCH /users/me``. Non-empty existing profile fields are not overwritten
+    unless ``overwrite=true``.
+    """
+    resume, version = resume_fact_service.load_resume_version_for_user(
+        db, current_user, resume_id, version_id
+    )
+    return profile_draft_service.apply_profile_draft(db, current_user, version, payload)
 
 
 # --- helpers ---------------------------------------------------------------

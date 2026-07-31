@@ -4,10 +4,12 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Descriptions,
   Empty,
   List,
   message,
+  Modal,
   Space,
   Spin,
   Tag,
@@ -16,11 +18,14 @@ import {
 } from "antd";
 import {
   apiErrorMessage,
+  applyProfileDraft,
   getResume,
   listResumeVersions,
   reextractResumeFacts,
 } from "@/api/client";
 import type {
+  ApplyProfileDraftResponse,
+  ProfileDraftFieldDiff,
   ResumeDetailOut,
   ResumeFacts,
   ResumeVersionListItem,
@@ -56,6 +61,10 @@ function parserStatusTag(status: string | undefined) {
 function valueOrDash(v: unknown): React.ReactNode {
   if (v === null || v === undefined || v === "")
     return <Text type="secondary">-</Text>;
+  if (Array.isArray(v)) {
+    if (v.length === 0) return <Text type="secondary">-</Text>;
+    return <>{v.join("、")}</>;
+  }
   return <>{String(v)}</>;
 }
 
@@ -70,6 +79,26 @@ function tagsOrDash(items: string[] | null | undefined): React.ReactNode {
       ))}
     </Space>
   );
+}
+
+/** Human-readable label for a profile field key. */
+const FIELD_LABELS: Record<string, string> = {
+  display_name: "昵称",
+  career_direction: "求职方向",
+  base_location: "常驻地",
+  preferred_locations: "期望城市",
+  strengths: "核心优势",
+};
+
+function fieldLabel(field: string): string {
+  return FIELD_LABELS[field] ?? field;
+}
+
+/** Format a diff value for display. */
+function formatDiffValue(v: unknown): string {
+  if (v === null || v === undefined) return "（空）";
+  if (Array.isArray(v)) return v.length > 0 ? v.join("、") : "（空）";
+  return String(v);
 }
 
 /** Read-only structured facts card. */
@@ -237,65 +266,226 @@ function FactsCards({ facts }: { facts: ResumeFacts | null | undefined }) {
   );
 }
 
-/** Read-only profile draft derived from structured facts. */
-function ProfileDraftPreview({
+/** Render a single field diff row. */
+function DiffRow({ diff }: { diff: ProfileDraftFieldDiff }) {
+  const blocked = !!diff.blocked_reason;
+  return (
+    <List.Item>
+      <Descriptions column={1} size="small">
+        <Descriptions.Item label="字段">
+          <Space>
+            <Text strong>{fieldLabel(diff.field)}</Text>
+            {diff.will_change ? (
+              <Tag color="blue">将更新</Tag>
+            ) : blocked ? (
+              <Tag color="orange">已阻止</Tag>
+            ) : (
+              <Tag>无变化</Tag>
+            )}
+          </Space>
+        </Descriptions.Item>
+        <Descriptions.Item label="当前值">
+          {valueOrDash(formatDiffValue(diff.current_value))}
+        </Descriptions.Item>
+        <Descriptions.Item label="草稿值">
+          {valueOrDash(formatDiffValue(diff.draft_value))}
+        </Descriptions.Item>
+        {blocked ? (
+          <Descriptions.Item label="阻止原因">
+            <Text type="warning">{diff.blocked_reason}</Text>
+          </Descriptions.Item>
+        ) : null}
+      </Descriptions>
+    </List.Item>
+  );
+}
+
+/** Read-only profile draft preview + interactive apply-to-profile flow. */
+function ProfileDraftPanel({
   facts,
+  resumeId,
+  versionId,
+  onApplied,
 }: {
   facts: ResumeFacts | null | undefined;
+  resumeId: string;
+  versionId: string;
+  onApplied: () => void;
 }) {
-  if (!facts) {
-    return (
-      <Empty
-        description={<Text type="secondary">暂无 Profile 草稿</Text>}
-        image={Empty.PRESENTED_IMAGE_SIMPLE}
-      />
-    );
-  }
+  const [modalOpen, setModalOpen] = useState(false);
+  const [overwrite, setOverwrite] = useState(false);
+  const [preview, setPreview] = useState<ApplyProfileDraftResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [messageApi, contextHolder] = message.useMessage();
 
-  const name = facts.contact?.name ?? "（未识别姓名）";
-  const years = facts.years_of_experience;
-  const direction = facts.target_direction;
+  const name = facts?.contact?.name ?? "（未识别姓名）";
+  const years = facts?.years_of_experience;
+  const direction = facts?.target_direction;
   const headlineParts: string[] = [];
   if (name) headlineParts.push(name);
   if (years !== null && years !== undefined)
     headlineParts.push(`${years} 年经验`);
   if (direction) headlineParts.push(direction);
 
+  // Reset state when modal closes.
+  const closeModal = () => {
+    setModalOpen(false);
+    setOverwrite(false);
+    setPreview(null);
+  };
+
+  // Step 1: fetch a preview diff (confirm=false) to show the user what
+  // will change before they commit.
+  const handlePreview = async () => {
+    setLoading(true);
+    try {
+      const resp = await applyProfileDraft(resumeId, versionId, {
+        confirm: false,
+        overwrite,
+      });
+      setPreview(resp);
+      setModalOpen(true);
+    } catch (err) {
+      messageApi.error(apiErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Step 2: after reviewing the diff, the user confirms. If overwrite is
+  // toggled, blocked fields will be overwritten too.
+  const handleConfirm = async () => {
+    setConfirming(true);
+    try {
+      const resp = await applyProfileDraft(resumeId, versionId, {
+        confirm: true,
+        overwrite,
+      });
+      if (resp.applied) {
+        messageApi.success("画像草稿已应用到个人资料");
+        onApplied();
+        closeModal();
+      } else {
+        // No changes were applied — show the diff so the user can see why.
+        setPreview(resp);
+        messageApi.warning("没有可应用的变更，请查看下方差异");
+      }
+    } catch (err) {
+      messageApi.error(apiErrorMessage(err));
+    } finally {
+      setConfirming(false);
+    }
+  };
+
   return (
-    <Card type="inner" title="Profile 草稿预览（只读）" size="small">
-      <Space direction="vertical" style={{ width: "100%" }} size={12}>
-        <Paragraph strong style={{ marginBottom: 0 }}>
-          {headlineParts.join(" · ")}
-        </Paragraph>
-        {facts.contact?.email || facts.contact?.phone ? (
-          <Space size={16}>
-            {facts.contact?.email ? <Text>{facts.contact.email}</Text> : null}
-            {facts.contact?.phone ? <Text>{facts.contact.phone}</Text> : null}
-          </Space>
-        ) : null}
-        {facts.skills.length > 0 ? (
-          <div>
-            <Text type="secondary">技能：</Text>
-            {tagsOrDash(facts.skills)}
-          </div>
-        ) : null}
-        {facts.locations.length > 0 ? (
-          <div>
-            <Text type="secondary">期望地点：</Text>
-            {tagsOrDash(facts.locations)}
-          </div>
-        ) : null}
-        {facts.highlights.length > 0 ? (
-          <div>
-            <Text type="secondary">亮点：</Text>
+    <Card
+      type="inner"
+      title="Profile 草稿预览"
+      size="small"
+      extra={
+        <Button
+          type="primary"
+          size="small"
+          loading={loading}
+          disabled={!facts}
+          onClick={handlePreview}
+        >
+          应用到个人资料
+        </Button>
+      }
+    >
+      {contextHolder}
+      {!facts ? (
+        <Empty
+          description={<Text type="secondary">暂无 Profile 草稿</Text>}
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+        />
+      ) : (
+        <Space direction="vertical" style={{ width: "100%" }} size={12}>
+          <Paragraph strong style={{ marginBottom: 0 }}>
+            {headlineParts.join(" · ")}
+          </Paragraph>
+          {facts.contact?.email || facts.contact?.phone ? (
+            <Space size={16}>
+              {facts.contact?.email ? <Text>{facts.contact.email}</Text> : null}
+              {facts.contact?.phone ? <Text>{facts.contact.phone}</Text> : null}
+            </Space>
+          ) : null}
+          {facts.skills.length > 0 ? (
+            <div>
+              <Text type="secondary">技能：</Text>
+              {tagsOrDash(facts.skills)}
+            </div>
+          ) : null}
+          {facts.locations.length > 0 ? (
+            <div>
+              <Text type="secondary">期望地点：</Text>
+              {tagsOrDash(facts.locations)}
+            </div>
+          ) : null}
+          {facts.highlights.length > 0 ? (
+            <div>
+              <Text type="secondary">亮点：</Text>
+              <List
+                size="small"
+                dataSource={facts.highlights}
+                renderItem={(h) => <List.Item>{h}</List.Item>}
+              />
+            </div>
+          ) : null}
+        </Space>
+      )}
+
+      <Modal
+        title="应用 Profile 草稿"
+        open={modalOpen}
+        onCancel={closeModal}
+        width={640}
+        footer={[
+          <Button key="cancel" onClick={closeModal}>
+            取消
+          </Button>,
+          <Button
+            key="confirm"
+            type="primary"
+            loading={confirming}
+            onClick={handleConfirm}
+          >
+            确认应用
+          </Button>,
+        ]}
+      >
+        <Space direction="vertical" style={{ width: "100%" }} size={16}>
+          <Alert
+            type="info"
+            showIcon
+            message="确认前请仔细查看以下字段差异"
+            description="非空字段默认不会被覆盖。如需覆盖已有值，请勾选下方选项。"
+          />
+          <Checkbox
+            checked={overwrite}
+            onChange={(e) => setOverwrite(e.target.checked)}
+          >
+            覆盖已有非空字段
+          </Checkbox>
+          {preview && preview.diffs.length > 0 ? (
             <List
+              bordered
               size="small"
-              dataSource={facts.highlights}
-              renderItem={(h) => <List.Item>{h}</List.Item>}
+              dataSource={preview.diffs}
+              renderItem={(d) => <DiffRow diff={d} />}
             />
-          </div>
-        ) : null}
-      </Space>
+          ) : preview ? (
+            <Empty
+              description={<Text type="secondary">无可用草稿字段</Text>}
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+            />
+          ) : (
+            <Spin />
+          )}
+        </Space>
+      </Modal>
     </Card>
   );
 }
@@ -409,7 +599,17 @@ export function ResumeDetailPage() {
       <Card title="结构化简历事实">
         <Space direction="vertical" style={{ width: "100%" }} size={16}>
           <FactsCards facts={facts} />
-          <ProfileDraftPreview facts={facts} />
+          {latest ? (
+            <ProfileDraftPanel
+              facts={facts}
+              resumeId={resume.id}
+              versionId={latest.id}
+              onApplied={() => {
+                // The profile is updated server-side; just acknowledge here.
+                // The profile form page will refetch on its own mount.
+              }}
+            />
+          ) : null}
         </Space>
       </Card>
 
