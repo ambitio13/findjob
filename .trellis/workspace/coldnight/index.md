@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 1
+- **Total Sessions**: 2
 - **Last Active**: 2026-07-31
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~40 | Active |
+| `journal-1.md` | ~79 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 2 | 2026-07-31 | Model backed JD analysis agent | `4ca4ee8`, `68ad2b0`, `4b26ffc`, `154cabb`, `91861a9`, `65ccc79`, `a93a4fb` | `feature/model-backed-jd-analysis-agent` |
 | 1 | 2026-07-31 | 需求分析与全局规范收尾 | `b4ebda1` | `master` |
 <!-- @@@/auto:session-history -->
 
