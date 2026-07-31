@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/database.md", "reason": "Worker handlers must open fresh DB sessions and keep PostgreSQL as durable source of truth."}
+{"file": ".trellis/spec/shared/dependencies.md", "reason": "Adding arq or another queue dependency must follow project dependency policy."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Queue submit APIs must return durable run references and respect existing API contract style."}

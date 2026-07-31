@@ -1,0 +1,32 @@
+{
+  "id": "async-queue-architecture-upgrade",
+  "name": "async-queue-architecture-upgrade",
+  "title": "Async Queue Architecture Upgrade",
+  "description": "Upgrade all model-backed and long-running workflows from synchronous request waiting / FastAPI BackgroundTasks to a durable Redis-backed worker queue with auditable lifecycle state and frontend polling.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "coldnight",
+  "assignee": "coldnight",
+  "createdAt": "2026-08-01",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-01-queue-runtime-foundation",
+    "08-01-async-jd-paste-parsing",
+    "08-01-async-resume-fact-extraction",
+    "08-01-async-jd-analysis-workflow",
+    "08-01-async-job-ux-observability"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
