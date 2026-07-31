@@ -118,3 +118,36 @@ Designed and implemented the resume-aware JD analysis agent through the model ga
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Agent run observability result visibility
+
+**Date**: 2026-07-31
+**Task**: Agent run observability result visibility
+**Branch**: `master`
+
+### Summary
+
+Completed the P0 agent run observability task: added job-scoped agent runs and migration, exposed run detail with ordered steps and timestamps, hydrated persisted JD analysis results in the job detail UI, made failed runs visible via job-scoped agent run reads, rendered sanitized metadata/timing, and passed backend/frontend/Trellis quality gates including Alembic upgrade.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `057a4dc` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
