@@ -184,3 +184,36 @@ Completed the P0 agent run observability task: added job-scoped agent runs and m
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: JD paste auto-parsing workflow
+
+**Date**: 2026-08-01
+**Task**: JD paste auto-parsing workflow
+**Branch**: `master`
+
+### Summary
+
+Implemented paste-first JD parsing: POST /api/v1/jobs/parse drives a 6-step AgentRun (jd_paste_parsing) via jd_parse_service + jd_paste_executor mirroring resume-fact extraction. JdParseResponse carries fields + extraction provenance so the frontend persists the durable jd_normalized = {_extraction, fields} contract on save. Parse failures recoverable (HTTP 200 + failed run + empty fields); blank raw_jd → 422. Step results sanitized. JobCreateModal two-phase paste→parse→edit→create; JobDetailPage renders jd_normalized.fields + _extraction. Fixed acceptance-rejected flat-structure deviation across backend/frontend/tests. 154 backend tests + frontend lint/type-check/build all green.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `824920a` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
