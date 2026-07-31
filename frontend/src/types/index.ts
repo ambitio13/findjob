@@ -267,10 +267,16 @@ export interface ResumeFacts {
 
 /** Extraction status recorded in `parsed_facts._extraction`. */
 export type ResumeExtractionStatus =
+  | "pending"
+  | "running"
   | "succeeded"
   | "failed"
   | "needs_confirmation"
   | "not_run";
+
+/** Terminal extraction statuses — once reached, polling can stop. */
+export const TERMINAL_EXTRACTION_STATUSES: ReadonlySet<ResumeExtractionStatus> =
+  new Set(["succeeded", "failed", "needs_confirmation", "not_run"]);
 
 /** The `_extraction` telemetry block inside `parsed_facts`. */
 export interface ResumeExtractionInfo {

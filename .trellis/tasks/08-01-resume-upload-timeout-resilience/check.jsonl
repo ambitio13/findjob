@@ -1,0 +1,3 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Acceptance checked: frontend normalizes upload timeout copy and polls resume detail for extraction lifecycle status."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Acceptance checked: upload returns saved resume before model extraction completes and keeps API user scoping."}

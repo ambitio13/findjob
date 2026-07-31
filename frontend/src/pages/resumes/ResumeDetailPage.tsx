@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   Alert,
@@ -27,11 +27,16 @@ import type {
   ApplyProfileDraftResponse,
   ProfileDraftFieldDiff,
   ResumeDetailOut,
+  ResumeExtractionStatus,
   ResumeFacts,
   ResumeVersionListItem,
 } from "@/types";
+import { TERMINAL_EXTRACTION_STATUSES } from "@/types";
 
 const { Paragraph, Text } = Typography;
+
+/** Polling interval for non-terminal extraction status (milliseconds). */
+const EXTRACTION_POLL_MS = 3000;
 
 /** Color mapping for extraction status tags. */
 function extractionStatusTag(status: string | undefined) {
@@ -40,6 +45,14 @@ function extractionStatusTag(status: string | undefined) {
       return <Tag color="green">抽取成功</Tag>;
     case "failed":
       return <Tag color="red">抽取失败</Tag>;
+    case "running":
+      return (
+        <Tag color="processing" icon={<Spin size="small" />}>
+          抽取中
+        </Tag>
+      );
+    case "pending":
+      return <Tag color="blue">等待抽取</Tag>;
     case "needs_confirmation":
       return <Tag color="orange">需确认</Tag>;
     case "not_run":
@@ -498,6 +511,7 @@ export function ResumeDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [reextracting, setReextracting] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadDetail = async (resumeId: string) => {
     const [detail, vers] = await Promise.all([
@@ -506,6 +520,7 @@ export function ResumeDetailPage() {
     ]);
     setResume(detail);
     setVersions(vers);
+    return detail;
   };
 
   useEffect(() => {
@@ -524,6 +539,42 @@ export function ResumeDetailPage() {
       active = false;
     };
   }, [id]);
+
+  // Poll the detail endpoint while extraction is in a non-terminal state
+  // (pending / running). Once a terminal status is observed the polling
+  // stops automatically. This mirrors the useHealth polling pattern.
+  const extractionStatus: ResumeExtractionStatus | undefined =
+    resume?.latest_version?.parsed_facts?._extraction?.status;
+  const isExtracting =
+    extractionStatus !== undefined &&
+    !TERMINAL_EXTRACTION_STATUSES.has(extractionStatus);
+
+  useEffect(() => {
+    if (!id || !isExtracting) return;
+    let active = true;
+
+    const poll = async () => {
+      try {
+        const detail = await getResume(id);
+        if (!active) return;
+        const status = detail.latest_version?.parsed_facts?._extraction?.status;
+        setResume(detail);
+        if (status && TERMINAL_EXTRACTION_STATUSES.has(status)) return;
+        pollTimerRef.current = setTimeout(poll, EXTRACTION_POLL_MS);
+      } catch {
+        // Network blips during polling are non-fatal; retry on next tick.
+        if (active) {
+          pollTimerRef.current = setTimeout(poll, EXTRACTION_POLL_MS);
+        }
+      }
+    };
+
+    pollTimerRef.current = setTimeout(poll, EXTRACTION_POLL_MS);
+    return () => {
+      active = false;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    };
+  }, [id, isExtracting]);
 
   const handleReextract = async () => {
     if (!id || !resume?.latest_version) return;
@@ -561,7 +612,7 @@ export function ResumeDetailPage() {
           <Button
             loading={reextracting}
             onClick={handleReextract}
-            disabled={!latest}
+            disabled={!latest || isExtracting}
           >
             重新解析
           </Button>

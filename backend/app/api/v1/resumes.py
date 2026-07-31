@@ -5,14 +5,19 @@ local disk and a ``Resume`` + ``ResumeVersion`` row pair is created per upload.
 Parser output is honest: ``raw_text`` is real extracted text;
 ``parsed_facts`` stores parser telemetry only (no invented facts). After a
 successful text extraction, an auditable model-backed resume fact extraction
-runs inline (see ``resume_fact_service``), writing typed ``facts`` + an
-``_extraction`` status block into ``parsed_facts``. Resume content is never
+runs as an automatic **background** workflow (see ``resume_fact_service``):
+the upload endpoint writes ``_extraction.status="pending"``, schedules the
+runner, and returns immediately so the request never blocks on the model call.
+The explicit re-extract endpoint stays synchronous. Resume content is never
 logged; only IDs and lengths are logged.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+import asyncio
+import uuid
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db_session, get_model_gateway_dep
@@ -38,21 +43,25 @@ _log = get_logger("app.api.v1.resumes")
 
 @router.post("", response_model=ResumeDetailOut, status_code=201)
 async def upload_resume(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
     gateway: ModelGateway = Depends(get_model_gateway_dep),
 ) -> ResumeDetailOut:
-    """Upload a resume file, parse it, extract structured facts, and return detail.
+    """Upload a resume file, parse it, and schedule structured fact extraction.
 
     Validates extension and size before reading the body. The file is persisted
     to local disk; a ``Resume`` and its first ``ResumeVersion`` are created.
-    After text extraction succeeds, an auditable model-backed resume fact
-    extraction runs inline. When upload returns, extraction has either succeeded
-    or failed and the ``parsed_facts._extraction`` block plus ``AgentRun`` are
-    already readable. Extraction failure does not make an already-saved upload
-    look like a file failure; the resume is returned with
-    ``_extraction.status="failed"``.
+    When text extraction succeeds the version is marked
+    ``_extraction.status="pending"`` and an auditable model-backed resume fact
+    extraction is scheduled as a post-response background task — the upload
+    response returns immediately and never blocks on the model call. The
+    frontend polls ``GET /resumes/{id}`` to observe
+    ``pending`` → ``running`` → ``succeeded``/``failed``. Unsupported/empty
+    raw text is marked ``not_run`` and no extraction is scheduled. Extraction
+    failure (in the background) persists a failed ``AgentRun`` but leaves the
+    uploaded resume visible and usable.
     """
     settings = get_settings()
     filename = file.filename or ""
@@ -106,12 +115,23 @@ async def upload_resume(
     db.refresh(resume)
     db.refresh(version)
 
-    # Inline structured fact extraction. Runs only when raw_text is non-empty;
-    # unsupported formats yield status=not_run. A model failure persists a
-    # failed AgentRun but does not break the upload — the resume + raw text are
-    # already saved and usable.
-    await resume_fact_service.extract_resume_facts(db, resume, version, gateway)
-    db.refresh(version)
+    # Decouple model-backed extraction from the upload HTTP request. For
+    # parsed raw text, mark pending + schedule the background runner so the
+    # response returns well within the frontend timeout budget. Unsupported /
+    # empty raw text is marked not_run and no extraction is scheduled.
+    raw_text = (result.raw_text or "").strip()
+    if raw_text:
+        resume_fact_service.mark_extraction_pending(db, version)
+        _schedule_extraction(
+            background_tasks,
+            resume_id=resume.id,
+            version_id=version.id,
+            user_id=current_user.id,
+            gateway=gateway,
+        )
+    else:
+        resume_fact_service.mark_extraction_not_run(db, version)
+        db.refresh(version)
 
     _log.info(
         "resume.uploaded",
@@ -263,6 +283,61 @@ def _extension(filename: str) -> str:
     if dot < 0:
         return ""
     return filename[dot + 1 :].lower()
+
+
+def _schedule_extraction(
+    background_tasks: BackgroundTasks,
+    *,
+    resume_id: str,
+    version_id: str,
+    user_id: str,
+    gateway: ModelGateway,
+) -> None:
+    """Schedule the background resume fact extraction.
+
+    Uses a FastAPI ``BackgroundTasks`` entry so the runner executes after the
+    upload response is sent. A short-lived ``asyncio`` task wrapper gives the
+    async runner its own event-loop context inside the background-task slot.
+    The ``gateway`` resolved by the request's DI is passed in so tests can
+    override it through ``dependency_overrides`` exactly like the sync path.
+    """
+    run_id = uuid.uuid4().hex
+    _log.info(
+        "resume_fact.scheduled",
+        resume_id=resume_id,
+        version_id=version_id,
+        user_id=user_id,
+        schedule_id=run_id,
+    )
+    background_tasks.add_task(
+        _run_extraction_task,
+        resume_id,
+        version_id,
+        user_id,
+        gateway,
+    )
+
+
+def _run_extraction_task(
+    resume_id: str,
+    version_id: str,
+    user_id: str,
+    gateway: ModelGateway,
+) -> None:
+    """Sync adapter that drives the async background runner on a fresh loop.
+
+    ``BackgroundTasks`` executes callables synchronously after the response;
+    this wrapper creates a dedicated event loop for the async runner so it
+    never touches the request's loop (already closed by then).
+    """
+    asyncio.run(
+        resume_fact_service.run_resume_fact_extraction_background(
+            resume_id=resume_id,
+            version_id=version_id,
+            user_id=user_id,
+            gateway=gateway,
+        )
+    )
 
 
 async def _read_with_size_limit(file: UploadFile, max_size_mb: int) -> bytes:

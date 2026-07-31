@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Modal, Upload, type UploadProps, message } from "antd";
 import { InboxOutlined } from "@ant-design/icons";
-import { apiErrorMessage, uploadResume } from "@/api/client";
+import { apiErrorMessage, isAxiosTimeout, uploadResume } from "@/api/client";
 
 const { Dragger } = Upload;
 
@@ -45,10 +45,18 @@ export function ResumeUploadDragger({ onUploaded }: DraggerProps) {
         setSubmitting(true);
         try {
           await uploadResume(file);
-          message.success("简历已上传");
+          message.success("简历已上传，正在后台解析事实");
           onUploaded();
         } catch (err) {
-          message.error(apiErrorMessage(err));
+          // Upload timeout does not mean the file wasn't saved — the backend
+          // may have persisted it before the response. Normalize the error so
+          // the user is told to check the list instead of seeing a raw
+          // `timeout of 15000ms exceeded` message.
+          if (isAxiosTimeout(err as never)) {
+            message.error("上传请求超时，请刷新简历列表确认是否已保存");
+          } else {
+            message.error(apiErrorMessage(err));
+          }
         } finally {
           setSubmitting(false);
         }

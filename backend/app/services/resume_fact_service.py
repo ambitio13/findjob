@@ -66,7 +66,28 @@ _STEP_VALIDATE_MODEL_OUTPUT = "validate_model_output"
 _STEP_PERSIST_OUTPUTS = "persist_outputs"
 _STEP_COMPLETE_RUN = "complete_run"
 
-ExtractionStatus = Literal["succeeded", "failed", "needs_confirmation", "not_run"]
+#: All lifecycle states for ``parsed_facts._extraction.status``.
+#:
+#: - ``pending``: upload saved, extraction scheduled but not started.
+#: - ``running``: extraction run started (written by the background runner
+#:   before the model call).
+#: - ``succeeded``: facts written.
+#: - ``failed``: extraction failed after upload.
+#: - ``needs_confirmation``: legacy value preserved for older rows.
+#: - ``not_run``: no extractable raw text / unsupported parser result.
+ExtractionStatus = Literal[
+    "pending",
+    "running",
+    "succeeded",
+    "failed",
+    "needs_confirmation",
+    "not_run",
+]
+
+#: Terminal statuses — once reached the frontend can stop polling.
+TERMINAL_EXTRACTION_STATUSES: frozenset[str] = frozenset(
+    {"succeeded", "failed", "needs_confirmation", "not_run"}
+)
 
 
 class ExtractionOutcome:
@@ -121,6 +142,13 @@ async def extract_resume_facts(
         db.commit()
         return ExtractionOutcome(status="not_run", run=None)
 
+    # When called from the background runner the status is already ``running``;
+    # when called from re-extract it may be a previous terminal status. Either
+    # way, ensure ``running`` is visible before the model call so polling
+    # clients see progress.
+    _write_extraction_status(db, version, status="running", run_id=None)
+    db.commit()
+
     started_at = datetime.now(UTC)
     run = agent_run_repo.create_run(
         db,
@@ -129,6 +157,17 @@ async def extract_resume_facts(
         status="running",
         started_at=started_at,
     )
+
+    # Record the run id on the _extraction block now that it exists, so the
+    # UI can link to /agent-runs/{run_id}/detail while extraction is running.
+    _write_extraction_status(
+        db,
+        version,
+        status="running",
+        run_id=run.id,
+        provider=gateway.provider_name,
+    )
+    db.commit()
 
     executor = ResumeFactExecutor(gateway)
     filename = resume.filename or ""
@@ -429,6 +468,126 @@ def _extraction_block(
     if model is not None:
         block["model"] = model
     return block
+
+
+# ---------------------------------------------------------------------------
+# Upload-time scheduling + background runner
+# ---------------------------------------------------------------------------
+
+
+def mark_extraction_pending(
+    db: Session,
+    version: ResumeVersion,
+) -> None:
+    """Write ``_extraction.status="pending"`` on a freshly saved version.
+
+    Called by the upload endpoint after the resume/version are committed and
+    before the background extraction is scheduled. Preserves existing
+    ``_parser``/``_parser_status`` telemetry. No ``run_id`` yet — the run is
+    created later inside :func:`run_resume_fact_extraction_background`.
+    """
+    _write_extraction_status(db, version, status="pending")
+    db.commit()
+
+
+def mark_extraction_not_run(
+    db: Session,
+    version: ResumeVersion,
+) -> None:
+    """Write ``_extraction.status="not_run"`` for unsupported/empty raw text.
+
+    Called by the upload endpoint when there is no extractable raw text so the
+    detail view immediately shows a terminal status without polling.
+    """
+    _write_extraction_status(db, version, status="not_run")
+    db.commit()
+
+
+async def run_resume_fact_extraction_background(
+    resume_id: str,
+    version_id: str,
+    user_id: str,
+    gateway: ModelGateway,
+) -> None:
+    """Background extraction runner — decoupled from the upload HTTP request.
+
+    Opens its own DB session (never reuses a request-scoped ``Session``),
+    re-loads + ownership-checks the resume/version, flips ``_extraction.status``
+    to ``running`` before the model call, and delegates to the existing
+    :func:`extract_resume_facts` orchestration for the ``AgentRun`` /
+    ``AgentStep`` trail. Any unexpected error is persisted as a sanitized
+    ``failed`` status so the upload never looks silently stuck.
+
+    The ``gateway`` is injected by the caller (the upload endpoint, which
+    already resolved it via DI) so tests can override it through the same
+    ``dependency_overrides`` path used for the synchronous flow.
+    """
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        resume = db.get(Resume, resume_id)
+        if resume is None or resume.user_id != user_id:
+            _log.warning(
+                "resume_fact.background.skip",
+                resume_id=resume_id,
+                version_id=version_id,
+                reason="resume not found or not owned",
+            )
+            return
+        version = db.get(ResumeVersion, version_id)
+        if version is None or version.resume_id != resume.id:
+            _log.warning(
+                "resume_fact.background.skip",
+                resume_id=resume_id,
+                version_id=version_id,
+                reason="version not found",
+            )
+            return
+
+        raw_text = (version.raw_text or "").strip()
+        if not raw_text:
+            # No extractable text — leave the upload-time not_run/pending as-is
+            # by writing the canonical not_run status.
+            _write_extraction_status(db, version, status="not_run")
+            db.commit()
+            return
+
+        # Flip to running before model work so polling clients see progress.
+        _write_extraction_status(db, version, status="running")
+        db.commit()
+
+        try:
+            await extract_resume_facts(db, resume, version, gateway)
+        except HTTPException:
+            # Re-extract-style 502 is never raised here (raise_on_failure=False
+            # by default), but guard anyway: a failed run is already persisted
+            # by extract_resume_facts, so just log and keep the failed status.
+            _log.warning(
+                "resume_fact.background.http_error",
+                resume_id=resume_id,
+                version_id=version_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — never let the bg task crash unseen
+            _log.warning(
+                "resume_fact.background.error",
+                resume_id=resume_id,
+                version_id=version_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            # extract_resume_facts normally persists `failed` itself; this guard
+            # covers any error before/after its own commit so the row never
+            # stays stuck on `running`.
+            _write_extraction_status(
+                db,
+                version,
+                status="failed",
+                provider=gateway.provider_name,
+            )
+            db.commit()
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------

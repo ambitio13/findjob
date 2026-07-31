@@ -296,13 +296,57 @@ def test_raw_text_never_appears_in_logs(
 # ---------------------------------------------------------------------------
 
 
-def test_upload_txt_triggers_facts_extraction(client: TestClient) -> None:
-    # Test 12: .txt upload -> parsed_facts.facts + _extraction.status=succeeded.
+def _extraction_status(client: TestClient, resume_id: str, user: str) -> str:
+    """Read the latest version's _extraction.status via the detail endpoint."""
+    resp = client.get(f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": user})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["latest_version"]["parsed_facts"]["_extraction"]["status"]
+
+
+def _wait_for_terminal_extraction(
+    client: TestClient, resume_id: str, user: str, *, timeout: float = 5.0
+) -> str:
+    """Poll the detail endpoint until _extraction.status reaches a terminal state.
+
+    FastAPI ``BackgroundTasks`` run synchronously inside ``TestClient`` after the
+    response is sent, so the first response already reflects the terminal status
+    in most cases. This helper guards against any scheduling ordering by polling
+    a few times before giving up.
+    """
+    import time
+
+    terminal = {"succeeded", "failed", "needs_confirmation", "not_run"}
+    deadline = time.monotonic() + timeout
+    last = _extraction_status(client, resume_id, user)
+    while last not in terminal and time.monotonic() < deadline:
+        time.sleep(0.05)
+        last = _extraction_status(client, resume_id, user)
+    assert last in terminal, f"extraction never reached terminal state: {last}"
+    return last
+
+
+def test_upload_txt_returns_pending_then_succeeds(client: TestClient) -> None:
+    # Test 12: .txt upload returns immediately with _extraction.status=pending
+    # (or running, since the background task may start before serialization),
+    # and eventually reaches succeeded with typed facts.
     resp = _upload(client, "resume.txt", _txt_bytes(), user="u_extract")
     assert resp.status_code == 201, resp.text
-    latest = resp.json()["latest_version"]
-    facts = latest["parsed_facts"]
-    assert facts["_extraction"]["status"] == "succeeded"
+    body = resp.json()
+    resume_id = body["id"]
+    latest = body["latest_version"]
+    initial_status = latest["parsed_facts"]["_extraction"]["status"]
+    # Upload must not block on extraction: the response shows a non-terminal
+    # status, or the background task already finished (still acceptable since
+    # the HTTP request did not wait on the model call inline).
+    assert initial_status in {"pending", "running", "succeeded"}, initial_status
+
+    final = _wait_for_terminal_extraction(client, resume_id, "u_extract")
+    assert final == "succeeded"
+
+    detail = client.get(f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": "u_extract"}).json()[
+        "latest_version"
+    ]
+    facts = detail["parsed_facts"]
     assert "run_id" in facts["_extraction"]
     assert facts["facts"]["contact"]["name"] == "张三"
     assert "Python" in facts["facts"]["skills"]
@@ -318,13 +362,19 @@ def test_upload_rtf_skips_extraction_not_run(client: TestClient) -> None:
 
 
 def test_reextract_refreshes_facts(client: TestClient) -> None:
-    # Test 14: POST /resumes/{id}/versions/{vid}/extract re-runs extraction.
+    # Test 14: POST /resumes/{id}/versions/{vid}/extract re-runs extraction
+    # synchronously (the explicit re-extract path stays inline).
     upload = _upload(client, "resume.txt", _txt_bytes(), user="u_reextract")
     assert upload.status_code == 201
     body = upload.json()
     resume_id = body["id"]
     version_id = body["latest_version"]["id"]
-    original_run = body["latest_version"]["parsed_facts"]["_extraction"]["run_id"]
+
+    # Wait for the automatic background extraction to finish so we can compare.
+    _wait_for_terminal_extraction(client, resume_id, "u_reextract")
+    before = client.get(
+        f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": "u_reextract"}
+    ).json()["latest_version"]["parsed_facts"]["_extraction"]["run_id"]
 
     resp = client.post(
         f"/api/v1/resumes/{resume_id}/versions/{version_id}/extract",
@@ -334,7 +384,7 @@ def test_reextract_refreshes_facts(client: TestClient) -> None:
     facts = resp.json()["latest_version"]["parsed_facts"]
     assert facts["_extraction"]["status"] == "succeeded"
     # A fresh run was created.
-    assert facts["_extraction"]["run_id"] != original_run
+    assert facts["_extraction"]["run_id"] != before
     assert facts["facts"]["contact"]["name"] == "张三"
 
 
@@ -359,7 +409,13 @@ def test_extraction_secret_not_in_agent_run_result(client: TestClient) -> None:
     content = f"name: {secret_marker}\nPython 5年".encode()
     resp = _upload(client, "secret.txt", content, user="u_leak")
     assert resp.status_code == 201
-    run_id = resp.json()["latest_version"]["parsed_facts"]["_extraction"]["run_id"]
+    resume_id = resp.json()["id"]
+    _wait_for_terminal_extraction(client, resume_id, "u_leak")
+
+    detail = client.get(f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": "u_leak"}).json()[
+        "latest_version"
+    ]
+    run_id = detail["parsed_facts"]["_extraction"]["run_id"]
 
     # Fetch the run + steps via the agent-runs API and assert no leakage.
     run_resp = client.get(
@@ -381,12 +437,14 @@ def test_extraction_secret_not_in_agent_run_result(client: TestClient) -> None:
 def test_upload_extraction_failure_still_returns_201(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Model failure during upload must not break the upload itself.
+    """Model failure during background extraction must not break the upload.
 
     The upload contract (design §4) says: when extraction fails during upload,
     the resume + raw_text are already saved, ``_extraction.status="failed"``
-    is persisted, and the upload still returns 201. This is the critical upload
-    boundary: extraction failure is never a file failure.
+    is persisted, and the upload still returns 201. Because extraction now runs
+    as a background task, the response may show ``pending``/``running``; we then
+    poll until the terminal ``failed`` status and assert the failed run is
+    auditable.
     """
     import json as _json
 
@@ -412,12 +470,24 @@ def test_upload_extraction_failure_still_returns_201(
     # Upload itself must succeed — the file was saved and raw_text extracted.
     assert resp.status_code == 201, resp.text
     body = resp.json()
+    resume_id = body["id"]
     latest = body["latest_version"]
     assert latest["version_no"] == 1
     assert "张三" in latest["raw_text"]
 
-    # Extraction failed but the resume is usable.
-    facts = latest["parsed_facts"]
+    # The upload response must not block on extraction; the status is
+    # non-terminal (pending/running) or already failed.
+    initial = latest["parsed_facts"]["_extraction"]["status"]
+    assert initial in {"pending", "running", "failed"}, initial
+
+    # Poll until the background runner persists the terminal failed status.
+    final = _wait_for_terminal_extraction(client, resume_id, "u_fail_extract")
+    assert final == "failed"
+
+    detail = client.get(
+        f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": "u_fail_extract"}
+    ).json()["latest_version"]
+    facts = detail["parsed_facts"]
     assert facts["_extraction"]["status"] == "failed"
     assert "run_id" in facts["_extraction"]
     # No typed facts written on failure.

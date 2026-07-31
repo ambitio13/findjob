@@ -1,6 +1,6 @@
 // Centralized API client. All backend calls go through this module.
 
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import type {
   HealthResponse,
   JobCreate,
@@ -120,9 +120,14 @@ export async function uploadResume(file: File): Promise<ResumeDetailOut> {
   const form = new FormData();
   form.append("file", file);
   // Override the instance-level JSON content type so the browser sets the
-  // multipart boundary.
+  // multipart boundary. Use a longer per-request timeout for uploads: even with
+  // extraction decoupled, large PDF/DOCX parsing + file persistence can still
+  // exceed the default 15s budget. This is a per-endpoint timeout, NOT the fix
+  // for the old inline-extraction timeout (extraction now runs in the
+  // background). The global axios timeout stays at 15s for other endpoints.
   const { data } = await apiClient.post<ResumeDetailOut>("/resumes", form, {
     headers: { "Content-Type": "multipart/form-data" },
+    timeout: 60_000,
   });
   return data;
 }
@@ -208,7 +213,21 @@ export function apiErrorMessage(err: unknown): string {
   if (axios.isAxiosError(err)) {
     const detail = err.response?.data?.detail;
     if (typeof detail === "string") return detail;
+    // Axios timeouts surface as `ECONNABORTED` with a raw `timeout of Nms
+    // exceeded` message. For upload specifically the resume may still have
+    // been saved on the backend, so normalize to copy that suggests checking
+    // the list rather than exposing the raw axios wording.
+    if (isAxiosTimeout(err)) {
+      return "请求超时，请稍后刷新列表确认数据是否已保存";
+    }
     return err.message;
   }
   return "请求失败，请稍后重试";
+}
+
+/** Detect an axios timeout error (ECONNABORTED + `timeout` code/message). */
+export function isAxiosTimeout(err: AxiosError): boolean {
+  if (err.code === "ECONNABORTED") return true;
+  const msg = err.message || "";
+  return msg.toLowerCase().includes("timeout");
 }
