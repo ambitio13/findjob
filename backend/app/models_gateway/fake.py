@@ -32,6 +32,11 @@ _JD_ANALYSIS_MARKER = "career-focused JD analysis assistant"
 # branch without inspecting provider-specific metadata.
 _RESUME_FACT_MARKER = "resume fact extraction assistant"
 
+# Marker present in the JD paste parsing system prompt built by
+# ``build_jd_parse_messages``. Routes the fake gateway to the parse branch
+# without inspecting provider-specific metadata.
+_JD_PASTE_MARKER = "jd paste parsing assistant"
+
 
 class FakeModelGateway(ModelGateway):
     provider_name = "fake"
@@ -69,6 +74,23 @@ class FakeModelGateway(ModelGateway):
                 latency_ms=1,
                 usage=usage,
                 raw={"resume_fact_extraction": True},
+            )
+
+        if _is_jd_paste_prompt(request.messages):
+            content = json.dumps(_JD_PASTE_FAKE_OUTPUT, ensure_ascii=False)
+            usage = ChatUsage(
+                prompt_tokens=len(content) + sum(len(m.content) for m in request.messages),
+                completion_tokens=len(content),
+                total_tokens=len(content) * 2,
+            )
+            return ChatResponse(
+                content=content,
+                model=request.model or "fake-model",
+                provider=self.provider_name,
+                request_id=request.request_id,
+                latency_ms=1,
+                usage=usage,
+                raw={"jd_paste_parsing": True},
             )
 
         joined = " | ".join(m.content for m in request.messages)
@@ -112,6 +134,15 @@ def _is_resume_fact_prompt(messages: list) -> bool:
     mirroring ``_is_jd_analysis_prompt``.
     """
     return any(_RESUME_FACT_MARKER in m.content for m in messages)
+
+
+def _is_jd_paste_prompt(messages: list) -> bool:
+    """True when the message set looks like a JD paste parsing prompt.
+
+    Detection relies on the marker the JD paste system message injects,
+    mirroring ``_is_jd_analysis_prompt``.
+    """
+    return any(_JD_PASTE_MARKER in m.content for m in messages)
 
 
 # Deterministic, schema-valid JD-analysis payload. Every required field is set
@@ -166,6 +197,25 @@ _RESUME_FACT_FAKE_OUTPUT = {
     "locations": ["北京"],
     "strengths": ["系统设计", "Python 生态"],
     "highlights": ["主导核心服务重构"],
+    "uncertain_fields": [],
+}
+
+
+# Deterministic, schema-valid JD paste parsing payload. Every field is
+# optional, but we populate the common ones so the executor and smoke tests can
+# run fully offline and assertions are stable. Keeping it constant makes
+# executor assertions stable.
+_JD_PASTE_FAKE_OUTPUT = {
+    "title": "后端工程师",
+    "company": "某科技公司",
+    "platform": "manual",
+    "location": "北京",
+    "salary_range": "25k-40k",
+    "direction": "后端工程",
+    "responsibilities": ["负责后端 API 设计与实现", "维护核心服务稳定性"],
+    "hard_requirements": ["Python", "FastAPI", "PostgreSQL"],
+    "nice_to_have_requirements": ["Kafka", "Redis"],
+    "benefits_or_risk_clues": ["弹性工作", "期权激励"],
     "uncertain_fields": [],
 }
 

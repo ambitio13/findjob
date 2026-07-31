@@ -36,6 +36,7 @@ class JobCreate(BaseModel):
     direction: str | None = None
     jd_raw: str
     platform: str = "manual"
+    jd_normalized: dict[str, Any] | None = None
 
 
 class JobOut(BaseSchema):
@@ -47,6 +48,7 @@ class JobOut(BaseSchema):
     salary_range: str | None = None
     direction: str | None = None
     jd_raw: str
+    jd_normalized: dict[str, Any] | None = None
     created_at: datetime | None = None
 
 

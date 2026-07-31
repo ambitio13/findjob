@@ -11,12 +11,11 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db_session, get_model_gateway_dep
 from app.db.models.models import JobPosting, UserProfile
-from app.db.repositories import generated_artifact_repo, job_analysis_repo
+from app.db.repositories import generated_artifact_repo, job_analysis_repo, job_repo
 from app.models_gateway.base import ModelGateway
 from app.schemas.api import JobCreate, JobListOut, JobOut, PaginatedMeta
 from app.schemas.jd_analysis import (
@@ -28,7 +27,9 @@ from app.schemas.jd_analysis import (
     RunJdAnalysisRequest,
     RunJdAnalysisResponse,
 )
+from app.schemas.jd_parse import JdParseRequest, JdParseResponse, JdParseRunSummary
 from app.services.jd_analysis_service import run_resume_aware_jd_analysis
+from app.services.jd_parse_service import parse_jd
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -40,20 +41,7 @@ def list_jobs(
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
 ) -> JobListOut:
-    offset = (page - 1) * page_size
-    base_filter = JobPosting.user_id == current_user.id
-    rows = (
-        db.execute(
-            select(JobPosting)
-            .where(base_filter)
-            .order_by(JobPosting.created_at.desc())
-            .offset(offset)
-            .limit(page_size)
-        )
-        .scalars()
-        .all()
-    )
-    total = db.execute(select(func.count()).select_from(JobPosting).where(base_filter)).scalar_one()
+    rows, total = job_repo.list_for_user(db, current_user.id, page=page, page_size=page_size)
     return JobListOut(
         meta=PaginatedMeta(page=page, page_size=page_size, total=total),
         items=[JobOut.model_validate(r) for r in rows],
@@ -66,17 +54,18 @@ def create_job(
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
 ) -> JobOut:
-    job = JobPosting(
+    job = job_repo.create(
+        db,
         user_id=current_user.id,
-        platform=payload.platform,
         company=payload.company,
         title=payload.title,
+        jd_raw=payload.jd_raw,
+        platform=payload.platform,
         location=payload.location,
         salary_range=payload.salary_range,
         direction=payload.direction,
-        jd_raw=payload.jd_raw,
+        jd_normalized=payload.jd_normalized,
     )
-    db.add(job)
     db.commit()
     db.refresh(job)
     return JobOut.model_validate(job)
@@ -88,12 +77,48 @@ def get_job(
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
 ) -> JobOut:
-    job = db.get(JobPosting, job_id)
-    if job is None or job.user_id != current_user.id:
+    job = job_repo.get_by_id(db, job_id, current_user.id)
+    if job is None:
         # 404 (not 403) to avoid revealing that the resource exists for
         # another user.
         raise HTTPException(status_code=404, detail="job not found")
     return JobOut.model_validate(job)
+
+
+# ---------------------------------------------------------------------------
+# JD paste parsing (parse-then-create flow)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/parse", response_model=JdParseResponse)
+async def parse_job_jd(
+    payload: JdParseRequest,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+    gateway: ModelGateway = Depends(get_model_gateway_dep),
+) -> JdParseResponse:
+    """Parse raw JD text into structured draft fields (parse-then-create).
+
+    The route is a thin transport layer: it validates the body (blank ``raw_jd``
+    → 422 before service entry), resolves the current user, and delegates to
+    the service orchestrator. Model/provider/schema failures are recoverable:
+    the endpoint returns HTTP 200 with a failed run and empty typed fields so
+    the user can fall back to manual entry.
+    """
+    outcome = await parse_jd(
+        db=db,
+        current_user=current_user,
+        raw_jd=payload.raw_jd,
+        platform_hint=payload.platform,
+        gateway=gateway,
+    )
+    return JdParseResponse(
+        status=outcome.status,
+        run=JdParseRunSummary.model_validate(outcome.run),
+        fields=outcome.fields,
+        extraction=outcome.extraction,
+        raw_jd=outcome.raw_jd,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +128,8 @@ def get_job(
 
 def _require_owned_job(db: Session, current_user: UserProfile, job_id: str) -> JobPosting:
     """Return the current user's job or raise 404 (not 403)."""
-    job = db.get(JobPosting, job_id)
-    if job is None or job.user_id != current_user.id:
+    job = job_repo.get_by_id(db, job_id, current_user.id)
+    if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     return job
 

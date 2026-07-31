@@ -24,6 +24,8 @@ export interface JobOut {
   salary_range: string | null;
   direction: string | null;
   jd_raw: string;
+  /** Structured parse draft stored in the ``jd_normalized`` JSON column. */
+  jd_normalized: Record<string, unknown> | null;
   created_at: string | null;
 }
 
@@ -40,6 +42,78 @@ export interface JobCreate {
   direction?: string | null;
   jd_raw: string;
   platform?: string;
+  /** Structured parse draft persisted alongside the manual fields. */
+  jd_normalized?: Record<string, unknown> | null;
+}
+
+// --- JD paste parsing (parse-then-create flow) ---
+
+/** A field the model could not confidently extract (mirrors backend UncertainField). */
+export interface JdParseUncertainField {
+  field: string;
+  reason: string | null;
+}
+
+/**
+ * Validated structured draft fields produced by the JD paste parse workflow.
+ * Mirrors `JdPasteFactsModelOutput` in backend/app/schemas/jd_paste_facts.py.
+ * All fields are optional/default-empty to tolerate sparse JDs and to serve as
+ * the stable empty shape on parse failure.
+ */
+export interface JdParseDraftFields {
+  title: string | null;
+  company: string | null;
+  platform: string | null;
+  location: string | null;
+  salary_range: string | null;
+  direction: string | null;
+  responsibilities: string[];
+  hard_requirements: string[];
+  nice_to_have_requirements: string[];
+  benefits_or_risk_clues: string[];
+  uncertain_fields: JdParseUncertainField[];
+}
+
+/** Lightweight run summary carried in the parse response. */
+export interface JdParseRunSummary {
+  id: string;
+  status: string;
+  error: string | null;
+}
+
+/** Response shape for POST /api/v1/jobs/parse. */
+export interface JdParseResponse {
+  status: "succeeded" | "failed";
+  run: JdParseRunSummary;
+  fields: JdParseDraftFields;
+  /** Parse provenance persisted into ``jd_normalized._extraction`` on save. */
+  extraction: JdNormalizedExtraction;
+  raw_jd: string;
+}
+
+/**
+ * Parse provenance persisted in ``jd_normalized._extraction`` (design.md
+ * §"jd_normalized shape"). Captured at parse time so the saved job carries an
+ * auditable link back to the AgentRun and model that produced the draft.
+ */
+export interface JdNormalizedExtraction {
+  status: string;
+  run_id?: string;
+  parsed_at?: string;
+  prompt_version?: string;
+  provider?: string;
+  model?: string;
+}
+
+/**
+ * The durable ``jd_normalized`` shape stored on a JobPosting (design.md
+ * §"jd_normalized shape"). ``fields`` is the model-parsed draft snapshot;
+ * ``_extraction`` holds parse provenance. The job's own columns hold the
+ * user-edited final values.
+ */
+export interface JdNormalized {
+  _extraction?: JdNormalizedExtraction;
+  fields: JdParseDraftFields;
 }
 
 export interface AgentRunOut {

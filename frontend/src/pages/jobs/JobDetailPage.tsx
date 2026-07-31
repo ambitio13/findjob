@@ -307,6 +307,8 @@ export function JobDetailPage() {
         <Paragraph style={{ whiteSpace: "pre-wrap" }}>{job.jd_raw}</Paragraph>
       </Card>
 
+      <JdNormalizedCard jdNormalized={job.jd_normalized} />
+
       <Card title="JD 分析">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           {noResumes ? (
@@ -759,4 +761,175 @@ function formatMetaValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * Renders the structured parse draft persisted in ``jd_normalized`` when
+ * present. The durable contract (design.md §"jd_normalized shape") stores the
+ * model-parsed draft under ``fields`` and parse provenance under
+ * ``_extraction``; the job's own columns hold the user-edited final values.
+ */
+function JdNormalizedCard({
+  jdNormalized,
+}: {
+  jdNormalized: Record<string, unknown> | null;
+}) {
+  if (!jdNormalized) return null;
+
+  const fieldsBlob = jdNormalized.fields;
+  const draftFields: Partial<{
+    responsibilities: string[];
+    hard_requirements: string[];
+    nice_to_have_requirements: string[];
+    benefits_or_risk_clues: string[];
+    uncertain_fields: { field: string; reason: string | null }[];
+  }> =
+    typeof fieldsBlob === "object" && fieldsBlob !== null
+      ? (fieldsBlob as Record<string, unknown>)
+      : {};
+
+  const responsibilities = asStringArray(draftFields.responsibilities);
+  const hardRequirements = asStringArray(draftFields.hard_requirements);
+  const niceToHave = asStringArray(draftFields.nice_to_have_requirements);
+  const benefitsOrRisk = asStringArray(draftFields.benefits_or_risk_clues);
+  const uncertainFields = asUncertainFields(draftFields.uncertain_fields);
+  const extraction = asExtractionInfo(jdNormalized._extraction);
+
+  const hasLists =
+    responsibilities.length > 0 ||
+    hardRequirements.length > 0 ||
+    niceToHave.length > 0 ||
+    benefitsOrRisk.length > 0;
+
+  if (!hasLists && uncertainFields.length === 0 && !extraction) return null;
+
+  return (
+    <Card title="解析草稿（jd_normalized）" size="small">
+      <Space direction="vertical" size="small" style={{ width: "100%" }}>
+        {extraction && (
+          <Descriptions column={2} size="small">
+            {extraction.status && (
+              <Descriptions.Item label="解析状态">
+                {extraction.status}
+              </Descriptions.Item>
+            )}
+            {extraction.prompt_version && (
+              <Descriptions.Item label="Prompt 版本">
+                {extraction.prompt_version}
+              </Descriptions.Item>
+            )}
+            {extraction.provider && (
+              <Descriptions.Item label="Provider">
+                {extraction.provider}
+              </Descriptions.Item>
+            )}
+            {extraction.model && (
+              <Descriptions.Item label="模型">
+                {extraction.model}
+              </Descriptions.Item>
+            )}
+            {extraction.run_id && (
+              <Descriptions.Item label="运行 ID" span={2}>
+                <Text code>{extraction.run_id}</Text>
+              </Descriptions.Item>
+            )}
+            {extraction.parsed_at && (
+              <Descriptions.Item label="解析时间" span={2}>
+                {formatTime(extraction.parsed_at)}
+              </Descriptions.Item>
+            )}
+          </Descriptions>
+        )}
+        {responsibilities.length > 0 && (
+          <StringListCard title="职责" items={responsibilities} />
+        )}
+        {hardRequirements.length > 0 && (
+          <StringListCard title="硬性要求" items={hardRequirements} />
+        )}
+        {niceToHave.length > 0 && (
+          <StringListCard title="加分项" items={niceToHave} />
+        )}
+        {benefitsOrRisk.length > 0 && (
+          <StringListCard title="福利/风险线索" items={benefitsOrRisk} />
+        )}
+        {uncertainFields.length > 0 && (
+          <Card type="inner" title="不确定字段" size="small">
+            <List
+              size="small"
+              dataSource={uncertainFields}
+              renderItem={(item) => (
+                <List.Item>
+                  <Space direction="vertical" size={0}>
+                    <Text strong>{item.field}</Text>
+                    {item.reason ? (
+                      <Text type="secondary">{item.reason}</Text>
+                    ) : null}
+                  </Space>
+                </List.Item>
+              )}
+            />
+          </Card>
+        )}
+        <Text type="secondary">
+          以上为解析时的草稿快照，顶部字段为最终保存值。
+        </Text>
+      </Space>
+    </Card>
+  );
+}
+
+function StringListCard({ title, items }: { title: string; items: string[] }) {
+  return (
+    <Card type="inner" title={title} size="small">
+      <List
+        size="small"
+        dataSource={items}
+        renderItem={(item) => <List.Item>{item}</List.Item>}
+      />
+    </Card>
+  );
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string");
+}
+
+function asUncertainFields(
+  value: unknown,
+): { field: string; reason: string | null }[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null)
+    .map((v) => ({
+      field: typeof v.field === "string" ? v.field : String(v.field ?? ""),
+      reason:
+        typeof v.reason === "string" || v.reason == null
+          ? (v.reason as string | null)
+          : String(v.reason),
+    }))
+    .filter((v) => v.field);
+}
+
+function asExtractionInfo(
+  value: unknown,
+): {
+  status?: string;
+  run_id?: string;
+  parsed_at?: string;
+  prompt_version?: string;
+  provider?: string;
+  model?: string;
+} | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  return {
+    status: typeof v.status === "string" ? v.status : undefined,
+    run_id: typeof v.run_id === "string" ? v.run_id : undefined,
+    parsed_at: typeof v.parsed_at === "string" ? v.parsed_at : undefined,
+    prompt_version:
+      typeof v.prompt_version === "string" ? v.prompt_version : undefined,
+    provider: typeof v.provider === "string" ? v.provider : undefined,
+    model: typeof v.model === "string" ? v.model : undefined,
+  };
 }
