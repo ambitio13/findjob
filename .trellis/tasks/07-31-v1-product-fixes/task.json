@@ -1,0 +1,32 @@
+{
+  "id": "v1-product-fixes",
+  "name": "v1-product-fixes",
+  "title": "7.31 First Version Product Fixes",
+  "description": "Plan and implement the first-version product corrections from the July 31 review.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "coldnight",
+  "assignee": "coldnight",
+  "createdAt": "2026-07-31",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "07-31-archive-previous-planning-artifacts",
+    "07-31-agent-run-observability-result-visibility",
+    "07-31-resume-upload-auto-profile-parsing",
+    "07-31-structured-profile-text-fields",
+    "07-31-jd-paste-auto-parsing"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

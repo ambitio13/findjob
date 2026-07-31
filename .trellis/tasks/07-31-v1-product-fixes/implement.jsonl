@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Cross-task quality rules for the v1 correction program."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Backend API contracts shared by observability, resume parsing, profile, and JD parsing tasks."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Frontend async API integration patterns for persisted agent results and parsing workflows."}
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "ModelGateway and agent workflow boundaries for all AI-backed v1 fixes."}

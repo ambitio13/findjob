@@ -1,0 +1,2 @@
+{"file": ".trellis/workflow.md", "reason": "Trellis archive and finish-work lifecycle rules."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Keep housekeeping scoped and non-destructive."}

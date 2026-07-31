@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/logging.md", "reason": "Agent run observability, structured logs, audit logs, and trace expectations."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Persisting failed runs and exposing sanitized failure details."}
+{"file": ".trellis/spec/backend/database.md", "reason": "User-scoped persistence and repository query rules for runs, steps, analyses, and artifacts."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Adding or extending run detail, step, and analysis read APIs."}
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "Agent workflow and ModelGateway boundaries."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Frontend loading and refreshing of persisted async agent results."}
+{"file": ".trellis/spec/frontend/ai-sdk-integration.md", "reason": "Agent process UI, generated result presentation, and approval boundaries."}
+{"file": ".trellis/spec/frontend/table-detail-views.md", "reason": "Job detail page result and process panel layout patterns."}

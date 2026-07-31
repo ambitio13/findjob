@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "Resume fact/profile extraction must use ModelGateway and agent boundaries."}
+{"file": ".trellis/spec/backend/database.md", "reason": "Durable resume version facts and profile draft persistence."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Upload/extraction response contracts and status fields."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Upload flow status and profile draft hydration."}

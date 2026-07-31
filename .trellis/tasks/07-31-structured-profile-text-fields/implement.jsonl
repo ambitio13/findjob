@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Profile update/read contract changes."}
+{"file": ".trellis/spec/backend/type-safety.md", "reason": "Typed schema updates for explicit profile fields."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Profile form controls and Ant Design Pro conventions."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Frontend profile types and payload shape."}

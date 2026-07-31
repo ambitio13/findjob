@@ -1,0 +1,2 @@
+{"file": ".trellis/workflow.md", "reason": "Validate archive outcome against Trellis lifecycle."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Review that no product code changed during housekeeping."}

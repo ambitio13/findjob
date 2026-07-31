@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend lint, format, and test gates."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Frontend lint, type, and build gates."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Cross-layer review checklist."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Validate storage to service to API to UI data flow."}

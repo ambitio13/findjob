@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "JD parser must use ModelGateway if model-backed."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Paste-parse endpoint and job save contracts."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Paste, parse, edit, and save frontend flow."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Form and review/edit UI conventions."}
