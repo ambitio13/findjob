@@ -251,3 +251,36 @@ Accepted and archived the P0 resume upload timeout task. Upload now saves resume
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Async JD paste parsing (enqueue-and-poll)
+
+**Date**: 2026-08-01
+**Task**: Async JD paste parsing (enqueue-and-poll)
+**Branch**: `master`
+
+### Summary
+
+Converted POST /api/v1/jobs/parse from a synchronous blocking model call to an enqueue-and-poll pattern. Backend: the endpoint now creates a durable 'queued' AgentRun, enqueues a jd_paste_parsing worker job via arq, and returns HTTP 202 immediately; the worker handler opens its own session, constructs its own ModelGateway, re-checks ownership, and stores sanitized fields+extraction in AgentRun.result (never raw JD text). Frontend: JobCreateModal rewritten to submit→poll→hydrate→retry, mirroring ResumeDetailPage with recursive setTimeout (3s) + active flag + TERMINAL_JD_PARSE_STATUSES. Added JdParseSubmitResponse type and TERMINAL_JD_PARSE_STATUSES constant. Tests: two-layer structure (API HTTP-202 contract with patched get_queue + worker handler execution with stub gateways), covering enqueue success/failure, ownership scoping, blank-JD 422, handler success/failure/owner-mismatch/missing-run, and raw-JD sanitization across all persisted rows. Fixed ruff import-sort/unused-import issues and ESLint prefer-const on the polling active flag.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2dad958` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
