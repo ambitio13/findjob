@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "FastAPI route and schema boundaries."}
+{"file": ".trellis/spec/backend/database.md", "reason": "UserProfile persistence rules."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "User-scoped ownership and MVP auth considerations."}
+{"file": ".trellis/spec/backend/type-safety.md", "reason": "Pydantic schema conventions."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Ant Design Pro form conventions."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Form/backend state ownership."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Frontend type conventions."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "New db/repositories package placement for user_profile_repo."}

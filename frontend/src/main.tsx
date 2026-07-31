@@ -7,6 +7,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { JobsPage } from "@/pages/jobs/JobsPage";
 import { JobDetailPage } from "@/pages/jobs/JobDetailPage";
+import { ProfilePage } from "@/pages/profile/ProfilePage";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -17,6 +18,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="/" element={<DashboardPage />} />
             <Route path="/jobs" element={<JobsPage />} />
             <Route path="/jobs/:id" element={<JobDetailPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
           </Route>
         </Routes>
       </BrowserRouter>

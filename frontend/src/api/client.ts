@@ -8,6 +8,8 @@ import type {
   JobOut,
   ManualJdAnalysisDemoResponse,
   AgentRunOut,
+  UserProfile,
+  UserProfileUpdate,
 } from "@/types";
 
 const baseURL = "/api/v1";
@@ -62,6 +64,20 @@ export async function runManualJdAnalysisDemo(
     "/agent-runs/manual-jd-analysis-demo",
     { jd_text: jdText },
   );
+  return data;
+}
+
+// --- Current user profile ---
+
+export async function getCurrentUser(): Promise<UserProfile> {
+  const { data } = await apiClient.get<UserProfile>("/users/me");
+  return data;
+}
+
+export async function updateCurrentUser(
+  payload: UserProfileUpdate,
+): Promise<UserProfile> {
+  const { data } = await apiClient.patch<UserProfile>("/users/me", payload);
   return data;
 }
 

@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend tests and validation checklist."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Check user API shape."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "Check user ownership assumptions."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Frontend workflow checklist."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Check Ant Design Pro form usage."}
+

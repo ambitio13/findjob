@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     app_env: Literal["local", "test", "prod"] = "local"
     api_v1_prefix: str = "/api/v1"
 
+    # --- Current user (MVP only; no auth) ---
+    # When no ``X-User-Id`` header is present, requests are attributed to this
+    # fixed development user. Exposed on Settings so tests can override it.
+    demo_user_id: str = "demo_user"
+
     # --- Database (PostgreSQL) ---
     database_url: str = "postgresql+psycopg://app:app@localhost:5432/job_search_agent"
     db_pool_size: int = 5

@@ -58,3 +58,36 @@ export interface ManualJdAnalysisDemoResponse {
   artifact_type: string;
   content: string;
 }
+
+// --- Current user profile & job-search preferences ---
+
+export interface UserProfile {
+  id: string;
+  display_name: string;
+  email: string | null;
+  career_direction: string | null;
+  base_location: string | null;
+  preferred_locations: string[] | null;
+  salary_min: number | null;
+  salary_max: number | null;
+  strengths: string[] | null;
+  constraints: Record<string, unknown> | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * Partial update payload. All fields optional; omitting a field leaves it
+ * untouched, sending `null` clears the underlying nullable column.
+ */
+export interface UserProfileUpdate {
+  display_name?: string;
+  email?: string | null;
+  career_direction?: string | null;
+  base_location?: string | null;
+  preferred_locations?: string[] | null;
+  salary_min?: number | null;
+  salary_max?: number | null;
+  strengths?: string[] | null;
+  constraints?: Record<string, unknown> | null;
+}
