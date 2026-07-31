@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # fixed development user. Exposed on Settings so tests can override it.
     demo_user_id: str = "demo_user"
 
+    # --- Resume upload (MVP local storage) ---
+    # Directory for persisted resume files. In docker this is a named volume
+    # mount; local dev overrides via env (e.g. ``./data/resumes``).
+    resume_upload_dir: str = "/data/resumes"
+    resume_max_size_mb: int = 10
+
     # --- Database (PostgreSQL) ---
     database_url: str = "postgresql+psycopg://app:app@localhost:5432/job_search_agent"
     db_pool_size: int = 5

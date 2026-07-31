@@ -8,6 +8,9 @@ import type {
   JobOut,
   ManualJdAnalysisDemoResponse,
   AgentRunOut,
+  ResumeDetailOut,
+  ResumeListOut,
+  ResumeVersionListItem,
   UserProfile,
   UserProfileUpdate,
 } from "@/types";
@@ -78,6 +81,40 @@ export async function updateCurrentUser(
   payload: UserProfileUpdate,
 ): Promise<UserProfile> {
   const { data } = await apiClient.patch<UserProfile>("/users/me", payload);
+  return data;
+}
+
+// --- Resumes ---
+
+export async function uploadResume(file: File): Promise<ResumeDetailOut> {
+  const form = new FormData();
+  form.append("file", file);
+  // Override the instance-level JSON content type so the browser sets the
+  // multipart boundary.
+  const { data } = await apiClient.post<ResumeDetailOut>("/resumes", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function listResumes(page = 1, pageSize = 20): Promise<ResumeListOut> {
+  const { data } = await apiClient.get<ResumeListOut>("/resumes", {
+    params: { page, page_size: pageSize },
+  });
+  return data;
+}
+
+export async function getResume(id: string): Promise<ResumeDetailOut> {
+  const { data } = await apiClient.get<ResumeDetailOut>(`/resumes/${id}`);
+  return data;
+}
+
+export async function listResumeVersions(
+  resumeId: string,
+): Promise<ResumeVersionListItem[]> {
+  const { data } = await apiClient.get<ResumeVersionListItem[]>(
+    `/resumes/${resumeId}/versions`,
+  );
   return data;
 }
 

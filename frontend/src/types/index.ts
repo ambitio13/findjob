@@ -91,3 +91,47 @@ export interface UserProfileUpdate {
   strengths?: string[] | null;
   constraints?: Record<string, unknown> | null;
 }
+
+// --- Resumes ---
+
+/** Full resume version, including extracted ``raw_text``. Detail view only. */
+export interface ResumeVersionOut {
+  id: string;
+  version_no: number;
+  parsed_facts: Record<string, unknown> | null;
+  raw_text: string | null;
+  created_at: string | null;
+}
+
+/** Version summary without ``raw_text`` (keeps list payloads small). */
+export interface ResumeVersionListItem {
+  id: string;
+  version_no: number;
+  created_at: string | null;
+  parser_status: string | null;
+  parser_name: string | null;
+}
+
+/** Resume summary used in list responses. */
+export interface ResumeOut {
+  id: string;
+  filename: string;
+  mime_type: string | null;
+  created_at: string | null;
+  latest_version_no: number | null;
+}
+
+export interface ResumeListOut {
+  meta: PaginatedMeta;
+  items: ResumeOut[];
+}
+
+/** Resume detail, including the latest version's raw text. */
+export interface ResumeDetailOut {
+  id: string;
+  filename: string;
+  mime_type: string | null;
+  storage_uri: string | null;
+  created_at: string | null;
+  latest_version: ResumeVersionOut | null;
+}

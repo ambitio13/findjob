@@ -2,16 +2,25 @@
 
 Tests run against a real PostgreSQL test database (see ``.env.test`` /
 ``DATABASE_URL``). The model gateway uses the fake provider so no network or
-API key is required. Each test function runs in a rolled-back transaction so
+API key is required. Each test function runs against a truncated database so
 tests are isolated and do not leave rows behind.
+
+Resume uploads are written to a per-session temp directory (set via
+``RESUME_UPLOAD_DIR`` before the app imports its settings) so tests never touch
+the real ``/data/resumes`` volume.
 """
 
 from __future__ import annotations
 
 import os
+import tempfile
 
+# Override the resume upload directory BEFORE the app/settings are imported so
+# the Settings instance picks up the temp path. ``get_settings`` is cached on
+# first call, so this must happen before ``app.main`` is imported.
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("MODEL_PROVIDER", "fake")
+os.environ["RESUME_UPLOAD_DIR"] = tempfile.mkdtemp(prefix="resume_test_")
 
 import pytest
 from fastapi.testclient import TestClient
