@@ -151,3 +151,36 @@ Completed the P0 agent run observability task: added job-scoped agent runs and m
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: 简历上传自动解析 Profile
+
+**Date**: 2026-08-01
+**Task**: 简历上传自动解析 Profile
+**Branch**: `master`
+
+### Summary
+
+实现简历上传后自动抽取结构化事实（contact/education/work_experience/projects/skills 等），带 AgentRun/AgentStep 审计链。上传路径内联抽取，模型失败仍返回 201 + _extraction.status=failed；重新解析端点失败返回 502。JD 分析升级 v2 prompt 消费结构化 facts。前端 ResumeDetailPage 渲染抽取状态、结构化事实卡片、Profile 草稿预览和重新解析按钮。后端 113 tests pass，ruff clean；前端 lint/type-check/build pass。补充 spec：logging.md AgentStep sanitization 不变量，ai-sdk-integration.md 上传内联抽取失败契约。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `98ebee3` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
