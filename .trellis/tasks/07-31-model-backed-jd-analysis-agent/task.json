@@ -3,7 +3,7 @@
   "name": "model-backed-jd-analysis-agent",
   "title": "Model Backed JD Analysis Agent",
   "description": "Replace the smoke JD analysis flow with a real model-backed Agent workflow through Model Gateway.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
