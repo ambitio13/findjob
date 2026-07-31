@@ -3,7 +3,7 @@
   "name": "v1-product-fixes",
   "title": "7.31 First Version Product Fixes",
   "description": "Plan and implement the first-version product corrections from the July 31 review.",
-  "status": "done",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -15,7 +15,7 @@
   "branch": null,
   "base_branch": "master",
   "worktree_path": null,
-  "commit": null,
+  "commit": "cc50075d1fe5746690189f2602a2c59e760cac53",
   "pr_url": null,
   "subtasks": [],
   "children": [
