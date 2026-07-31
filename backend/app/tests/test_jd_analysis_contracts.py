@@ -300,6 +300,29 @@ def test_build_messages_custom_caps_override_defaults() -> None:
     assert "1234" in result.messages[1].content
 
 
+def test_build_messages_default_caps_match_phase2_constants() -> None:
+    """Default caps are the Phase 2 MVP values: resume 12k, JD 8k chars."""
+    assert RESUME_RAW_TEXT_CAP == 12_000
+    assert JD_RAW_CAP == 8_000
+
+
+def test_build_messages_truncation_metadata_records_both_caps() -> None:
+    """Truncation metadata carries cap + total + dropped for both sources.
+
+    Phase 2 requires truncation metadata be exercisable; this locks in the
+    shape of ``truncation`` so the Phase 4 orchestrator can persist it into
+    ``AgentRun.result.source_context``.
+    """
+    result = build_jd_analysis_messages(_make_context())
+    trunc = result.truncation
+    assert trunc["resume_cap"] == RESUME_RAW_TEXT_CAP
+    assert trunc["jd_cap"] == JD_RAW_CAP
+    assert "resume_raw_text_total_chars" in trunc
+    assert "resume_raw_text_dropped_chars" in trunc
+    assert "jd_raw_total_chars" in trunc
+    assert "jd_raw_dropped_chars" in trunc
+
+
 # ---------------------------------------------------------------------------
 # Context loader: ownership and data quality
 # ---------------------------------------------------------------------------
@@ -330,6 +353,38 @@ def test_load_context_success(client: TestClient) -> None:
         assert ctx.resume["resume_version_id"] == version.id
         assert ctx.resume["raw_text"] == "Python 5年 FastAPI"
         assert ctx.profile["display_name"] == "测试用户"
+
+
+def test_load_context_context_carries_all_design_section7_fields(client: TestClient) -> None:
+    """The returned context must carry every field design §7 lists.
+
+    §7 requires ``user_id``, ``profile``, ``job``, and a ``resume`` sub-dict
+    with ``resume_id``, ``resume_version_id``, ``filename``,
+    ``parser_status``, ``raw_text``, ``parsed_facts``. This is the single
+    end-to-end check that the loader assembles the full contract.
+    """
+    with SessionLocal() as db:
+        _make_user(db, "ctx_fields")
+        _, version = _make_resume(db, "ctx_fields", "Python 5年 FastAPI")
+        job = _make_job(db, "ctx_fields")
+        db.commit()
+
+    with SessionLocal() as db:
+        fresh_user = db.get(UserProfile, "ctx_fields")
+        assert fresh_user is not None
+        ctx = _load_context(db, fresh_user, job.id, version.id)
+        # Top-level §7 fields.
+        assert ctx.user_id == "ctx_fields"
+        assert isinstance(ctx.profile, dict)
+        assert isinstance(ctx.job, dict)
+        assert isinstance(ctx.resume, dict)
+        # resume sub-dict §7 fields.
+        assert "resume_id" in ctx.resume
+        assert "resume_version_id" in ctx.resume
+        assert "filename" in ctx.resume
+        assert "parser_status" in ctx.resume
+        assert "raw_text" in ctx.resume
+        assert "parsed_facts" in ctx.resume
 
 
 def test_load_context_rejects_missing_job(client: TestClient) -> None:
@@ -426,6 +481,168 @@ def test_load_context_rejects_blank_raw_text(client: TestClient) -> None:
         with pytest.raises(HTTPException) as exc:
             _load_context(db, fresh_user, job.id, version.id)
         assert exc.value.status_code == 422
+
+
+def test_load_context_profile_carries_all_design_fields(client: TestClient) -> None:
+    """context.profile must carry every field design §7 lists for the user.
+
+    The loader projects the current user's ``UserProfile`` into the prompt
+    context; this locks in that all profile fields (including the optional
+    preference fields used by the prompt) survive the projection.
+    """
+    with SessionLocal() as db:
+        user = UserProfile(
+            id="profile_full",
+            display_name="完整用户",
+            email="full@example.com",
+            career_direction="engineering",
+            base_location="上海",
+            preferred_locations=["上海", "杭州"],
+            salary_min=25000,
+            salary_max=50000,
+            strengths=["Python", "FastAPI"],
+            constraints={"remote": True, "equity": True},
+        )
+        db.add(user)
+        _, version = _make_resume(db, "profile_full", "Python 5年")
+        job = _make_job(db, "profile_full")
+        db.commit()
+
+    with SessionLocal() as db:
+        fresh_user = db.get(UserProfile, "profile_full")
+        assert fresh_user is not None
+        ctx = _load_context(db, fresh_user, job.id, version.id)
+        profile = ctx.profile
+        assert profile["id"] == "profile_full"
+        assert profile["display_name"] == "完整用户"
+        assert profile["email"] == "full@example.com"
+        assert profile["career_direction"] == "engineering"
+        assert profile["base_location"] == "上海"
+        assert profile["preferred_locations"] == ["上海", "杭州"]
+        assert profile["salary_min"] == 25000
+        assert profile["salary_max"] == 50000
+        assert profile["strengths"] == ["Python", "FastAPI"]
+        assert profile["constraints"] == {"remote": True, "equity": True}
+
+
+def test_load_context_degrades_gracefully_for_sparse_profile(client: TestClient) -> None:
+    """A sparse profile (only display_name, all preference fields NULL) loads.
+
+    ``user_profile_repo.ensure_default`` inserts a row with only
+    ``display_name`` set; the loader must not crash when the optional
+    preference columns are ``None`` (design §7: profile may be sparse for MVP).
+    """
+    with SessionLocal() as db:
+        # Only the non-nullable display_name is set; every preference column
+        # is NULL, mirroring what ensure_default produces for a brand-new user.
+        user = UserProfile(id="profile_sparse", display_name="稀疏用户")
+        db.add(user)
+        _, version = _make_resume(db, "profile_sparse", "Python 3年")
+        job = _make_job(db, "profile_sparse")
+        db.commit()
+
+    with SessionLocal() as db:
+        fresh_user = db.get(UserProfile, "profile_sparse")
+        assert fresh_user is not None
+        ctx = _load_context(db, fresh_user, job.id, version.id)
+        assert ctx.user_id == "profile_sparse"
+        assert ctx.profile["display_name"] == "稀疏用户"
+        # Optional fields degrade to None, not crashes.
+        assert ctx.profile["career_direction"] is None
+        assert ctx.profile["preferred_locations"] is None
+        assert ctx.profile["salary_min"] is None
+        assert ctx.profile["strengths"] is None
+
+
+def test_load_context_handles_none_parsed_facts(client: TestClient) -> None:
+    """parsed_facts=None must not crash the loader (design §7: dict | None)."""
+    with SessionLocal() as db:
+        _make_user(db, "facts_none")
+        resume = Resume(user_id="facts_none", filename="r.txt")
+        db.add(resume)
+        db.flush()
+        version = ResumeVersion(
+            resume_id=resume.id,
+            version_no=1,
+            raw_text="Python 5年",
+            parsed_facts=None,
+        )
+        db.add(version)
+        job = _make_job(db, "facts_none")
+        db.commit()
+
+    with SessionLocal() as db:
+        fresh_user = db.get(UserProfile, "facts_none")
+        assert fresh_user is not None
+        ctx = _load_context(db, fresh_user, job.id, version.id)
+        # None degrades to {} per the loader's `parsed_facts or {}`.
+        assert ctx.resume["parsed_facts"] == {}
+        # parser_status is derived from parsed_facts and must also degrade.
+        assert ctx.resume["parser_status"] is None
+        assert ctx.resume["raw_text"] == "Python 5年"
+
+
+def test_load_context_handles_empty_parsed_facts(client: TestClient) -> None:
+    """parsed_facts={} must not crash the loader and yields empty dict."""
+    with SessionLocal() as db:
+        _make_user(db, "facts_empty")
+        resume = Resume(user_id="facts_empty", filename="r.txt")
+        db.add(resume)
+        db.flush()
+        version = ResumeVersion(
+            resume_id=resume.id,
+            version_no=1,
+            raw_text="Python 5年",
+            parsed_facts={},
+        )
+        db.add(version)
+        job = _make_job(db, "facts_empty")
+        db.commit()
+
+    with SessionLocal() as db:
+        fresh_user = db.get(UserProfile, "facts_empty")
+        assert fresh_user is not None
+        ctx = _load_context(db, fresh_user, job.id, version.id)
+        assert ctx.resume["parsed_facts"] == {}
+        assert ctx.resume["parser_status"] is None
+
+
+def test_load_context_resume_dict_has_all_design_fields(client: TestClient) -> None:
+    """context.resume must carry every field design §7 lists for the resume.
+
+    Locks in: resume_id, resume_version_id, filename, parser_status, raw_text,
+    parsed_facts — the full provenance the prompt and artifact need.
+    """
+    with SessionLocal() as db:
+        _make_user(db, "resume_fields")
+        resume = Resume(user_id="resume_fields", filename="cv.pdf")
+        db.add(resume)
+        db.flush()
+        version = ResumeVersion(
+            resume_id=resume.id,
+            version_no=2,
+            raw_text="Go 4年 Kubernetes",
+            parsed_facts={"_parser": "pdf", "_parser_status": "parsed", "skills": ["Go"]},
+        )
+        db.add(version)
+        job = _make_job(db, "resume_fields")
+        db.commit()
+
+    with SessionLocal() as db:
+        fresh_user = db.get(UserProfile, "resume_fields")
+        assert fresh_user is not None
+        ctx = _load_context(db, fresh_user, job.id, version.id)
+        resume_dict = ctx.resume
+        assert resume_dict["resume_id"] == resume.id
+        assert resume_dict["resume_version_id"] == version.id
+        assert resume_dict["filename"] == "cv.pdf"
+        assert resume_dict["parser_status"] == "parsed"
+        assert resume_dict["raw_text"] == "Go 4年 Kubernetes"
+        assert resume_dict["parsed_facts"] == {
+            "_parser": "pdf",
+            "_parser_status": "parsed",
+            "skills": ["Go"],
+        }
 
 
 # ---------------------------------------------------------------------------
