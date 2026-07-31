@@ -33,7 +33,13 @@ from app.main import app
 
 @pytest.fixture(scope="session", autouse=True)
 def _create_schema() -> None:
-    """Ensure the schema exists on the test database before any test runs."""
+    """Ensure the schema exists on the test database before any test runs.
+
+    ``create_all`` with ``checkfirst=True`` will not *alter* an existing table
+    (e.g. add a new column), so we drop first to guarantee the schema matches
+    the current models. The test DB is a throwaway database.
+    """
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
 
 

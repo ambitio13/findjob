@@ -11,6 +11,11 @@ Pydantic validation is the persistence gate: the executor returns a validated
 :class:`JdAnalysisValidationError` on JSON parse or schema failure. Phase 4's
 orchestrator translates that exception into the 502
 ``model returned invalid analysis`` response (design.md §5.1 error table).
+
+The orchestrator drives the workflow as ordered steps (build_prompt_context →
+call_model → validate_model_output). ``build_prompt`` and ``call_model`` are
+exposed separately so the service can persist timing/metadata for each phase
+and pinpoint where a failure occurred.
 """
 
 from __future__ import annotations
@@ -77,11 +82,16 @@ class JdAnalysisExecutor:
         self._gateway = gateway
 
     async def execute(self, context: JdAnalysisContext) -> JdAnalysisExecution:
-        prompt = build_jd_analysis_messages(context)
-        request = ChatRequest(messages=prompt.messages, temperature=0.1)
+        """Run all three model phases and return the validated execution.
 
-        response = await self._gateway.chat(request)
-        validated = self._parse_and_validate(response)
+        Convenience entry point for callers that do not need per-phase step
+        persistence. The service orchestrator calls the individual phase
+        methods (``build_prompt`` / ``call_model`` / ``validate``) instead so it
+        can record an ``AgentStep`` for each.
+        """
+        prompt = self.build_prompt(context)
+        response = await self.call_model(prompt.messages)
+        validated = self.validate(response)
         return JdAnalysisExecution(
             output=validated,
             truncation=prompt.truncation,
@@ -92,9 +102,17 @@ class JdAnalysisExecutor:
             usage=_usage_to_dict(response.usage),
         )
 
-    @staticmethod
-    def _parse_and_validate(response: ChatResponse) -> JdAnalysisModelOutput:
-        """Parse ``ChatResponse.content`` as JSON and validate the schema.
+    def build_prompt(self, context: JdAnalysisContext):
+        """Build the chat messages + truncation metadata (build_prompt_context)."""
+        return build_jd_analysis_messages(context)
+
+    async def call_model(self, messages) -> ChatResponse:
+        """Send the chat request and return the raw response (call_model)."""
+        request = ChatRequest(messages=messages, temperature=0.1)
+        return await self._gateway.chat(request)
+
+    def validate(self, response: ChatResponse) -> JdAnalysisModelOutput:
+        """Parse + schema-validate the model output (validate_model_output).
 
         Raises :class:`JdAnalysisValidationError` (kind ``"json"`` or
         ``"schema"``) on failure. Phase 4 maps this to the 502

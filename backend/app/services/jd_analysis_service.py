@@ -35,6 +35,7 @@ from app.agents.jd_analysis_executor import (
     JdAnalysisExecution,
     JdAnalysisExecutor,
     JdAnalysisValidationError,
+    _usage_to_dict,
 )
 from app.agents.prompts.jd_analysis import (
     PROMPT_VERSION,
@@ -63,11 +64,18 @@ _log = get_logger("app.services.jd_analysis_service")
 #: The fixed workflow type stored on ``AgentRun.workflow_type``.
 WORKFLOW_TYPE = "resume_aware_jd_analysis"
 
-#: Fixed step names produced by the planner (design.md §3). The order matches
-#: the step_no persisted on each ``AgentStep``.
+#: Fixed step names produced by the workflow (design.md read APIs / R3). The
+#: order matches the step_no persisted on each ``AgentStep``. Splitting the old
+#: coarse ``analyze_with_model`` step into ``build_prompt_context`` /
+#: ``call_model`` / ``validate_model_output`` lets the audit UI pinpoint whether
+#: a failure happened during prompt construction, the model call, or output
+#: validation.
 _STEP_LOAD_CONTEXT = "load_context"
-_STEP_ANALYZE_WITH_MODEL = "analyze_with_model"
+_STEP_BUILD_PROMPT_CONTEXT = "build_prompt_context"
+_STEP_CALL_MODEL = "call_model"
+_STEP_VALIDATE_MODEL_OUTPUT = "validate_model_output"
 _STEP_PERSIST_OUTPUTS = "persist_outputs"
+_STEP_COMPLETE_RUN = "complete_run"
 
 #: The artifact_type written for every successful analysis.
 _ARTIFACT_TYPE = "jd_analysis"
@@ -230,16 +238,19 @@ async def run_resume_aware_jd_analysis(
 ) -> tuple[AgentRun, JobAnalysis, GeneratedArtifact, JdAnalysisExecution]:
     """Drive the resume-aware JD analysis workflow end to end.
 
-    Fixed steps (design.md §3 / §9):
+    Fixed steps (design.md read APIs / R3):
 
     1. ``load_context`` — verify ownership and build ``JdAnalysisContext``
        (raises 404/422 directly, no run persisted since the failure predates
        the workflow transaction).
-    2. ``analyze_with_model`` — call the model via the executor. On
+    2. ``build_prompt_context`` — assemble the chat messages + truncation metadata.
+    3. ``call_model`` — send the chat request via the gateway.
+    4. ``validate_model_output`` — parse + schema-validate the response. On
        :class:`JdAnalysisValidationError` a FAILED ``AgentRun`` + ``AgentStep``
        are persisted and HTTP 502 ``model returned invalid analysis`` is raised.
-    3. ``persist_outputs`` — create ``JobAnalysis`` + ``GeneratedArtifact`` and
+    5. ``persist_outputs`` — create ``JobAnalysis`` + ``GeneratedArtifact`` and
        mark the run + step as succeeded.
+    6. ``complete_run`` — finalize run status and metadata.
 
     Returns ``(agent_run, analysis, artifact, execution)`` on success. The
     caller (route handler) maps these into the ``RunJdAnalysisResponse``.
@@ -258,7 +269,42 @@ async def run_resume_aware_jd_analysis(
         workflow_type=WORKFLOW_TYPE,
         status="running",
         started_at=started_at,
+        job_id=job_id,
     )
+
+    executor = JdAnalysisExecutor(gateway)
+
+    def _fail_run(step_no: int, step_name: str, *, error: str, result: dict[str, Any]) -> None:
+        """Persist a failed step + failed run, commit, then re-raise as 502.
+
+        Centralizes the failure-trail contract (design.md Failure Handling /
+        R4): the failing step records a sanitized result + error message, the
+        run flips to ``failed`` with sanitized metadata, and no analysis /
+        artifact rows are created.
+        """
+        agent_run_repo.add_step(
+            db,
+            run_id=run.id,
+            step_no=step_no,
+            name=step_name,
+            status="failed",
+            result=result,
+            error=error,
+        )
+        agent_run_repo.update_status(
+            db,
+            run,
+            status="failed",
+            finished_at=datetime.now(UTC),
+            error=error,
+            result={
+                "job_id": job_id,
+                "resume_version_id": resume_version_id,
+                "failure": "model_invalid",
+                **result,
+            },
+        )
+        db.commit()
 
     # Step 1 — load_context succeeded (ownership + raw-text checks already done
     # above; recording the step keeps the run history self-describing).
@@ -275,62 +321,104 @@ async def run_resume_aware_jd_analysis(
         },
     )
 
-    # Step 2 — analyze_with_model. On validation failure we persist a failed
+    # Step 2 — build_prompt_context.
+    prompt = executor.build_prompt(context)
+    agent_run_repo.add_step(
+        db,
+        run_id=run.id,
+        step_no=2,
+        name=_STEP_BUILD_PROMPT_CONTEXT,
+        status="succeeded",
+        result={
+            "prompt_version": PROMPT_VERSION,
+            "message_count": len(prompt.messages),
+            "truncation": prompt.truncation,
+        },
+    )
+
+    # Step 3 — call_model. A gateway/provider error is treated as a failed run
+    # too (R4): the user must see a durable failed trail, not just an exception.
+    try:
+        response = await executor.call_model(prompt.messages)
+    except Exception as exc:
+        _log.warning(
+            "jd_analysis.model_call_failed",
+            run_id=run.id,
+            provider=gateway.provider_name,
+            error=str(exc),
+        )
+        _fail_run(
+            3,
+            _STEP_CALL_MODEL,
+            error="model call failed",
+            result={
+                "provider": gateway.provider_name,
+                "error_type": type(exc).__name__,
+            },
+        )
+        raise HTTPException(status_code=502, detail="model call failed") from exc
+
+    agent_run_repo.add_step(
+        db,
+        run_id=run.id,
+        step_no=3,
+        name=_STEP_CALL_MODEL,
+        status="succeeded",
+        result={
+            "provider": response.provider,
+            "model": response.model,
+            "request_id": response.request_id,
+            "latency_ms": response.latency_ms,
+        },
+    )
+
+    # Step 4 — validate_model_output. On validation failure persist a failed
     # step + failed run (sanitized error, no raw prompt/resume content) and
     # raise 502 so the caller does not create JobAnalysis/GeneratedArtifact.
-    executor = JdAnalysisExecutor(gateway)
     try:
-        execution = await executor.execute(context)
+        output = executor.validate(response)
     except JdAnalysisValidationError as exc:
         _log.warning(
             "jd_analysis.model_invalid",
             run_id=run.id,
             kind=exc.kind,
             request_id=exc.request_id,
-            provider=gateway.provider_name,
+            provider=response.provider,
         )
-        agent_run_repo.add_step(
-            db,
-            run_id=run.id,
-            step_no=2,
-            name=_STEP_ANALYZE_WITH_MODEL,
-            status="failed",
-            result={"kind": exc.kind, "request_id": exc.request_id},
-            error=str(exc),
-        )
-        agent_run_repo.update_status(
-            db,
-            run,
-            status="failed",
-            finished_at=datetime.now(UTC),
+        _fail_run(
+            4,
+            _STEP_VALIDATE_MODEL_OUTPUT,
             error="model returned invalid analysis",
-            result={
-                "job_id": job_id,
-                "resume_version_id": resume_version_id,
-                "failure": "model_invalid",
-                "request_id": exc.request_id,
-            },
+            result={"kind": exc.kind, "request_id": exc.request_id},
         )
-        db.commit()
         raise HTTPException(status_code=502, detail="model returned invalid analysis") from exc
 
     agent_run_repo.add_step(
         db,
         run_id=run.id,
-        step_no=2,
-        name=_STEP_ANALYZE_WITH_MODEL,
+        step_no=4,
+        name=_STEP_VALIDATE_MODEL_OUTPUT,
         status="succeeded",
         result={
-            "provider": execution.provider,
-            "model": execution.model,
-            "request_id": execution.request_id,
-            "latency_ms": execution.latency_ms,
+            "kind": "schema_valid",
+            "provider": response.provider,
+            "model": response.model,
+            "request_id": response.request_id,
         },
     )
 
-    # Step 3 — persist_outputs. The validated output is the persistence gate:
+    execution = JdAnalysisExecution(
+        output=output,
+        truncation=prompt.truncation,
+        provider=response.provider,
+        model=response.model,
+        request_id=response.request_id,
+        latency_ms=response.latency_ms,
+        usage=_usage_to_dict(response.usage),
+    )
+
+    # Step 5 — persist_outputs. The validated output is the persistence gate:
     # only after this block do JobAnalysis / GeneratedArtifact exist.
-    output = execution.output
     resume_id = str(context.resume.get("resume_id") or "")
 
     analysis = job_analysis_repo.create(
@@ -369,13 +457,23 @@ async def run_resume_aware_jd_analysis(
     agent_run_repo.add_step(
         db,
         run_id=run.id,
-        step_no=3,
+        step_no=5,
         name=_STEP_PERSIST_OUTPUTS,
         status="succeeded",
         result={
             "analysis_id": analysis.id,
             "artifact_id": artifact.id,
         },
+    )
+
+    # Step 6 — complete_run.
+    agent_run_repo.add_step(
+        db,
+        run_id=run.id,
+        step_no=6,
+        name=_STEP_COMPLETE_RUN,
+        status="succeeded",
+        result={"status": "succeeded"},
     )
 
     agent_run_repo.update_status(

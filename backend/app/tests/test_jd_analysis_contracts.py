@@ -19,6 +19,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.prompts.jd_analysis import (
@@ -720,13 +721,21 @@ def test_generated_artifact_repo_create_get_list(client: TestClient) -> None:
 
 
 def test_agent_run_repo_create_update_step_list(client: TestClient) -> None:
+    # Seed a job so runs can be scoped to it via job_id.
     with SessionLocal() as db:
         _make_user(db, "ar_repo")
+        _make_job(db, "ar_repo")
+        db.commit()
+        job = db.execute(select(JobPosting).where(JobPosting.user_id == "ar_repo")).scalar_one()
+        job_id = job.id
+
+    with SessionLocal() as db:
         run = agent_run_repo.create_run(
             db,
             user_id="ar_repo",
             workflow_type="resume_aware_jd_analysis",
             status="running",
+            job_id=job_id,
         )
         agent_run_repo.add_step(
             db,
@@ -744,6 +753,9 @@ def test_agent_run_repo_create_update_step_list(client: TestClient) -> None:
         assert got is not None
         assert got.status == "running"
         assert got.workflow_type == "resume_aware_jd_analysis"
+        assert got.job_id == job_id
+        # created_at is populated by TimestampMixin.
+        assert got.created_at is not None
 
         # Update status and add a second step.
         agent_run_repo.update_status(
@@ -769,12 +781,28 @@ def test_agent_run_repo_create_update_step_list(client: TestClient) -> None:
         steps = agent_run_repo.list_steps(db, run_id)
         assert [s.step_no for s in steps] == [1, 2]
         assert steps[0].name == "load_context"
+        # Steps carry created_at for timing/auditability.
+        assert all(s.created_at is not None for s in steps)
 
         rows, total = agent_run_repo.list_runs_for_user(
             db, "ar_repo", workflow_type="resume_aware_jd_analysis", page=1, page_size=10
         )
         assert total == 1
         assert rows[0].id == run_id
+
+        # job_id filter returns the run (this is what makes failed runs
+        # listable per-job).
+        job_rows, job_total = agent_run_repo.list_runs_for_user(
+            db, "ar_repo", job_id=job_id, page=1, page_size=10
+        )
+        assert job_total == 1
+        assert job_rows[0].id == run_id
+
+        # A different job_id returns nothing.
+        _, other_job_total = agent_run_repo.list_runs_for_user(
+            db, "ar_repo", job_id="nonexistent_job", page=1, page_size=10
+        )
+        assert other_job_total == 0
 
         # Other user sees nothing.
         _, other_total = agent_run_repo.list_runs_for_user(db, "someone_else", page=1, page_size=10)

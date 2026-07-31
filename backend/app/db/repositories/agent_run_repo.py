@@ -27,8 +27,13 @@ def create_run(
     finished_at: datetime | None = None,
     error: str | None = None,
     result: dict[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> AgentRun:
-    """Insert an ``AgentRun`` row and return it (not yet committed)."""
+    """Insert an ``AgentRun`` row and return it (not yet committed).
+
+    ``job_id`` scopes a run to a job so failed runs (which create no
+    ``JobAnalysis`` row) can still be listed per-job.
+    """
     run = AgentRun(
         user_id=user_id,
         workflow_type=workflow_type,
@@ -37,6 +42,7 @@ def create_run(
         finished_at=finished_at,
         error=error,
         result=result,
+        job_id=job_id,
     )
     db.add(run)
     db.flush()
@@ -102,17 +108,22 @@ def list_runs_for_user(
     user_id: str,
     *,
     workflow_type: str | None = None,
+    job_id: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[AgentRun], int]:
     """Return ``(rows, total)`` of runs for ``user_id``, newest first.
 
     Optionally filter by ``workflow_type`` (e.g.
-    ``"resume_aware_jd_analysis"``).
+    ``"resume_aware_jd_analysis"``) and/or ``job_id``. The ``job_id`` filter is
+    what makes failed runs (which create no ``JobAnalysis`` row) listable
+    per-job.
     """
     base_filter = AgentRun.user_id == user_id
     if workflow_type is not None:
         base_filter = base_filter & (AgentRun.workflow_type == workflow_type)
+    if job_id is not None:
+        base_filter = base_filter & (AgentRun.job_id == job_id)
     total = db.execute(select(func.count()).select_from(AgentRun).where(base_filter)).scalar_one()
     rows = (
         db.execute(

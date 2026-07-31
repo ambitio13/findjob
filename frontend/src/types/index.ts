@@ -50,6 +50,32 @@ export interface AgentRunOut {
   finished_at: string | null;
   error: string | null;
   result: Record<string, unknown> | null;
+  created_at: string | null;
+}
+
+/** Sanitized single step within an agent run (mirrors AgentStepOut). */
+export interface AgentStepOut {
+  id: string;
+  run_id: string;
+  step_no: number;
+  name: string;
+  status: string;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  created_at: string | null;
+}
+
+/** Run detail carrying the ordered step trail (mirrors AgentRunDetailOut). */
+export interface AgentRunDetailOut {
+  id: string;
+  workflow_type: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  result: Record<string, unknown> | null;
+  created_at: string | null;
+  steps: AgentStepOut[];
 }
 
 // --- Current user profile & job-search preferences ---
@@ -216,8 +242,18 @@ export interface RunJdAnalysisResponse {
   structured: JdAnalysisModelOutput;
 }
 
+/**
+ * Analysis + latest artifact + re-parsed structured output. Carries enough
+ * data to reconstruct the UI from persisted rows (mirrors JobAnalysisDetailOut).
+ */
+export interface JobAnalysisDetailOut {
+  analysis: JobAnalysisOut;
+  artifact: GeneratedArtifactOut | null;
+  structured: JdAnalysisModelOutput | null;
+}
+
 /** Paginated list of analyses for a job (design.md §5.2). */
 export interface JobAnalysisListOut {
   meta: Record<string, unknown>;
-  items: JobAnalysisOut[];
+  items: JobAnalysisDetailOut[];
 }

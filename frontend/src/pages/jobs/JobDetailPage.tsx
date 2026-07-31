@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   Alert,
@@ -12,20 +12,27 @@ import {
   Space,
   Spin,
   Tag,
+  Timeline,
   Typography,
 } from "antd";
 import {
   apiErrorMessage,
+  getAgentRunDetail,
   getJob,
+  listAgentRuns,
+  listJobAnalyses,
   listResumes,
   listResumeVersions,
   runJdAnalysis,
 } from "@/api/client";
 import type {
+  AgentRunDetailOut,
+  AgentRunOut,
+  AgentStepOut,
   JobOut,
+  JobAnalysisDetailOut,
   ResumeOut,
   ResumeVersionListItem,
-  RunJdAnalysisResponse,
 } from "@/types";
 
 const { Paragraph, Text } = Typography;
@@ -43,9 +50,59 @@ const RECOMMENDATION_LABEL: Record<string, string> = {
   not_enough_info: "信息不足",
 };
 
+const STEP_LABEL: Record<string, string> = {
+  load_context: "加载上下文",
+  build_prompt_context: "构建提示词",
+  call_model: "调用模型",
+  validate_model_output: "校验输出",
+  persist_outputs: "持久化结果",
+  complete_run: "完成运行",
+};
+
+const STEP_STATUS_COLOR: Record<string, string> = {
+  succeeded: "green",
+  failed: "red",
+  running: "blue",
+  skipped: "gray",
+};
+
+const RUN_STATUS_COLOR: Record<string, string> = {
+  succeeded: "green",
+  failed: "red",
+  running: "blue",
+  queued: "gray",
+};
+
+/**
+ * A run merged with its persisted analysis (if any). Successful runs have a
+ * matching ``JobAnalysisDetailOut``; failed runs (which create no analysis row)
+ * carry ``detail: null`` so they remain selectable and auditable.
+ */
+interface RunAnalysisView {
+  run: AgentRunOut;
+  detail: JobAnalysisDetailOut | null;
+}
+
 interface ResumeOption {
   resume: ResumeOut;
   versions: ResumeVersionListItem[];
+}
+
+/** Format an ISO timestamp (or null) for compact display. */
+function formatTime(ts: string | null): string {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
+}
+
+/** Compute a human-readable duration between two ISO timestamps. */
+function formatDuration(start: string | null, end: string | null): string {
+  if (!start || !end) return "-";
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  if (Number.isNaN(ms) || ms < 0) return "-";
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
 }
 
 export function JobDetailPage() {
@@ -63,7 +120,11 @@ export function JobDetailPage() {
   >();
   const [versionsLoading, setVersionsLoading] = useState(false);
 
-  const [result, setResult] = useState<RunJdAnalysisResponse | null>(null);
+  // Persisted analysis list, hydrated on load and refreshed after each run.
+  const [analyses, setAnalyses] = useState<JobAnalysisDetailOut[]>([]);
+  const [runs, setRuns] = useState<AgentRunOut[]>([]);
+  const [analysesLoading, setAnalysesLoading] = useState(false);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
   // Load job detail.
@@ -84,6 +145,52 @@ export function JobDetailPage() {
       active = false;
     };
   }, [id]);
+
+  // R1/R2: hydrate persisted state for this job from BOTH the analyses list
+  // (successful runs) and the agent-runs list filtered by job + workflow
+  // (which also returns failed runs that create no JobAnalysis row). Merging
+  // the two is what makes failed runs visible/auditable in the UI.
+  const refreshData = useCallback(
+    async (selectNewest = false) => {
+      if (!id) return;
+      setAnalysesLoading(true);
+      try {
+        const [analysisData, runData] = await Promise.all([
+          listJobAnalyses(id, 1, 20),
+          listAgentRuns(1, 20, id, "resume_aware_jd_analysis"),
+        ]);
+        setAnalyses(analysisData.items);
+        setRuns(runData.items);
+        if (selectNewest) {
+          // listAgentRuns is newest-first by created_at desc; pick the most
+          // recent run (this is how a freshly-failed run gets selected).
+          setSelectedRunId(runData.items[0]?.id ?? null);
+        } else {
+          setSelectedRunId((prev) => prev ?? runData.items[0]?.id ?? null);
+        }
+      } catch (err) {
+        message.warning(apiErrorMessage(err));
+      } finally {
+        setAnalysesLoading(false);
+      }
+    },
+    [id],
+  );
+
+  useEffect(() => {
+    refreshData();
+  }, [refreshData]);
+
+  // Merge runs (all runs for the job, including failed) with their persisted
+  // analysis (if any). Runs are newest-first from the API.
+  const runViews = useMemo<RunAnalysisView[]>(() => {
+    const byRunId = new Map<string, JobAnalysisDetailOut>();
+    for (const a of analyses) {
+      const rid = a.analysis.agent_run_id;
+      if (rid) byRunId.set(rid, a);
+    }
+    return runs.map((run) => ({ run, detail: byRunId.get(run.id) ?? null }));
+  }, [runs, analyses]);
 
   // Load resumes for the current user.
   useEffect(() => {
@@ -163,10 +270,21 @@ export function JobDetailPage() {
     setRunning(true);
     try {
       const res = await runJdAnalysis(id, selectedVersionId);
-      setResult(res);
-      message.success("分析运行完成");
+      // On success, surface a message and refresh persisted state so the UI
+      // reflects durable rows rather than only the POST response.
+      if (res.agent_run.status === "succeeded") {
+        message.success("分析运行完成");
+      } else {
+        message.warning(`分析未成功（${res.agent_run.status}）`);
+      }
+      setSelectedRunId(res.agent_run.id);
+      await refreshData(false);
     } catch (err) {
       message.error(apiErrorMessage(err));
+      // Even on failure, the backend persists a failed run (scoped to this
+      // job via job_id) — refresh and force-select the newest run so the
+      // failure trail is immediately visible (R4).
+      await refreshData(true);
     } finally {
       setRunning(false);
     }
@@ -252,29 +370,125 @@ export function JobDetailPage() {
             </Space>
           )}
 
-          {result ? (
-            <AnalysisResult result={result} />
-          ) : (
-            !noResumes && (
-              <Empty description="暂未运行，选择简历版本后点击运行" />
-            )
-          )}
+          <AnalysisSection
+            runViews={runViews}
+            loading={analysesLoading}
+            running={running}
+            selectedRunId={selectedRunId}
+            onSelectRun={setSelectedRunId}
+          />
         </Space>
       </Card>
     </div>
   );
 }
 
-function AnalysisResult({ result }: { result: RunJdAnalysisResponse }) {
-  const { agent_run, analysis, artifact, structured } = result;
+/**
+ * R1/R2/R3/R4: explicit empty / running / success / failed states driven by
+ * persisted rows rather than local POST response state. The view merges runs
+ * (successful + failed) with their analyses; failed runs have no analysis and
+ * are still selectable so their execution trail can be audited.
+ */
+function AnalysisSection({
+  runViews,
+  loading,
+  running,
+  selectedRunId,
+  onSelectRun,
+}: {
+  runViews: RunAnalysisView[];
+  loading: boolean;
+  running: boolean;
+  selectedRunId: string | null;
+  onSelectRun: (id: string | null) => void;
+}) {
+  if (loading && runViews.length === 0) {
+    return <Spin />;
+  }
+
+  if (running && runViews.length === 0) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        message="分析运行中…"
+        description="正在调用模型并持久化结果，请稍候。"
+      />
+    );
+  }
+
+  if (runViews.length === 0) {
+    return <Empty description="暂未运行，选择简历版本后点击运行" />;
+  }
+
+  const selected =
+    runViews.find((v) => v.run.id === selectedRunId) ?? runViews[0];
+
+  return (
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Select
+        style={{ minWidth: 360 }}
+        value={selected.run.id}
+        onChange={onSelectRun}
+        options={runViews.map((v, idx) => {
+          const isFailed = v.run.status === "failed" || !v.detail;
+          const label = v.detail?.structured
+            ? RECOMMENDATION_LABEL[v.detail.structured.recommendation] ??
+              v.detail.structured.recommendation
+            : isFailed
+              ? "运行失败"
+              : "运行中";
+          return {
+            label: `#${runViews.length - idx} · ${label} · ${formatTime(v.run.created_at)}`,
+            value: v.run.id,
+          };
+        })}
+      />
+      {selected.detail ? (
+        <AnalysisResult detail={selected.detail} />
+      ) : (
+        <Alert
+          type="warning"
+          showIcon
+          message="该次运行未产出有效结果"
+          description={
+            <span>
+              运行 ID: <Text code>{selected.run.id}</Text>。请在下方
+              「Agent 执行轨迹」查看失败阶段。
+            </span>
+          }
+        />
+      )}
+      <AgentProcessPanel runId={selected.run.id} />
+    </Space>
+  );
+}
+
+function AnalysisResult({ detail }: { detail: JobAnalysisDetailOut }) {
+  const { analysis, artifact, structured } = detail;
+
+  // Failed / partial runs have no structured output to render.
+  if (!structured) {
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        message="该次运行未产出有效结果"
+        description={
+          <span>
+            运行 ID: <Text code>{analysis.agent_run_id ?? "-"}</Text>。请在下方
+            「Agent 执行轨迹」查看失败阶段。
+          </span>
+        }
+      />
+    );
+  }
+
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Descriptions column={2} bordered size="small">
-        <Descriptions.Item label="Run ID">{agent_run.id}</Descriptions.Item>
-        <Descriptions.Item label="状态">
-          <Tag color={agent_run.status === "succeeded" ? "green" : "orange"}>
-            {agent_run.status}
-          </Tag>
+        <Descriptions.Item label="Run ID">
+          {analysis.agent_run_id ?? "-"}
         </Descriptions.Item>
         <Descriptions.Item label="匹配分">
           {structured.match_score ?? "-"}
@@ -369,34 +583,180 @@ function AnalysisResult({ result }: { result: RunJdAnalysisResponse }) {
         </Descriptions>
       </Card>
 
-      <Card type="inner" title="来源元数据" size="small">
-        <Descriptions column={1} size="small">
-          <Descriptions.Item label="分析 ID">{analysis.id}</Descriptions.Item>
-          <Descriptions.Item label="产物 ID">{artifact.id}</Descriptions.Item>
-          <Descriptions.Item label="产物类型">
-            {artifact.artifact_type}
-          </Descriptions.Item>
-          <Descriptions.Item label="Prompt 版本">
-            {artifact.prompt_version ?? "-"}
-          </Descriptions.Item>
-          <Descriptions.Item label="模型">
-            {artifact.model_name ?? "-"}
-          </Descriptions.Item>
-          {artifact.source_ids?.provider ? (
-            <Descriptions.Item label="Provider">
-              {String(artifact.source_ids.provider)}
+      {artifact && (
+        <Card type="inner" title="来源元数据" size="small">
+          <Descriptions column={1} size="small">
+            <Descriptions.Item label="分析 ID">{analysis.id}</Descriptions.Item>
+            <Descriptions.Item label="产物 ID">{artifact.id}</Descriptions.Item>
+            <Descriptions.Item label="产物类型">
+              {artifact.artifact_type}
             </Descriptions.Item>
-          ) : null}
-          {artifact.source_ids?.resume_version_id ? (
-            <Descriptions.Item label="简历版本">
-              {String(artifact.source_ids.resume_version_id)}
+            <Descriptions.Item label="Prompt 版本">
+              {artifact.prompt_version ?? "-"}
             </Descriptions.Item>
-          ) : null}
-        </Descriptions>
-        <Text type="secondary">
-          以上分析为模型生成的草稿，非已完成的定制简历。
-        </Text>
-      </Card>
+            <Descriptions.Item label="模型">
+              {artifact.model_name ?? "-"}
+            </Descriptions.Item>
+            {artifact.source_ids?.provider ? (
+              <Descriptions.Item label="Provider">
+                {String(artifact.source_ids.provider)}
+              </Descriptions.Item>
+            ) : null}
+            {artifact.source_ids?.resume_version_id ? (
+              <Descriptions.Item label="简历版本">
+                {String(artifact.source_ids.resume_version_id)}
+              </Descriptions.Item>
+            ) : null}
+          </Descriptions>
+          <Text type="secondary">
+            以上分析为模型生成的草稿，非已完成的定制简历。
+          </Text>
+        </Card>
+      )}
     </Space>
   );
+}
+
+/**
+ * R3: fetches and displays the ordered sanitized step trail for the selected
+ * run. Failed steps surface their sanitized error; the panel makes the audit
+ * trail visible without exposing raw prompts or resume text. Each step also
+ * renders its sanitized ``result`` metadata (provider/model/prompt version,
+ * counts, timing, error type) and ``created_at`` timestamp.
+ */
+function AgentProcessPanel({ runId }: { runId: string | null }) {
+  const [detail, setDetail] = useState<AgentRunDetailOut | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!runId) {
+      setDetail(null);
+      return;
+    }
+    let active = true;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await getAgentRunDetail(runId);
+        if (active) setDetail(data);
+      } catch (err) {
+        if (active) setError(apiErrorMessage(err));
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [runId]);
+
+  if (!runId) return null;
+  if (loading) return <Spin />;
+  if (error || !detail) {
+    return (
+      <Card type="inner" title="Agent 执行轨迹" size="small">
+        <Alert type="error" message="轨迹加载失败" description={error ?? undefined} />
+      </Card>
+    );
+  }
+
+  const totalDuration = formatDuration(detail.started_at, detail.finished_at);
+
+  return (
+    <Card type="inner" title="Agent 执行轨迹" size="small">
+      <Space direction="vertical" size="small" style={{ width: "100%" }}>
+        <Descriptions column={3} size="small">
+          <Descriptions.Item label="运行状态">
+            <Tag color={RUN_STATUS_COLOR[detail.status] ?? "default"}>
+              {detail.status}
+            </Tag>
+          </Descriptions.Item>
+          <Descriptions.Item label="开始">
+            {formatTime(detail.started_at)}
+          </Descriptions.Item>
+          <Descriptions.Item label="耗时">
+            {detail.status === "running" ? "进行中" : totalDuration}
+          </Descriptions.Item>
+        </Descriptions>
+        {detail.error ? (
+          <Text type="danger">错误: {detail.error}</Text>
+        ) : null}
+        <Timeline
+          items={detail.steps.map((step: AgentStepOut) => ({
+            color: STEP_STATUS_COLOR[step.status] ?? "gray",
+            children: (
+              <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                <Space>
+                  <Text strong>
+                    {step.step_no}. {STEP_LABEL[step.name] ?? step.name}
+                  </Text>
+                  <Tag color={STEP_STATUS_COLOR[step.status] ?? "default"}>
+                    {step.status}
+                  </Tag>
+                  <Text type="secondary">{formatTime(step.created_at)}</Text>
+                </Space>
+                {step.error ? (
+                  <Text type="danger">{step.error}</Text>
+                ) : null}
+                <StepMetadata step={step} />
+              </Space>
+            ),
+          }))}
+        />
+        <Text type="secondary">
+          轨迹仅记录阶段与脱敏后的元数据（provider/model/耗时/prompt 版本等），不包含原始提示词或简历内容。
+        </Text>
+      </Space>
+    </Card>
+  );
+}
+
+/**
+ * Renders a step's sanitized ``result`` metadata as a compact key→value list.
+ * Special-cases ``latency_ms`` (call_model step) for emphasis. Filters out
+ * null/undefined values to keep the list tight.
+ */
+function StepMetadata({ step }: { step: AgentStepOut }) {
+  if (!step.result) return null;
+  const entries = Object.entries(step.result).filter(
+    ([, v]) => v !== null && v !== undefined,
+  );
+  if (entries.length === 0) return null;
+
+  return (
+    <Descriptions column={1} size="small" bordered style={{ marginTop: 4 }}>
+      {entries.map(([key, value]) => (
+        <Descriptions.Item
+          key={key}
+          label={
+            key === "latency_ms" ? (
+              <Text strong>模型耗时</Text>
+            ) : (
+              <Text type="secondary">{key}</Text>
+            )
+          }
+        >
+          {key === "latency_ms" && typeof value === "number" ? (
+            <Tag color="blue">{value}ms</Tag>
+          ) : (
+            <Text code>{formatMetaValue(value)}</Text>
+          )}
+        </Descriptions.Item>
+      ))}
+    </Descriptions>
+  );
+}
+
+/** Stringify a metadata value for display (objects/arrays compactly). */
+function formatMetaValue(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }

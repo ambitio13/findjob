@@ -65,11 +65,11 @@ agent workflow:
 
 ## Cross-Task Acceptance Criteria
 
-- [ ] Prior completed planning/task artifacts are archived or explicitly left
+- [x] Prior completed planning/task artifacts are archived or explicitly left
   active with a reason.
-- [ ] A JD analysis run can be started and audited from the UI with visible
+- [x] A JD analysis run can be started and audited from the UI with visible
   intermediate steps and final status.
-- [ ] If analysis data exists in the database for a job, the job detail frontend
+- [x] If analysis data exists in the database for a job, the job detail frontend
   can load and display it without requiring the current page session to have
   held the original POST response.
 - [ ] Resume upload produces durable parsed text and structured facts, and

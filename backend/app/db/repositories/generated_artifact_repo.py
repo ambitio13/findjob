@@ -52,6 +52,33 @@ def get(db: Session, artifact_id: str) -> GeneratedArtifact | None:
     return db.get(GeneratedArtifact, artifact_id)
 
 
+def get_latest_for_run(
+    db: Session,
+    run_id: str,
+    *,
+    artifact_type: str | None = None,
+) -> GeneratedArtifact | None:
+    """Return the newest ``GeneratedArtifact`` linked to ``run_id`` or ``None``.
+
+    Used by read paths that need to reconstruct a result view from a persisted
+    analysis row (e.g. re-parsing ``content`` into the structured output). The
+    optional ``artifact_type`` filter keeps it scoped to one workflow's output.
+    """
+    base_filter = GeneratedArtifact.agent_run_id == run_id
+    if artifact_type is not None:
+        base_filter = base_filter & (GeneratedArtifact.artifact_type == artifact_type)
+    return (
+        db.execute(
+            select(GeneratedArtifact)
+            .where(base_filter)
+            .order_by(GeneratedArtifact.created_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+
 def list_for_job(
     db: Session,
     job_id: str,

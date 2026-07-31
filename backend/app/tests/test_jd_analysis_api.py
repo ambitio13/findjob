@@ -155,6 +155,26 @@ def invalid_gateway_override():
         app.dependency_overrides.pop(get_model_gateway_dep, None)
 
 
+class _RaisingStubGateway(ModelGateway):
+    """Gateway whose ``chat()`` raises, to drive the model-call-failure 502 path."""
+
+    provider_name = "stub-raising"
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        raise RuntimeError("simulated provider outage")
+
+
+@pytest.fixture()
+def raising_gateway_override():
+    """Override ``get_model_gateway_dep`` with the raising stub."""
+    stub = _RaisingStubGateway()
+    app.dependency_overrides[get_model_gateway_dep] = lambda: stub
+    try:
+        yield stub
+    finally:
+        app.dependency_overrides.pop(get_model_gateway_dep, None)
+
+
 # ---------------------------------------------------------------------------
 # Successful run
 # ---------------------------------------------------------------------------
@@ -198,12 +218,19 @@ def test_run_analysis_success_creates_all_entities(client: TestClient) -> None:
     assert "source_context" in result
     assert "truncation" in result["source_context"]
 
-    # DB: all four entity types exist for this run.
+    # DB: all six step names exist for this run, all succeeded, ordered.
     run_id = body["agent_run"]["id"]
     with SessionLocal() as db:
         steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
-        step_names = {s.name for s in steps}
-        assert step_names == {"load_context", "analyze_with_model", "persist_outputs"}
+        step_names = [s.name for s in steps]
+        assert step_names == [
+            "load_context",
+            "build_prompt_context",
+            "call_model",
+            "validate_model_output",
+            "persist_outputs",
+            "complete_run",
+        ]
         assert all(s.status == "succeeded" for s in steps)
 
         analysis = db.get(JobAnalysis, body["analysis"]["id"])
@@ -280,13 +307,16 @@ def test_run_analysis_model_invalid_returns_502_and_persists_failed_run(
         assert run.status == "failed"
         assert run.error == "model returned invalid analysis"
         assert run.result["failure"] == "model_invalid"
+        # The failed run is scoped to the job so it can be listed per-job.
+        assert run.job_id == ids["job_id"]
 
         steps = db.execute(select(AgentStep).where(AgentStep.run_id == run.id)).scalars().all()
-        assert len(steps) >= 2
-        analyze_step = next(s for s in steps if s.name == "analyze_with_model")
-        assert analyze_step.status == "failed"
+        assert len(steps) >= 3
+        # Validation failure is recorded on the validate_model_output step.
+        validate_step = next(s for s in steps if s.name == "validate_model_output")
+        assert validate_step.status == "failed"
         # No raw prompt/resume content in the failed step.
-        assert "raw_text" not in (analyze_step.result or {})
+        assert "raw_text" not in (validate_step.result or {})
 
         # Failure path must NOT create JobAnalysis / GeneratedArtifact.
         analyses = (
@@ -301,6 +331,105 @@ def test_run_analysis_model_invalid_returns_502_and_persists_failed_run(
             .all()
         )
         assert artifacts == []
+
+
+def test_run_analysis_model_call_failure_returns_502_and_persists_failed_run(
+    client: TestClient, raising_gateway_override: _RaisingStubGateway
+) -> None:
+    """A gateway that raises drives the call_model-failure 502 path (R4).
+
+    The failed run + failed call_model step are persisted, no analysis/artifact
+    rows are created, and the run is scoped to the job via ``job_id``.
+    """
+    ids = _seed("raising_user")
+    resp = _run(client, ids["job_id"], ids["resume_version_id"], "raising_user")
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["detail"] == "model call failed"
+
+    with SessionLocal() as db:
+        runs = (
+            db.execute(select(AgentRun).where(AgentRun.user_id == "raising_user")).scalars().all()
+        )
+        assert len(runs) == 1
+        run = runs[0]
+        assert run.status == "failed"
+        assert run.error == "model call failed"
+        assert run.result["failure"] == "model_invalid"
+        assert run.job_id == ids["job_id"]
+
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run.id)).scalars().all()
+        assert len(steps) >= 3
+        call_step = next(s for s in steps if s.name == "call_model")
+        assert call_step.status == "failed"
+        assert call_step.result["provider"] == "stub-raising"
+        assert "error_type" in call_step.result
+
+        analyses = (
+            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run.id))
+            .scalars()
+            .all()
+        )
+        assert analyses == []
+        artifacts = (
+            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run.id))
+            .scalars()
+            .all()
+        )
+        assert artifacts == []
+
+
+def test_failed_run_is_visible_via_agent_runs_job_filter(
+    client: TestClient, raising_gateway_override: _RaisingStubGateway
+) -> None:
+    """Failure-visibility contract (R4): a failed run that created no
+    ``JobAnalysis`` row is still findable via ``GET /agent-runs?job_id=…`` and
+    its failed step metadata is readable via ``GET /agent-runs/{id}/detail``.
+    """
+    ids = _seed("visibility_user")
+    resp = _run(client, ids["job_id"], ids["resume_version_id"], "visibility_user")
+    assert resp.status_code == 502, resp.text
+
+    # GET /jobs/{job_id}/analyses is still empty (no JobAnalysis was created).
+    analyses_resp = client.get(
+        f"/api/v1/jobs/{ids['job_id']}/analyses",
+        headers=_headers("visibility_user"),
+    )
+    assert analyses_resp.status_code == 200, analyses_resp.text
+    assert analyses_resp.json()["meta"]["total"] == 0
+
+    # But GET /agent-runs?job_id=…&workflow_type=resume_aware_jd_analysis
+    # returns the failed run.
+    runs_resp = client.get(
+        "/api/v1/agent-runs",
+        params={
+            "job_id": ids["job_id"],
+            "workflow_type": "resume_aware_jd_analysis",
+        },
+        headers=_headers("visibility_user"),
+    )
+    assert runs_resp.status_code == 200, runs_resp.text
+    runs_body = runs_resp.json()
+    assert runs_body["meta"]["total"] == 1
+    run_summary = runs_body["items"][0]
+    assert run_summary["status"] == "failed"
+    assert run_summary["created_at"] is not None
+    run_id = run_summary["id"]
+
+    # GET /agent-runs/{run_id}/detail shows the failed call_model step and its
+    # sanitized metadata.
+    detail_resp = client.get(
+        f"/api/v1/agent-runs/{run_id}/detail",
+        headers=_headers("visibility_user"),
+    )
+    assert detail_resp.status_code == 200, detail_resp.text
+    detail = detail_resp.json()
+    assert detail["created_at"] is not None
+    call_step = next(s for s in detail["steps"] if s["name"] == "call_model")
+    assert call_step["status"] == "failed"
+    assert call_step["result"]["provider"] == "stub-raising"
+    assert "error_type" in call_step["result"]
+    # created_at is now exposed on steps too.
+    assert call_step["created_at"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -377,8 +506,8 @@ def test_list_analyses_pagination_and_user_scoping(client: TestClient) -> None:
     body = resp.json()
     assert body["meta"]["total"] == 3
     assert len(body["items"]) == 2
-    # Newest first: created_at descending.
-    assert body["items"][0]["created_at"] >= body["items"][1]["created_at"]
+    # Newest first: created_at descending (on the nested analysis object).
+    assert body["items"][0]["analysis"]["created_at"] >= body["items"][1]["analysis"]["created_at"]
 
     # page 2 -> the remaining 1 item.
     resp2 = client.get(
@@ -388,6 +517,77 @@ def test_list_analyses_pagination_and_user_scoping(client: TestClient) -> None:
     )
     assert resp2.status_code == 200
     assert len(resp2.json()["items"]) == 1
+
+
+def test_list_analyses_returns_persisted_result_for_hydration(client: TestClient) -> None:
+    """R1/R2: a persisted analysis round-trips through the list endpoint with
+    enough data (analysis + artifact + structured) to reconstruct the UI
+    without the original POST response.
+    """
+    ids = _seed("hydrate_user")
+    run_resp = _run(client, ids["job_id"], ids["resume_version_id"], "hydrate_user")
+    assert run_resp.status_code == 201, run_resp.text
+    run_id = run_resp.json()["agent_run"]["id"]
+
+    # Fresh read — do not rely on the POST response state.
+    resp = client.get(
+        f"/api/v1/jobs/{ids['job_id']}/analyses",
+        headers=_headers("hydrate_user"),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["meta"]["total"] == 1
+    item = body["items"][0]
+    # Analysis row carried through.
+    assert item["analysis"]["agent_run_id"] == run_id
+    assert item["analysis"]["job_id"] == ids["job_id"]
+    # Artifact metadata carried through.
+    assert item["artifact"] is not None
+    assert item["artifact"]["artifact_type"] == "jd_analysis"
+    assert item["artifact"]["agent_run_id"] == run_id
+    # Structured output re-parsed from artifact.content.
+    assert item["structured"] is not None
+    assert item["structured"]["match_score"] is not None
+
+
+def test_run_detail_returns_ordered_steps_user_scoped(client: TestClient) -> None:
+    """R3/R5: run detail with ordered steps, scoped to the current user."""
+    ids = _seed("detail_user")
+    run_resp = _run(client, ids["job_id"], ids["resume_version_id"], "detail_user")
+    assert run_resp.status_code == 201, run_resp.text
+    run_id = run_resp.json()["agent_run"]["id"]
+
+    # Owner sees the full step trail.
+    owner = client.get(
+        f"/api/v1/agent-runs/{run_id}/detail",
+        headers=_headers("detail_user"),
+    )
+    assert owner.status_code == 200, owner.text
+    detail = owner.json()
+    assert detail["id"] == run_id
+    assert detail["status"] == "succeeded"
+    step_names = [s["name"] for s in detail["steps"]]
+    assert step_names == [
+        "load_context",
+        "build_prompt_context",
+        "call_model",
+        "validate_model_output",
+        "persist_outputs",
+        "complete_run",
+    ]
+    assert all(s["status"] == "succeeded" for s in detail["steps"])
+    # Steps are ordered by step_no.
+    assert [s["step_no"] for s in detail["steps"]] == [1, 2, 3, 4, 5, 6]
+    # created_at is exposed on the run and each step (timing/auditability).
+    assert detail["created_at"] is not None
+    assert all(s["created_at"] is not None for s in detail["steps"])
+
+    # Cross-user access is 404 (not 403) — R5.
+    intruder = client.get(
+        f"/api/v1/agent-runs/{run_id}/detail",
+        headers=_headers("detail_intruder"),
+    )
+    assert intruder.status_code == 404
 
 
 def test_list_analyses_404_for_cross_user_job(client: TestClient) -> None:

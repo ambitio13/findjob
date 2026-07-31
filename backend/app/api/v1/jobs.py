@@ -8,17 +8,21 @@ existence.
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db_session, get_model_gateway_dep
 from app.db.models.models import JobPosting, UserProfile
-from app.db.repositories import job_analysis_repo
+from app.db.repositories import generated_artifact_repo, job_analysis_repo
 from app.models_gateway.base import ModelGateway
 from app.schemas.api import JobCreate, JobListOut, JobOut, PaginatedMeta
 from app.schemas.jd_analysis import (
     GeneratedArtifactOut,
+    JdAnalysisModelOutput,
+    JobAnalysisDetailOut,
     JobAnalysisListOut,
     JobAnalysisOut,
     RunJdAnalysisRequest,
@@ -112,6 +116,35 @@ def _list_analyses_for_job(
     return job_analysis_repo.list_for_job(db, job_id, page=page, page_size=page_size)
 
 
+def _to_detail_out(db: Session, analysis) -> JobAnalysisDetailOut:
+    """Project a ``JobAnalysis`` row into a result that can reconstruct the UI.
+
+    Loads the latest ``GeneratedArtifact`` for the run that produced this
+    analysis and re-parses its validated JSON ``content`` into ``structured``.
+    Rows whose artifact is missing or content cannot be parsed degrade to
+    ``artifact=None`` / ``structured=None`` (design.md Compatibility) so older
+    or partially-persisted runs do not break the list.
+    """
+    artifact = None
+    structured: JdAnalysisModelOutput | None = None
+    if analysis.agent_run_id:
+        artifact = generated_artifact_repo.get_latest_for_run(
+            db, analysis.agent_run_id, artifact_type="jd_analysis"
+        )
+    if artifact is not None:
+        try:
+            structured = JdAnalysisModelOutput.model_validate(json.loads(artifact.content))
+        except (ValueError, TypeError):
+            # Content was persisted pre-validation or got corrupted. Keep the
+            # artifact metadata visible but do not let one bad row break the list.
+            structured = None
+    return JobAnalysisDetailOut(
+        analysis=JobAnalysisOut.model_validate(analysis),
+        artifact=GeneratedArtifactOut.model_validate(artifact) if artifact else None,
+        structured=structured,
+    )
+
+
 def _agent_run_to_out(run) -> dict:
     """Project an ``AgentRun`` ORM row into the ``agent_run`` response dict.
 
@@ -170,13 +203,14 @@ def list_job_analyses(
 ) -> JobAnalysisListOut:
     """List prior analyses for the current user's job, newest first.
 
-    Returns ``JobAnalysisOut`` rows plus minimal artifact metadata per
-    design.md §5.2. Full run detail can still be read from
-    ``/agent-runs/{run_id}``.
+    Returns ``JobAnalysisDetailOut`` items (analysis + artifact + structured
+    output) so the frontend can hydrate the result view from persisted rows
+    alone, without relying on the original POST response (R1/R2). Full run
+    detail + steps can still be read from ``/agent-runs/{run_id}``.
     """
     _require_owned_job(db, current_user, job_id)
     rows, total = _list_analyses_for_job(db, job_id, page=page, page_size=page_size)
-    items = [JobAnalysisOut.model_validate(r) for r in rows]
+    items = [_to_detail_out(db, r) for r in rows]
     return JobAnalysisListOut(
         meta=PaginatedMeta(page=page, page_size=page_size, total=total).model_dump(),
         items=items,

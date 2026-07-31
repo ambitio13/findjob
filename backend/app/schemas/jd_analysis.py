@@ -128,6 +128,19 @@ class GeneratedArtifactOut(BaseSchema):
     created_at: datetime | None = None
 
 
+class JobAnalysisDetailOut(BaseSchema):
+    """A persisted analysis plus the artifact needed to reconstruct the result.
+
+    The list endpoint returns one of these per analysis so the frontend can
+    hydrate the full result view (structured output + artifact metadata) from
+    persisted rows alone, without relying on the original POST response (R1/R2).
+    """
+
+    analysis: JobAnalysisOut
+    artifact: GeneratedArtifactOut | None = None
+    structured: JdAnalysisModelOutput | None = None
+
+
 class RunJdAnalysisResponse(BaseModel):
     """Response shape for ``POST /jobs/{job_id}/analyses`` (design.md §5.1).
 
@@ -142,7 +155,13 @@ class RunJdAnalysisResponse(BaseModel):
 
 
 class JobAnalysisListOut(BaseModel):
-    """Paginated list of analyses for a job (design.md §5.2)."""
+    """Paginated list of analyses for a job (design.md §5.2).
+
+    Each item is a ``JobAnalysisDetailOut`` so the frontend can render persisted
+    results directly. The artifact's ``content`` is re-parsed into ``structured``
+    here; rows whose content cannot be parsed degrade to ``structured=None``
+    instead of breaking the whole list (design.md Compatibility).
+    """
 
     meta: dict[str, Any] = Field(default_factory=dict)
-    items: list[JobAnalysisOut]
+    items: list[JobAnalysisDetailOut]

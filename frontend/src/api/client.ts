@@ -7,6 +7,7 @@ import type {
   JobListOut,
   JobOut,
   AgentRunOut,
+  AgentRunDetailOut,
   ResumeDetailOut,
   ResumeListOut,
   ResumeVersionListItem,
@@ -49,15 +50,32 @@ export async function createJob(payload: JobCreate): Promise<JobOut> {
 export async function listAgentRuns(
   page = 1,
   pageSize = 20,
+  jobId?: string,
+  workflowType?: string,
 ): Promise<{ meta: { page: number; page_size: number; total: number }; items: AgentRunOut[] }> {
   const { data } = await apiClient.get("/agent-runs", {
-    params: { page, page_size: pageSize },
+    params: {
+      page,
+      page_size: pageSize,
+      ...(jobId ? { job_id: jobId } : {}),
+      ...(workflowType ? { workflow_type: workflowType } : {}),
+    },
   });
   return data;
 }
 
 export async function getAgentRun(id: string): Promise<AgentRunOut> {
   const { data } = await apiClient.get<AgentRunOut>(`/agent-runs/${id}`);
+  return data;
+}
+
+/** Fetch a run's full detail, including the ordered sanitized step trail. */
+export async function getAgentRunDetail(
+  id: string,
+): Promise<AgentRunDetailOut> {
+  const { data } = await apiClient.get<AgentRunDetailOut>(
+    `/agent-runs/${id}/detail`,
+  );
   return data;
 }
 

@@ -53,19 +53,19 @@ process.
 
 ## Acceptance Criteria
 
-- [ ] Reloading a job detail page with existing `JobAnalysis` rows displays the
+- [x] Reloading a job detail page with existing `JobAnalysis` rows displays the
   latest persisted analysis result.
-- [ ] Running a new JD analysis refreshes the persisted analysis list and shows
+- [x] Running a new JD analysis refreshes the persisted analysis list and shows
   the newly completed result.
-- [ ] The UI shows ordered agent steps with status, timing, and sanitized
+- [x] The UI shows ordered agent steps with status, timing, and sanitized
   metadata/error details.
-- [ ] If the model call or validation fails, the UI shows a failed run and does
+- [x] If the model call or validation fails, the UI shows a failed run and does
   not silently leave the user at an empty state.
-- [ ] Backend tests cover successful result readback, failed run visibility, and
+- [x] Backend tests cover successful result readback, failed run visibility, and
   user-scoped access to run steps/details.
-- [ ] Frontend tests or type/build checks cover the new result hydration and run
+- [x] Frontend tests or type/build checks cover the new result hydration and run
   process rendering contracts.
-- [ ] Full quality gate passes: backend lint/format/tests, frontend lint/type/build.
+- [x] Full quality gate passes: backend lint/format/tests, frontend lint/type/build.
 
 ## Notes
 
