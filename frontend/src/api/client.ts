@@ -157,7 +157,13 @@ export async function listResumeVersions(
   return data;
 }
 
-/** Re-run structured fact extraction on an existing resume version. */
+/** Re-run structured fact extraction on an existing resume version.
+ *
+ * The backend enqueues the extraction and returns immediately with a
+ * `ResumeDetailOut` whose `_extraction.status` is `pending` (or `failed` if
+ * enqueue itself failed). The caller should poll `GET /resumes/{id}` until a
+ * terminal status is reached.
+ */
 export async function reextractResumeFacts(
   resumeId: string,
   versionId: string,

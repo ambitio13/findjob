@@ -86,3 +86,25 @@ class JdPasteParsePayload(WorkflowPayload):
 
     raw_jd: str
     platform: str | None = None
+
+
+class ResumeFactExtractionPayload(WorkflowPayload):
+    """Payload for the resume fact extraction workflow.
+
+    References the durable ``Resume`` + ``ResumeVersion`` rows by ID — the
+    worker re-reads ``raw_text`` from the version inside its own session, so
+    no raw resume content crosses the queue boundary (contrast
+    :class:`JdPasteParsePayload` which must carry ``raw_jd`` because no parent
+    row exists at parse time). This keeps a leaked queue entry from exposing
+    user resume content.
+
+    The ``AgentRun`` (``workflow_type="resume_fact_extraction"``) is created
+    in the ``queued`` state by the API before enqueue; the worker flips it to
+    ``running`` → ``succeeded``/``failed`` and writes typed ``facts`` +
+    ``_extraction`` status into ``ResumeVersion.parsed_facts``.
+    """
+
+    workflow_type: Literal["resume_fact_extraction"] = "resume_fact_extraction"
+
+    resume_id: str
+    version_id: str

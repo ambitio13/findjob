@@ -583,7 +583,9 @@ export function ResumeDetailPage() {
     try {
       const updated = await reextractResumeFacts(id, versionId);
       setResume(updated);
-      messageApi.success("已重新抽取结构化事实");
+      // Re-extract now enqueues and returns immediately with pending status;
+      // the polling effect picks up automatically. Tell the user to wait.
+      messageApi.success("已提交重新抽取，结果稍后更新");
     } catch (err) {
       messageApi.error(apiErrorMessage(err) ?? "重新解析失败");
     } finally {

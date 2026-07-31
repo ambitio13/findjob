@@ -12,9 +12,16 @@ Binary fixtures are generated inline (a minimal hand-written PDF and a
 from __future__ import annotations
 
 import io
+import json
+from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from app.db.models.models import AgentRun
+from app.db.session import SessionLocal
 
 # ---------------------------------------------------------------------------
 # Inline binary fixtures
@@ -68,6 +75,26 @@ def _upload(client: TestClient, filename: str, content: bytes, user: str | None 
     )
 
 
+def _fake_enqueue_pool() -> Any:
+    """Return a fake arq pool whose ``enqueue_job`` succeeds without Redis."""
+    pool = AsyncMock()
+    pool.enqueue_job.return_value = object()
+    return pool
+
+
+def _patch_get_queue_ok() -> Any:
+    """Patch ``get_queue`` to return a fake pool (no real Redis needed).
+
+    Extraction is now async: uploads with raw_text enqueue a
+    ``ResumeFactExtractionPayload``. Tests that don't care about the extraction
+    result still need to suppress the real Redis call.
+    """
+    return patch(
+        "app.queue.runtime.get_queue",
+        new=AsyncMock(return_value=_fake_enqueue_pool()),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1-3: upload success for txt / pdf / docx
 # ---------------------------------------------------------------------------
@@ -75,7 +102,8 @@ def _upload(client: TestClient, filename: str, content: bytes, user: str | None 
 
 def test_upload_txt_creates_resume_and_version(client: TestClient) -> None:
     # Test 1: .txt -> 201, raw_text persisted, version_no=1.
-    resp = _upload(client, "resume.txt", _txt_bytes(), user="u_txt")
+    with _patch_get_queue_ok():
+        resp = _upload(client, "resume.txt", _txt_bytes(), user="u_txt")
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["filename"] == "resume.txt"
@@ -89,7 +117,8 @@ def test_upload_txt_creates_resume_and_version(client: TestClient) -> None:
 
 def test_upload_pdf_extracts_text(client: TestClient) -> None:
     # Test 2: .pdf -> 201, raw_text non-empty.
-    resp = _upload(client, "resume.pdf", _pdf_bytes(), user="u_pdf")
+    with _patch_get_queue_ok():
+        resp = _upload(client, "resume.pdf", _pdf_bytes(), user="u_pdf")
     assert resp.status_code == 201, resp.text
     latest = resp.json()["latest_version"]
     assert "Hello Resume" in latest["raw_text"]
@@ -98,7 +127,8 @@ def test_upload_pdf_extracts_text(client: TestClient) -> None:
 
 def test_upload_docx_extracts_text(client: TestClient) -> None:
     # Test 3: .docx -> 201, raw_text non-empty.
-    resp = _upload(client, "resume.docx", _docx_bytes(), user="u_docx")
+    with _patch_get_queue_ok():
+        resp = _upload(client, "resume.docx", _docx_bytes(), user="u_docx")
     assert resp.status_code == 201, resp.text
     latest = resp.json()["latest_version"]
     assert "Hello Resume" in latest["raw_text"]
@@ -164,8 +194,9 @@ def test_oversized_upload_returns_413_and_creates_nothing(
 
 def test_list_resumes_only_returns_current_user(client: TestClient) -> None:
     # Test 7: GET /resumes lists only the current user's resumes.
-    a = _upload(client, "a.txt", _txt_bytes(), user="u_a")
-    b = _upload(client, "b.txt", _txt_bytes(), user="u_b")
+    with _patch_get_queue_ok():
+        a = _upload(client, "a.txt", _txt_bytes(), user="u_a")
+        b = _upload(client, "b.txt", _txt_bytes(), user="u_b")
     assert a.status_code == 201 and b.status_code == 201
 
     a_list = client.get("/api/v1/resumes", headers={"X-User-Id": "u_a"})
@@ -177,7 +208,8 @@ def test_list_resumes_only_returns_current_user(client: TestClient) -> None:
 
 def test_get_resume_detail_404_for_other_user(client: TestClient) -> None:
     # Test 8: GET /resumes/{id} returns 404 for another user's resume.
-    owner = _upload(client, "secret.txt", _txt_bytes(), user="owner_only")
+    with _patch_get_queue_ok():
+        owner = _upload(client, "secret.txt", _txt_bytes(), user="owner_only")
     assert owner.status_code == 201
     resume_id = owner.json()["id"]
 
@@ -199,7 +231,8 @@ def test_get_resume_detail_404_for_other_user(client: TestClient) -> None:
 
 def test_list_versions_omits_raw_text(client: TestClient) -> None:
     # Test 9: GET /resumes/{id}/versions returns version list without raw_text.
-    upload = _upload(client, "resume.txt", _txt_bytes(), user="u_versions")
+    with _patch_get_queue_ok():
+        upload = _upload(client, "resume.txt", _txt_bytes(), user="u_versions")
     assert upload.status_code == 201
     resume_id = upload.json()["id"]
 
@@ -215,12 +248,13 @@ def test_list_versions_omits_raw_text(client: TestClient) -> None:
 
 
 def test_filename_display_and_storage_uri_are_sanitized(client: TestClient) -> None:
-    resp = _upload(
-        client,
-        "../weird name.txt",
-        _txt_bytes(),
-        user="../unsafe/user",
-    )
+    with _patch_get_queue_ok():
+        resp = _upload(
+            client,
+            "../weird name.txt",
+            _txt_bytes(),
+            user="../unsafe/user",
+        )
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["filename"] == "weird name.txt"
@@ -231,8 +265,9 @@ def test_filename_display_and_storage_uri_are_sanitized(client: TestClient) -> N
 
 
 def test_same_filename_uploads_do_not_collide(client: TestClient) -> None:
-    first = _upload(client, "same.txt", b"first", user="same_user")
-    second = _upload(client, "same.txt", b"second", user="same_user")
+    with _patch_get_queue_ok():
+        first = _upload(client, "same.txt", b"first", user="same_user")
+        second = _upload(client, "same.txt", b"second", user="same_user")
     assert first.status_code == 201
     assert second.status_code == 201
     assert first.json()["id"] != second.json()["id"]
@@ -256,10 +291,11 @@ def test_unicode_filename_keeps_safe_storage_extension(client: TestClient) -> No
 
 def test_reupload_creates_new_resume_with_version_one(client: TestClient) -> None:
     # Test 10: each upload is a brand-new Resume whose first version is v1.
-    first = _upload(client, "r1.txt", _txt_bytes(), user="u_reup")
-    assert first.status_code == 201
-    second = _upload(client, "r2.txt", _txt_bytes(), user="u_reup")
-    assert second.status_code == 201
+    with _patch_get_queue_ok():
+        first = _upload(client, "r1.txt", _txt_bytes(), user="u_reup")
+        assert first.status_code == 201
+        second = _upload(client, "r2.txt", _txt_bytes(), user="u_reup")
+        assert second.status_code == 201
     assert first.json()["id"] != second.json()["id"]
     assert first.json()["latest_version"]["version_no"] == 1
     assert second.json()["latest_version"]["version_no"] == 1
@@ -282,7 +318,8 @@ def test_raw_text_never_appears_in_logs(
     # that caplog attaches to), so we capture stdout directly.
     secret_marker = "SUPER_SECRET_RESUME_TOKEN"
     content = f"name: {secret_marker}\nrole: backend".encode()
-    resp = _upload(client, "secret.txt", content, user="u_log")
+    with _patch_get_queue_ok():
+        resp = _upload(client, "secret.txt", content, user="u_log")
     assert resp.status_code == 201
 
     captured = capsys.readouterr().out
@@ -292,217 +329,138 @@ def test_raw_text_never_appears_in_logs(
 
 
 # ---------------------------------------------------------------------------
-# 12-15: structured fact extraction on upload + re-extract
+# 12-17: structured fact extraction on upload + re-extract
+#
+# Extraction is now an asynchronous queue workflow (08-01-async-resume-fact-
+# extraction). The upload endpoint creates a queued AgentRun, marks
+# _extraction.status=pending, enqueues a ResumeFactExtractionPayload, and
+# returns immediately. These API-layer tests patch ``get_queue`` so no real
+# Redis is required. The full worker handler execution path is covered in
+# ``test_resume_extraction_api.py``.
 # ---------------------------------------------------------------------------
 
 
-def _extraction_status(client: TestClient, resume_id: str, user: str) -> str:
-    """Read the latest version's _extraction.status via the detail endpoint."""
-    resp = client.get(f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": user})
-    assert resp.status_code == 200, resp.text
-    return resp.json()["latest_version"]["parsed_facts"]["_extraction"]["status"]
-
-
-def _wait_for_terminal_extraction(
-    client: TestClient, resume_id: str, user: str, *, timeout: float = 5.0
-) -> str:
-    """Poll the detail endpoint until _extraction.status reaches a terminal state.
-
-    FastAPI ``BackgroundTasks`` run synchronously inside ``TestClient`` after the
-    response is sent, so the first response already reflects the terminal status
-    in most cases. This helper guards against any scheduling ordering by polling
-    a few times before giving up.
-    """
-    import time
-
-    terminal = {"succeeded", "failed", "needs_confirmation", "not_run"}
-    deadline = time.monotonic() + timeout
-    last = _extraction_status(client, resume_id, user)
-    while last not in terminal and time.monotonic() < deadline:
-        time.sleep(0.05)
-        last = _extraction_status(client, resume_id, user)
-    assert last in terminal, f"extraction never reached terminal state: {last}"
-    return last
-
-
-def test_upload_txt_returns_pending_then_succeeds(client: TestClient) -> None:
-    # Test 12: .txt upload returns immediately with _extraction.status=pending
-    # (or running, since the background task may start before serialization),
-    # and eventually reaches succeeded with typed facts.
-    resp = _upload(client, "resume.txt", _txt_bytes(), user="u_extract")
+def test_upload_txt_returns_pending_with_queued_run(client: TestClient) -> None:
+    # Test 12: .txt upload enqueues extraction and returns immediately with
+    # _extraction.status=pending and a queued AgentRun.
+    with _patch_get_queue_ok():
+        resp = _upload(client, "resume.txt", _txt_bytes(), user="u_extract")
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    resume_id = body["id"]
     latest = body["latest_version"]
-    initial_status = latest["parsed_facts"]["_extraction"]["status"]
-    # Upload must not block on extraction: the response shows a non-terminal
-    # status, or the background task already finished (still acceptable since
-    # the HTTP request did not wait on the model call inline).
-    assert initial_status in {"pending", "running", "succeeded"}, initial_status
+    extraction = latest["parsed_facts"]["_extraction"]
+    # Upload must not block on extraction: status is pending (non-terminal).
+    assert extraction["status"] == "pending", extraction["status"]
+    assert "run_id" in extraction
+    run_id = extraction["run_id"]
 
-    final = _wait_for_terminal_extraction(client, resume_id, "u_extract")
-    assert final == "succeeded"
-
-    detail = client.get(f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": "u_extract"}).json()[
-        "latest_version"
-    ]
-    facts = detail["parsed_facts"]
-    assert "run_id" in facts["_extraction"]
-    assert facts["facts"]["contact"]["name"] == "张三"
-    assert "Python" in facts["facts"]["skills"]
+    # DB: a queued AgentRun persisted with sanitized metadata.
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "queued"
+        assert run.workflow_type == "resume_fact_extraction"
+        assert run.user_id == "u_extract"
+        assert run.result["raw_text_len"] == len(_txt_bytes().decode())
 
 
 def test_upload_rtf_skips_extraction_not_run(client: TestClient) -> None:
-    # Test 13: .rtf upload -> _extraction.status=not_run, no facts key.
-    resp = _upload(client, "resume.rtf", b"{\\rtf1 legacy}", user="u_notrun")
+    # Test 13: .rtf upload -> _extraction.status=not_run, no facts key, no run.
+    with _patch_get_queue_ok() as mock_queue:
+        resp = _upload(client, "resume.rtf", b"{\\rtf1 legacy}", user="u_notrun")
     assert resp.status_code == 201
     facts = resp.json()["latest_version"]["parsed_facts"]
     assert facts["_extraction"]["status"] == "not_run"
     assert "facts" not in facts
+    assert "run_id" not in (facts["_extraction"] or {})
+    # No enqueue attempted for unsupported format.
+    mock_queue.assert_not_called()
+
+    with SessionLocal() as db:
+        rows = db.execute(select(AgentRun).where(AgentRun.user_id == "u_notrun")).scalars().all()
+        assert len(rows) == 0
 
 
-def test_reextract_refreshes_facts(client: TestClient) -> None:
-    # Test 14: POST /resumes/{id}/versions/{vid}/extract re-runs extraction
-    # synchronously (the explicit re-extract path stays inline).
-    upload = _upload(client, "resume.txt", _txt_bytes(), user="u_reextract")
+def test_reextract_enqueues_fresh_run_returns_202(client: TestClient) -> None:
+    # Test 14: POST /resumes/{id}/versions/{vid}/extract now enqueues a fresh
+    # run and returns immediately with status=pending (HTTP 202).
+    with _patch_get_queue_ok():
+        upload = _upload(client, "resume.txt", _txt_bytes(), user="u_reextract")
     assert upload.status_code == 201
     body = upload.json()
     resume_id = body["id"]
     version_id = body["latest_version"]["id"]
+    first_run_id = body["latest_version"]["parsed_facts"]["_extraction"]["run_id"]
 
-    # Wait for the automatic background extraction to finish so we can compare.
-    _wait_for_terminal_extraction(client, resume_id, "u_reextract")
-    before = client.get(
-        f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": "u_reextract"}
-    ).json()["latest_version"]["parsed_facts"]["_extraction"]["run_id"]
-
-    resp = client.post(
-        f"/api/v1/resumes/{resume_id}/versions/{version_id}/extract",
-        headers={"X-User-Id": "u_reextract"},
-    )
-    assert resp.status_code == 200, resp.text
+    with _patch_get_queue_ok():
+        resp = client.post(
+            f"/api/v1/resumes/{resume_id}/versions/{version_id}/extract",
+            headers={"X-User-Id": "u_reextract"},
+        )
+    assert resp.status_code == 202, resp.text
     facts = resp.json()["latest_version"]["parsed_facts"]
-    assert facts["_extraction"]["status"] == "succeeded"
+    assert facts["_extraction"]["status"] == "pending"
     # A fresh run was created.
-    assert facts["_extraction"]["run_id"] != before
-    assert facts["facts"]["contact"]["name"] == "张三"
+    assert facts["_extraction"]["run_id"] != first_run_id
+
+    with SessionLocal() as db:
+        run = db.get(AgentRun, facts["_extraction"]["run_id"])
+        assert run is not None
+        assert run.status == "queued"
+        assert run.user_id == "u_reextract"
 
 
 def test_reextract_404_for_other_user(client: TestClient) -> None:
     # Test 15: re-extract is user-scoped; cross-user returns 404.
-    upload = _upload(client, "resume.txt", _txt_bytes(), user="owner_re")
+    with _patch_get_queue_ok():
+        upload = _upload(client, "resume.txt", _txt_bytes(), user="owner_re")
     assert upload.status_code == 201
     body = upload.json()
     resume_id = body["id"]
     version_id = body["latest_version"]["id"]
 
-    intruder = client.post(
-        f"/api/v1/resumes/{resume_id}/versions/{version_id}/extract",
-        headers={"X-User-Id": "intruder_re"},
-    )
+    with _patch_get_queue_ok():
+        intruder = client.post(
+            f"/api/v1/resumes/{resume_id}/versions/{version_id}/extract",
+            headers={"X-User-Id": "intruder_re"},
+        )
     assert intruder.status_code == 404
 
 
-def test_extraction_secret_not_in_agent_run_result(client: TestClient) -> None:
-    # Test 16: the secret resume token must not leak into AgentRun/Step rows.
-    secret_marker = "SUPER_SECRET_RESUME_TOKEN"
-    content = f"name: {secret_marker}\nPython 5年".encode()
-    resp = _upload(client, "secret.txt", content, user="u_leak")
-    assert resp.status_code == 201
-    resume_id = resp.json()["id"]
-    _wait_for_terminal_extraction(client, resume_id, "u_leak")
-
-    detail = client.get(f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": "u_leak"}).json()[
-        "latest_version"
-    ]
-    run_id = detail["parsed_facts"]["_extraction"]["run_id"]
-
-    # Fetch the run + steps via the agent-runs API and assert no leakage.
-    run_resp = client.get(
-        f"/api/v1/agent-runs/{run_id}",
-        headers={"X-User-Id": "u_leak"},
-    )
-    assert run_resp.status_code == 200
-    blob = run_resp.json()
-    import json as _json
-
-    assert secret_marker not in _json.dumps(blob, ensure_ascii=False)
-
-
-# ---------------------------------------------------------------------------
-# 17: upload with a failing gateway still returns 201 + _extraction.status=failed
-# ---------------------------------------------------------------------------
-
-
-def test_upload_extraction_failure_still_returns_201(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Model failure during background extraction must not break the upload.
-
-    The upload contract (design §4) says: when extraction fails during upload,
-    the resume + raw_text are already saved, ``_extraction.status="failed"``
-    is persisted, and the upload still returns 201. Because extraction now runs
-    as a background task, the response may show ``pending``/``running``; we then
-    poll until the terminal ``failed`` status and assert the failed run is
-    auditable.
-    """
-    import json as _json
-
-    from app.api.deps import get_model_gateway_dep
-    from app.main import app
-    from app.models_gateway.base import ChatRequest, ChatResponse, ModelGateway
-
-    class _RaisingGateway(ModelGateway):
-        """Gateway that raises on every chat() call."""
-
-        provider_name = "raising-test"
-
-        async def chat(self, request: ChatRequest) -> ChatResponse:
-            raise RuntimeError("simulated provider outage")
-
-    stub = _RaisingGateway()
-    app.dependency_overrides[get_model_gateway_dep] = lambda: stub
-    try:
-        resp = _upload(client, "resume.txt", _txt_bytes(), user="u_fail_extract")
-    finally:
-        app.dependency_overrides.pop(get_model_gateway_dep, None)
-
-    # Upload itself must succeed — the file was saved and raw_text extracted.
+def test_upload_enqueue_failure_flips_run_to_failed(client: TestClient) -> None:
+    # Test 16: when Redis is unavailable the upload endpoint flips the queued
+    # AgentRun and extraction status to ``failed`` so the frontend never polls
+    # forever.
+    with patch(
+        "app.queue.runtime.get_queue",
+        new=AsyncMock(side_effect=OSError("redis down")),
+    ):
+        resp = _upload(client, "resume.txt", _txt_bytes(), user="u_redis_fail")
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    resume_id = body["id"]
-    latest = body["latest_version"]
-    assert latest["version_no"] == 1
-    assert "张三" in latest["raw_text"]
+    extraction = body["latest_version"]["parsed_facts"]["_extraction"]
+    assert extraction["status"] == "failed"
+    run_id = extraction["run_id"]
 
-    # The upload response must not block on extraction; the status is
-    # non-terminal (pending/running) or already failed.
-    initial = latest["parsed_facts"]["_extraction"]["status"]
-    assert initial in {"pending", "running", "failed"}, initial
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error == "queue enqueue failed"
 
-    # Poll until the background runner persists the terminal failed status.
-    final = _wait_for_terminal_extraction(client, resume_id, "u_fail_extract")
-    assert final == "failed"
 
-    detail = client.get(
-        f"/api/v1/resumes/{resume_id}", headers={"X-User-Id": "u_fail_extract"}
-    ).json()["latest_version"]
-    facts = detail["parsed_facts"]
-    assert facts["_extraction"]["status"] == "failed"
-    assert "run_id" in facts["_extraction"]
-    # No typed facts written on failure.
-    assert "facts" not in facts
+def test_upload_sanitizes_secret_from_queued_run_result(client: TestClient) -> None:
+    # Test 17: the secret resume token must not leak into the queued AgentRun
+    # result (which stores raw_text_len, not the text).
+    secret_marker = "SUPER_SECRET_RESUME_TOKEN"
+    content = f"name: {secret_marker}\nPython 5年".encode()
+    with _patch_get_queue_ok():
+        resp = _upload(client, "secret.txt", content, user="u_leak")
+    assert resp.status_code == 201
+    run_id = resp.json()["latest_version"]["parsed_facts"]["_extraction"]["run_id"]
 
-    # The failed AgentRun is persisted and auditable via the agent-runs API.
-    run_id = facts["_extraction"]["run_id"]
-    run_resp = client.get(
-        f"/api/v1/agent-runs/{run_id}",
-        headers={"X-User-Id": "u_fail_extract"},
-    )
-    assert run_resp.status_code == 200
-    run_blob = run_resp.json()
-    assert run_blob["status"] == "failed"
-    assert run_blob["workflow_type"] == "resume_fact_extraction"
-
-    # Resume content must never leak into the run result, even on failure.
-    assert "张三" not in _json.dumps(run_blob, ensure_ascii=False)
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        blob = json.dumps(run.result or {}, ensure_ascii=False) + (run.error or "")
+        assert secret_marker not in blob

@@ -3,7 +3,7 @@
   "name": "async-resume-fact-extraction",
   "title": "Async Resume Fact Extraction",
   "description": "Replace FastAPI BackgroundTasks and synchronous re-extract with queue-backed resume fact extraction and retryable visible state.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

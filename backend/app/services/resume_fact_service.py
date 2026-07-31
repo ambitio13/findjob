@@ -4,13 +4,19 @@ This module owns the resume fact extraction workflow. It mirrors the JD-analysis
 orchestration pattern (``jd_analysis_service.py:232-504``) but is scoped to a
 resume version instead of a job:
 
-- :func:`extract_resume_facts`: the deterministic orchestration transaction. It
-  creates an ``AgentRun`` (``workflow_type="resume_fact_extraction"``), drives
-  the fixed steps (``load_context`` → ``build_prompt_context`` → ``call_model``
-  → ``validate_model_output`` → ``persist_outputs`` → ``complete_run``),
+- :func:`extract_resume_facts_with_run`: the deterministic orchestration
+  transaction. It accepts an *already-created* ``AgentRun``
+  (``workflow_type="resume_fact_extraction"``, status ``queued`` or
+  ``running``), flips it to ``running`` on entry, drives the fixed steps
+  (``load_context`` → ``build_prompt_context`` → ``call_model`` →
+  ``validate_model_output`` → ``persist_outputs`` → ``complete_run``),
   persists ``AgentStep`` rows, writes the typed ``facts`` + ``_extraction``
   status block into ``ResumeVersion.parsed_facts``, and translates failures
   into a recoverable extraction status.
+- :func:`extract_resume_facts`: legacy synchronous entry point that creates the
+  run itself then delegates to :func:`extract_resume_facts_with_run`. Kept for
+  backward compatibility with service-level tests that exercise the
+  orchestration directly without going through the queue.
 
 Ownership / failure contract (design.md):
 
@@ -103,17 +109,20 @@ class ExtractionOutcome:
         self.run = run
 
 
-async def extract_resume_facts(
+async def extract_resume_facts_with_run(
     db: Session,
+    run: AgentRun,
+    *,
     resume: Resume,
     version: ResumeVersion,
     gateway: ModelGateway,
-    *,
     raise_on_failure: bool = False,
 ) -> ExtractionOutcome:
-    """Drive the resume fact extraction workflow end to end.
+    """Drive the resume fact extraction workflow using an *existing* ``AgentRun``.
 
-    Fixed steps:
+    This is the worker entry point. The API layer (or a test) creates the
+    ``AgentRun`` row with ``status="queued"`` before calling this function; this
+    function flips it to ``running`` on entry. Fixed steps:
 
     1. ``load_context`` — confirm ``raw_text`` is non-empty; record the step.
     2. ``build_prompt_context`` — assemble the chat messages + truncation.
@@ -132,6 +141,9 @@ async def extract_resume_facts(
       returns 201.
     - ``True`` (re-extract path): same failed-run persistence, then HTTP 502 is
       raised so the explicit extraction action surfaces the failure.
+
+    Step results are sanitized (counts, provider/model/prompt_version, latency,
+    validation status) — never raw resume text.
     """
     raw_text = (version.raw_text or "").strip()
 
@@ -142,21 +154,11 @@ async def extract_resume_facts(
         db.commit()
         return ExtractionOutcome(status="not_run", run=None)
 
-    # When called from the background runner the status is already ``running``;
-    # when called from re-extract it may be a previous terminal status. Either
-    # way, ensure ``running`` is visible before the model call so polling
-    # clients see progress.
-    _write_extraction_status(db, version, status="running", run_id=None)
-    db.commit()
-
-    started_at = datetime.now(UTC)
-    run = agent_run_repo.create_run(
-        db,
-        user_id=resume.user_id,
-        workflow_type=WORKFLOW_TYPE,
-        status="running",
-        started_at=started_at,
-    )
+    # Flip queued → running on entry (no-op if already running from a retry).
+    if run.started_at is None:
+        run.started_at = datetime.now(UTC)
+    agent_run_repo.update_status(db, run, status="running")
+    db.flush()
 
     # Record the run id on the _extraction block now that it exists, so the
     # UI can link to /agent-runs/{run_id}/detail while extraction is running.
@@ -383,6 +385,46 @@ async def extract_resume_facts(
     return ExtractionOutcome(status="succeeded", run=run)
 
 
+async def extract_resume_facts(
+    db: Session,
+    resume: Resume,
+    version: ResumeVersion,
+    gateway: ModelGateway,
+    *,
+    raise_on_failure: bool = False,
+) -> ExtractionOutcome:
+    """Legacy synchronous entry point — creates the ``AgentRun`` then delegates.
+
+    Creates an ``AgentRun`` with ``status="running"`` and delegates to
+    :func:`extract_resume_facts_with_run`. Kept for backward compatibility with
+    service-level tests that exercise the orchestration directly without going
+    through the queue.
+    """
+    raw_text = (version.raw_text or "").strip()
+    if not raw_text:
+        # Unsupported / empty raw text: no run created, status not_run.
+        _write_extraction_status(db, version, status="not_run")
+        db.commit()
+        return ExtractionOutcome(status="not_run", run=None)
+
+    started_at = datetime.now(UTC)
+    run = agent_run_repo.create_run(
+        db,
+        user_id=resume.user_id,
+        workflow_type=WORKFLOW_TYPE,
+        status="running",
+        started_at=started_at,
+    )
+    return await extract_resume_facts_with_run(
+        db,
+        run,
+        resume=resume,
+        version=version,
+        gateway=gateway,
+        raise_on_failure=raise_on_failure,
+    )
+
+
 # ---------------------------------------------------------------------------
 # parsed_facts mutation helpers
 # ---------------------------------------------------------------------------
@@ -471,22 +513,25 @@ def _extraction_block(
 
 
 # ---------------------------------------------------------------------------
-# Upload-time scheduling + background runner
+# Upload-time scheduling + worker runner
 # ---------------------------------------------------------------------------
 
 
 def mark_extraction_pending(
     db: Session,
     version: ResumeVersion,
+    *,
+    run_id: str | None = None,
 ) -> None:
     """Write ``_extraction.status="pending"`` on a freshly saved version.
 
     Called by the upload endpoint after the resume/version are committed and
-    before the background extraction is scheduled. Preserves existing
-    ``_parser``/``_parser_status`` telemetry. No ``run_id`` yet — the run is
-    created later inside :func:`run_resume_fact_extraction_background`.
+    before the extraction job is enqueued to the worker queue. Preserves
+    existing ``_parser``/``_parser_status`` telemetry. The optional ``run_id``
+    links the pending status to the queued ``AgentRun`` created before enqueue
+    so the UI can link to ``/agent-runs/{run_id}`` while polling.
     """
-    _write_extraction_status(db, version, status="pending")
+    _write_extraction_status(db, version, status="pending", run_id=run_id)
     db.commit()
 
 
@@ -503,87 +548,152 @@ def mark_extraction_not_run(
     db.commit()
 
 
-async def run_resume_fact_extraction_background(
+def mark_extraction_failed(
+    db: Session,
+    version: ResumeVersion,
+    *,
+    run_id: str | None = None,
+) -> None:
+    """Write ``_extraction.status="failed"`` for queue submission failures.
+
+    Used when the API has already created a queued ``AgentRun`` and linked it
+    to the resume version, but Redis enqueue fails before a worker can pick up
+    the job. Without this transition the frontend would keep polling a
+    permanently pending extraction status.
+    """
+    _write_extraction_status(db, version, status="failed", run_id=run_id)
+    db.commit()
+
+
+async def run_resume_fact_extraction_worker(
     resume_id: str,
     version_id: str,
     user_id: str,
+    agent_run_id: str,
     gateway: ModelGateway,
 ) -> None:
-    """Background extraction runner — decoupled from the upload HTTP request.
+    """Queue worker entry point — executes extraction in the worker process.
 
     Opens its own DB session (never reuses a request-scoped ``Session``),
-    re-loads + ownership-checks the resume/version, flips ``_extraction.status``
-    to ``running`` before the model call, and delegates to the existing
-    :func:`extract_resume_facts` orchestration for the ``AgentRun`` /
-    ``AgentStep`` trail. Any unexpected error is persisted as a sanitized
-    ``failed`` status so the upload never looks silently stuck.
+    re-loads + ownership-checks the resume/version, re-loads the queued
+    ``AgentRun`` by ID, and delegates to :func:`extract_resume_facts_with_run`
+    for the fixed-step orchestration (model call → validation → sanitized
+    step/run persistence). Any unexpected error is caught by the handler
+    wrapper (``queue.handlers.resume_fact_extraction``), which calls
+    :func:`fail_run` to persist a sanitized ``failed`` status so the run never
+    stays stuck on ``running``.
 
-    The ``gateway`` is injected by the caller (the upload endpoint, which
-    already resolved it via DI) so tests can override it through the same
-    ``dependency_overrides`` path used for the synchronous flow.
+    The ``gateway`` is constructed inside the worker via
+    :func:`app.models_gateway.factory.get_model_gateway` so no request-scoped
+    dependency is passed across the queue boundary.
     """
     from app.db.session import SessionLocal
 
     db = SessionLocal()
     try:
+        run = agent_run_repo.get_run(db, agent_run_id)
+        if run is None:
+            _log.warning(
+                "resume_fact.worker.skip",
+                resume_id=resume_id,
+                version_id=version_id,
+                agent_run_id=agent_run_id,
+                reason="agent run not found",
+            )
+            return
+
         resume = db.get(Resume, resume_id)
         if resume is None or resume.user_id != user_id:
             _log.warning(
-                "resume_fact.background.skip",
+                "resume_fact.worker.skip",
                 resume_id=resume_id,
                 version_id=version_id,
+                agent_run_id=agent_run_id,
                 reason="resume not found or not owned",
             )
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="resume not found or not owned",
+            )
+            db.commit()
             return
         version = db.get(ResumeVersion, version_id)
         if version is None or version.resume_id != resume.id:
             _log.warning(
-                "resume_fact.background.skip",
+                "resume_fact.worker.skip",
                 resume_id=resume_id,
                 version_id=version_id,
+                agent_run_id=agent_run_id,
                 reason="version not found",
             )
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="resume version not found",
+            )
+            db.commit()
             return
 
         raw_text = (version.raw_text or "").strip()
         if not raw_text:
-            # No extractable text — leave the upload-time not_run/pending as-is
-            # by writing the canonical not_run status.
+            # No extractable text — write the canonical not_run status and flip
+            # the run to failed (it was created queued but cannot execute).
             _write_extraction_status(db, version, status="not_run")
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="no extractable raw text",
+            )
             db.commit()
             return
 
-        # Flip to running before model work so polling clients see progress.
-        _write_extraction_status(db, version, status="running")
-        db.commit()
-
         try:
-            await extract_resume_facts(db, resume, version, gateway)
-        except HTTPException:
-            # Re-extract-style 502 is never raised here (raise_on_failure=False
-            # by default), but guard anyway: a failed run is already persisted
-            # by extract_resume_facts, so just log and keep the failed status.
-            _log.warning(
-                "resume_fact.background.http_error",
-                resume_id=resume_id,
-                version_id=version_id,
+            await extract_resume_facts_with_run(
+                db, run, resume=resume, version=version, gateway=gateway
             )
-        except Exception as exc:  # noqa: BLE001 — never let the bg task crash unseen
+        except HTTPException:
+            # raise_on_failure defaults to False so 502 is never raised here,
+            # but guard anyway: a failed run is already persisted by
+            # extract_resume_facts_with_run, so just log and keep the failed
+            # status.
             _log.warning(
-                "resume_fact.background.error",
+                "resume_fact.worker.http_error",
                 resume_id=resume_id,
                 version_id=version_id,
+                agent_run_id=agent_run_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — never let the worker crash unseen
+            _log.warning(
+                "resume_fact.worker.error",
+                resume_id=resume_id,
+                version_id=version_id,
+                agent_run_id=agent_run_id,
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
-            # extract_resume_facts normally persists `failed` itself; this guard
-            # covers any error before/after its own commit so the row never
-            # stays stuck on `running`.
+            # extract_resume_facts_with_run normally persists `failed` itself;
+            # this guard covers any error before/after its own commit so the
+            # row never stays stuck on `running`.
             _write_extraction_status(
                 db,
                 version,
                 status="failed",
+                run_id=run.id,
                 provider=gateway.provider_name,
+            )
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="resume fact extraction failed",
             )
             db.commit()
     finally:

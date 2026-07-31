@@ -5,27 +5,27 @@ local disk and a ``Resume`` + ``ResumeVersion`` row pair is created per upload.
 Parser output is honest: ``raw_text`` is real extracted text;
 ``parsed_facts`` stores parser telemetry only (no invented facts). After a
 successful text extraction, an auditable model-backed resume fact extraction
-runs as an automatic **background** workflow (see ``resume_fact_service``):
-the upload endpoint writes ``_extraction.status="pending"``, schedules the
-runner, and returns immediately so the request never blocks on the model call.
-The explicit re-extract endpoint stays synchronous. Resume content is never
-logged; only IDs and lengths are logged.
+runs as an **asynchronous queue workflow** (see ``resume_fact_service``):
+the upload endpoint creates a ``queued`` ``AgentRun``, writes
+``_extraction.status="pending"``, enqueues a ``ResumeFactExtractionPayload``
+to the worker queue, and returns immediately so the request never blocks on
+the model call. The explicit re-extract endpoint follows the same
+enqueue-and-poll pattern. Resume content is never logged; only IDs and
+lengths are logged.
 """
 
 from __future__ import annotations
 
-import asyncio
-import uuid
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_db_session, get_model_gateway_dep
+from app.api.deps import get_current_user, get_db_session
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.models.models import UserProfile
-from app.db.repositories import resume_repo
-from app.models_gateway.base import ModelGateway
+from app.db.repositories import agent_run_repo, resume_repo
 from app.schemas.api import PaginatedMeta
 from app.schemas.profile_draft import ApplyProfileDraftRequest, ApplyProfileDraftResponse
 from app.schemas.resume import (
@@ -43,26 +43,27 @@ _log = get_logger("app.api.v1.resumes")
 
 @router.post("", response_model=ResumeDetailOut, status_code=201)
 async def upload_resume(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
-    gateway: ModelGateway = Depends(get_model_gateway_dep),
 ) -> ResumeDetailOut:
-    """Upload a resume file, parse it, and schedule structured fact extraction.
+    """Upload a resume file, parse it, and enqueue structured fact extraction.
 
     Validates extension and size before reading the body. The file is persisted
     to local disk; a ``Resume`` and its first ``ResumeVersion`` are created.
     When text extraction succeeds the version is marked
-    ``_extraction.status="pending"`` and an auditable model-backed resume fact
-    extraction is scheduled as a post-response background task — the upload
-    response returns immediately and never blocks on the model call. The
+    ``_extraction.status="pending"``, a ``queued`` ``AgentRun`` is created, and
+    a ``ResumeFactExtractionPayload`` is enqueued to the worker queue — the
+    upload response returns immediately and never blocks on the model call. The
     frontend polls ``GET /resumes/{id}`` to observe
     ``pending`` → ``running`` → ``succeeded``/``failed``. Unsupported/empty
-    raw text is marked ``not_run`` and no extraction is scheduled. Extraction
-    failure (in the background) persists a failed ``AgentRun`` but leaves the
-    uploaded resume visible and usable.
+    raw text is marked ``not_run`` and no extraction is enqueued. If Redis is
+    unavailable the run is flipped to ``failed`` so the frontend sees a
+    terminal state instead of polling forever.
     """
+    from app.queue.payloads import ResumeFactExtractionPayload
+    from app.queue.runtime import enqueue_workflow
+
     settings = get_settings()
     filename = file.filename or ""
     if not filename:
@@ -116,19 +117,50 @@ async def upload_resume(
     db.refresh(version)
 
     # Decouple model-backed extraction from the upload HTTP request. For
-    # parsed raw text, mark pending + schedule the background runner so the
-    # response returns well within the frontend timeout budget. Unsupported /
-    # empty raw text is marked not_run and no extraction is scheduled.
+    # parsed raw text, create a queued AgentRun, mark pending, and enqueue the
+    # extraction job so the response returns well within the frontend timeout
+    # budget. Unsupported / empty raw text is marked not_run and no extraction
+    # is enqueued.
     raw_text = (result.raw_text or "").strip()
     if raw_text:
-        resume_fact_service.mark_extraction_pending(db, version)
-        _schedule_extraction(
-            background_tasks,
+        run = agent_run_repo.create_run(
+            db,
+            user_id=current_user.id,
+            workflow_type=resume_fact_service.WORKFLOW_TYPE,
+            status="queued",
+            result={
+                "resume_id": resume.id,
+                "resume_version_id": version.id,
+                "raw_text_len": len(raw_text),
+            },
+        )
+        db.commit()
+        db.refresh(run)
+        resume_fact_service.mark_extraction_pending(db, version, run_id=run.id)
+        db.refresh(version)
+
+        idempotency_key = f"resume_fact:{run.id}"
+        enqueue_payload = ResumeFactExtractionPayload(
+            workflow_type=resume_fact_service.WORKFLOW_TYPE,
+            user_id=current_user.id,
+            agent_run_id=run.id,
+            idempotency_key=idempotency_key,
             resume_id=resume.id,
             version_id=version.id,
-            user_id=current_user.id,
-            gateway=gateway,
         )
+        try:
+            await enqueue_workflow(enqueue_payload, job_id=idempotency_key)
+        except Exception:
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="queue enqueue failed",
+            )
+            db.commit()
+            resume_fact_service.mark_extraction_failed(db, version, run_id=run.id)
+            db.refresh(version)
     else:
         resume_fact_service.mark_extraction_not_run(db, version)
         db.refresh(version)
@@ -218,28 +250,87 @@ def list_resume_versions(
 @router.post(
     "/{resume_id}/versions/{version_id}/extract",
     response_model=ResumeDetailOut,
+    status_code=202,
 )
 async def reextract_resume_facts(
     resume_id: str,
     version_id: str,
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
-    gateway: ModelGateway = Depends(get_model_gateway_dep),
 ) -> ResumeDetailOut:
     """Re-run structured fact extraction on an existing resume version.
 
-    User-scoped (404 on cross-user). Creates a fresh ``AgentRun`` and refreshes
-    ``parsed_facts.facts`` on the existing ``raw_text``. Unlike upload,
-    extraction is the primary action: a model/provider/schema failure persists
-    a failed ``AgentRun`` and then returns 502.
+    User-scoped (404 on cross-user). Creates a fresh ``queued`` ``AgentRun``,
+    marks ``_extraction.status="pending"``, enqueues a
+    ``ResumeFactExtractionPayload`` to the worker queue, and returns the
+    resume detail immediately so the caller never blocks on the model call.
+    The frontend polls ``GET /resumes/{id}`` to observe
+    ``pending`` → ``running`` → ``succeeded``/``failed``. If Redis is
+    unavailable the run is flipped to ``failed`` so the frontend sees a
+    terminal state instead of polling forever.
     """
+    from app.queue.payloads import ResumeFactExtractionPayload
+    from app.queue.runtime import enqueue_workflow
+
     resume, version = resume_fact_service.load_resume_version_for_user(
         db, current_user, resume_id, version_id
     )
-    await resume_fact_service.extract_resume_facts(
-        db, resume, version, gateway, raise_on_failure=True
+
+    raw_text = (version.raw_text or "").strip()
+    if not raw_text:
+        # No extractable text — keep the canonical not_run status. A queued run
+        # would immediately fail in the worker, so skip enqueue entirely.
+        resume_fact_service.mark_extraction_not_run(db, version)
+        db.refresh(version)
+        return ResumeDetailOut(
+            id=resume.id,
+            filename=resume.filename,
+            mime_type=resume.mime_type,
+            storage_uri=resume.storage_uri,
+            created_at=resume.created_at,
+            latest_version=_version_out(version),
+        )
+
+    run = agent_run_repo.create_run(
+        db,
+        user_id=current_user.id,
+        workflow_type=resume_fact_service.WORKFLOW_TYPE,
+        status="queued",
+        result={
+            "resume_id": resume.id,
+            "resume_version_id": version.id,
+            "raw_text_len": len(raw_text),
+            "trigger": "reextract",
+        },
     )
+    db.commit()
+    db.refresh(run)
+    resume_fact_service.mark_extraction_pending(db, version, run_id=run.id)
     db.refresh(version)
+
+    idempotency_key = f"resume_fact:{run.id}"
+    enqueue_payload = ResumeFactExtractionPayload(
+        workflow_type=resume_fact_service.WORKFLOW_TYPE,
+        user_id=current_user.id,
+        agent_run_id=run.id,
+        idempotency_key=idempotency_key,
+        resume_id=resume.id,
+        version_id=version.id,
+    )
+    try:
+        await enqueue_workflow(enqueue_payload, job_id=idempotency_key)
+    except Exception:
+        agent_run_repo.update_status(
+            db,
+            run,
+            status="failed",
+            finished_at=datetime.now(UTC),
+            error="queue enqueue failed",
+        )
+        db.commit()
+        resume_fact_service.mark_extraction_failed(db, version, run_id=run.id)
+        db.refresh(version)
+
     return ResumeDetailOut(
         id=resume.id,
         filename=resume.filename,
@@ -283,61 +374,6 @@ def _extension(filename: str) -> str:
     if dot < 0:
         return ""
     return filename[dot + 1 :].lower()
-
-
-def _schedule_extraction(
-    background_tasks: BackgroundTasks,
-    *,
-    resume_id: str,
-    version_id: str,
-    user_id: str,
-    gateway: ModelGateway,
-) -> None:
-    """Schedule the background resume fact extraction.
-
-    Uses a FastAPI ``BackgroundTasks`` entry so the runner executes after the
-    upload response is sent. A short-lived ``asyncio`` task wrapper gives the
-    async runner its own event-loop context inside the background-task slot.
-    The ``gateway`` resolved by the request's DI is passed in so tests can
-    override it through ``dependency_overrides`` exactly like the sync path.
-    """
-    run_id = uuid.uuid4().hex
-    _log.info(
-        "resume_fact.scheduled",
-        resume_id=resume_id,
-        version_id=version_id,
-        user_id=user_id,
-        schedule_id=run_id,
-    )
-    background_tasks.add_task(
-        _run_extraction_task,
-        resume_id,
-        version_id,
-        user_id,
-        gateway,
-    )
-
-
-def _run_extraction_task(
-    resume_id: str,
-    version_id: str,
-    user_id: str,
-    gateway: ModelGateway,
-) -> None:
-    """Sync adapter that drives the async background runner on a fresh loop.
-
-    ``BackgroundTasks`` executes callables synchronously after the response;
-    this wrapper creates a dedicated event loop for the async runner so it
-    never touches the request's loop (already closed by then).
-    """
-    asyncio.run(
-        resume_fact_service.run_resume_fact_extraction_background(
-            resume_id=resume_id,
-            version_id=version_id,
-            user_id=user_id,
-            gateway=gateway,
-        )
-    )
 
 
 async def _read_with_size_limit(file: UploadFile, max_size_mb: int) -> bytes:
