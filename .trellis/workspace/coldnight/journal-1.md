@@ -319,6 +319,56 @@ Migrated resume fact extraction from FastAPI BackgroundTasks (upload) and synchr
 - None - task complete
 
 
+## Session 10: 异步 Agent Run 前端 UX 与可观测性统一
+
+**Date**: 2026-08-01
+**Task**: Async Job UX and Observability
+**Branch**: `master`
+
+### Summary
+
+完成异步队列架构升级父任务的最后一个子任务：统一前端异步 agent-run 体验。将 JobCreateModal、JobDetailPage、ResumeDetailPage 三个组件中各自重复实现的递归 setTimeout + token/ref 轮询模式，收敛到共享 `useAgentRunPolling` hook；将散落的状态常量、标签/颜色映射集中到 `@/features/agent-runs/status.ts`；新增 `AgentRunStatusTag` 组件和 `copy.ts` 文案模块，确保异步进度/成功/失败措辞跨工作流一致。ResumeDetailPage 因轮询不同端点（getResume 而非 getAgentRunDetail）保留其原有轮询逻辑，仅统一错误文案。前端 lint/type-check/build 全绿，后端 195 tests pass，task.py validate 通过。同步更新 frontend spec（api-integration、hooks、components）记录新的共享轮询/状态/展示约定。归档子任务及父任务，活动任务清零。
+
+### Main Changes
+
+- 新增 `frontend/src/features/agent-runs/status.ts`：`AgentRunStatus` 联合类型、`TERMINAL_AGENT_RUN_STATUSES`/`ACTIVE_AGENT_RUN_STATUSES` 集合、`AGENT_RUN_STATUS_LABEL`/`AGENT_RUN_STATUS_COLOR` 映射、`normalizeAgentRunStatus()`、`AGENT_RUN_POLL_INTERVAL_MS`；保留 deprecated `TERMINAL_JD_PARSE_STATUSES` 向后兼容。
+- 新增 `AgentRunStatusTag.tsx`：共享状态标签组件。
+- 新增 `useAgentRunPolling.ts`：共享轮询 hook，ref 管理回调避免定时器重建，token 取消，卸载清理。
+- 新增 `copy.ts`：`asyncRunProgressMessage`/`asyncRunSuccessMessage`/`asyncRunFailureMessage`/`asyncRetryLabel`/`runIdHint`，均接受 `workflowLabel` 参数。
+- 重写 `JobCreateModal.tsx`：移除手写轮询（pollTimerRef/pollTokenRef/stopPolling/pollRunDetail/JD_PARSE_POLL_MS），改用 `useAgentRunPolling` + `pollRunId` state。
+- 重写 `JobDetailPage.tsx`：同上改用共享 hook，`message.useMessage()` + contextHolder 替代模块级 message。
+- `ResumeDetailPage.tsx`：引入 `asyncRunFailureMessage("抽取")` 统一重新解析失败文案。
+- `types/index.ts`：为 `TERMINAL_JD_PARSE_STATUSES` 添加 `@deprecated` JSDoc。
+- 更新 `.trellis/spec/frontend/api-integration.md`：记录共享轮询 hook、status 模块、展示映射、文案模块、`as AgentRunStatus` 类型桥接约定。
+- 更新 `.trellis/spec/frontend/hooks.md`：状态值改为 queued/running/succeeded/failed/not_run，指向共享 hook。
+- 更新 `.trellis/spec/frontend/components.md`：指向 `AgentRunStatusTag` 复用。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3248b59` | feat(frontend): unify async agent-run polling & status UX |
+| `d8636ab` | chore(task): archive 08-01-async-job-ux-observability |
+| `ed239d1` | chore(task): archive 08-01-async-queue-architecture-upgrade |
+
+### Testing
+
+- 前端 `pnpm lint` ✓（无错误）
+- 前端 `pnpm type-check` ✓（无错误）
+- 前端 `pnpm build` ✓（3.05s，4130 modules transformed）
+- 后端 `.venv/bin/pytest -q` ✓（195 passed, 1 warning）
+- `python3 .trellis/scripts/task.py validate 08-01-async-job-ux-observability` ✓
+- `git diff --check` ✓（无空白错误）
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - 父任务 `08-01-async-queue-architecture-upgrade` 5/5 子任务全部完成并归档，活动任务清零。
+
+
 ## Session 9: 异步 JD 分析工作流入队迁移
 
 **Date**: 2026-08-01
