@@ -164,12 +164,24 @@ class ApplicationRecord(Base, TimestampMixin):
     __tablename__ = "application_records"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    # Direct user scoping + index for list views (design.md "Data Model Notes").
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("user_profiles.id"), nullable=False, index=True
+    )
     job_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("job_postings.id"), nullable=False, index=True
     )
     resume_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="planned", index=True)
-    timeline: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Append-only JSON list of ApplicationTimelineEvent dicts.
+    timeline: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    # Latest failure envelope (sanitized) when the record entered ``failed``.
+    latest_error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Latest agent run id linked to this application (provenance for retry/audit).
+    latest_agent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Snapshot of readiness-source metadata (source_hash + version stamps) used
+    # to detect stale artifacts without re-reading every source row.
+    readiness_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     job: Mapped[JobPosting] = relationship(back_populates="applications")
 

@@ -109,6 +109,88 @@ class AgentRunDetailOut(BaseSchema):
     steps: list[AgentStepOut] = Field(default_factory=list)
 
 
+# --- Applications ---
+
+
+class ApplicationCreate(BaseModel):
+    """Create payload for a new application record.
+
+    ``resume_version_id`` is optional at creation time: a record can start in
+    ``planned`` without a resume, but cannot enter ``preparing`` until a usable
+    (text-bearing) resume version is bound (PRD failure-handling requirement).
+    """
+
+    job_id: str
+    resume_version_id: str | None = None
+
+
+class ApplicationTimelineEventOut(BaseModel):
+    """Outbound view of a persisted timeline event.
+
+    The persisted ``ApplicationRecord.timeline`` is a JSON list whose entries
+    follow the shape defined in ``design.md`` (id/type/at/actor/from_status/
+    to_status/summary/metadata). This model validates that shape on read so the
+    API contract is explicit even though storage is a free-form JSON column.
+    """
+
+    id: str
+    type: str
+    at: datetime
+    actor: str = "user"
+    from_status: str | None = None
+    to_status: str | None = None
+    summary: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApplicationOut(BaseSchema):
+    """Outbound view of an ``ApplicationRecord``."""
+
+    id: str
+    user_id: str
+    job_id: str
+    resume_version_id: str | None = None
+    status: str
+    timeline: list[ApplicationTimelineEventOut] = Field(default_factory=list)
+    latest_error: dict[str, Any] | None = None
+    latest_agent_run_id: str | None = None
+    readiness_snapshot: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ApplicationListOut(BaseModel):
+    meta: PaginatedMeta = Field(default_factory=PaginatedMeta)
+    items: list[ApplicationOut]
+
+
+class ApplicationStatusUpdate(BaseModel):
+    """Payload for ``PATCH /applications/{id}/status``.
+
+    ``note`` is an optional safe user-facing note appended to the timeline.
+    ``failure`` carries a sanitized failure envelope when the transition enters
+    ``failed``; it is stored on ``latest_error`` and never contains raw text or
+    secrets (enforced by ``build_failure_envelope`` upstream).
+    """
+
+    status: str
+    note: str | None = None
+    failure: dict[str, Any] | None = None
+    agent_run_id: str | None = None
+
+
+class ApplicationTimelineCreate(BaseModel):
+    """Payload for ``POST /applications/{id}/timeline`` — append a manual note.
+
+    Only user-note events may be appended through this endpoint; status-change
+    events are owned by the status-update endpoint so the timeline never claims
+    a transition that did not happen (design.md Transaction Rule).
+    """
+
+    summary: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ManualJdAnalysisDemoResponse(BaseModel):
     agent_run: AgentRunOut
     artifact_id: str
