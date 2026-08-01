@@ -532,3 +532,36 @@ Implemented the readiness artifact generation workflow producing 4 application-s
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Approval boundary for external actions
+
+**Date**: 2026-08-01
+**Task**: Approval boundary for external actions
+**Branch**: `wanzhen`
+
+### Summary
+
+Implemented the durable approval boundary that represents 'the user approved this exact planned action' and blocks future external execution when approval is missing or stale. Backend: schemas (ExternalActionType/Status, ApprovalRecord, ApplicationActionPreview, ApprovalBlockedError as Exception subclass), approval_boundary service (compute_payload_hash with stable JSON normalization, check_staleness, assert_action_approved execution guard), application_action_repo with CLEAR sentinel to distinguish 'not provided' from 'clear to null' on nullable fields, approval_action_service (preview/approve/revoke/read with ownership verification + timeline events), 5 API endpoints (no execute/submit), Alembic migration 0004, 24 tests. Frontend: ApplicationActionsPanel showing exact payload preview with approve/revoke buttons (no execute button), ApplicationsPage with timeline, route + menu. Fixed two bugs: ApprovalBlockedError was a BaseModel not an Exception (6 guard test failures), repo update could not clear nullable approval/stale_reason fields (1 revoke test failure). Quality gate: ruff clean, 403 tests pass, tsc clean.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fcd2818` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
+- **Total Sessions**: 14
 - **Last Active**: 2026-08-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~534 | Active |
+| `journal-1.md` | ~567 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-08-01 | Approval boundary for external actions | `fcd2818` | `wanzhen` |
 | 13 | 2026-08-01 | Readiness Artifact Generation | `07e3e51` | `wanzhen` |
 | 12 | 2026-08-01 | Application Records Center | `56dcfc7` | `wanzhen` |
 | 11 | 2026-08-01 | Application state machine and failure envelope | `3205d2b` | `wanzhen` |
