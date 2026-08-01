@@ -24,7 +24,8 @@
     "08-01-readiness-artifact-generation",
     "08-01-readiness-panel-ux",
     "08-01-approval-boundary-for-external-actions",
-    "08-01-automation-readiness-review"
+    "08-01-automation-readiness-review",
+    "08-02-first-platform-pilot-guided-submit"
   ],
   "parent": null,
   "relatedFiles": [],
