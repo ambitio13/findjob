@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db_session
 from app.db.models.models import UserProfile
-from app.db.repositories import agent_run_repo
+from app.db.repositories import agent_run_repo, generated_artifact_repo
 from app.schemas.api import (
     ApplicationCreate,
     ApplicationListOut,
@@ -31,6 +31,8 @@ from app.schemas.application import (
     ApplicationFailureNextAction,
 )
 from app.schemas.readiness import (
+    ReadinessArtifactListOut,
+    ReadinessArtifactOut,
     ReadinessArtifactType,
     RunReadinessRunSummary,
     RunReadinessSubmitResponse,
@@ -43,6 +45,9 @@ from app.services.readiness_service import (
 )
 
 router = APIRouter(prefix="/applications", tags=["applications"])
+
+#: The four readiness artifact types stored on ``GeneratedArtifact.artifact_type``.
+READINESS_ARTIFACT_TYPES = tuple(t.value for t in ReadinessArtifactType)
 
 
 def _to_out(record) -> ApplicationOut:
@@ -156,6 +161,36 @@ def append_timeline_event(
         metadata=payload.metadata,
     )
     return _to_out(record)
+
+
+@router.get("/{application_id}/artifacts", response_model=ReadinessArtifactListOut)
+def list_application_artifacts(
+    application_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> ReadinessArtifactListOut:
+    """List persisted readiness artifacts for an application, newest first.
+
+    Returns the four readiness artifact types only (``hr_opening_message``,
+    ``resume_rewrite_snippet``, ``skill_gap_plan``, ``interview_prep``). The
+    binding to an application lives inside the artifact ``source_ids`` JSON
+    (key ``application_id``); we scope by the application's ``job_id`` (indexed
+    FK) first, then filter on that JSON key so the query stays cheap. JD
+    analysis artifacts for the same job are excluded.
+
+    The ``content`` field is the validated structured-output JSON string; the
+    frontend re-parses it into the matching output model for rendering.
+    """
+    record = application_service.get_application(db, current_user, application_id)
+    rows = generated_artifact_repo.list_for_application(
+        db,
+        application_id,
+        job_id=record.job_id,
+        artifact_types=READINESS_ARTIFACT_TYPES,
+    )
+    return ReadinessArtifactListOut(
+        items=[ReadinessArtifactOut.model_validate(r) for r in rows]
+    )
 
 
 @router.post(

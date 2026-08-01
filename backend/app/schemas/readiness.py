@@ -14,6 +14,7 @@ No provider SDK is imported here; the structured outputs are provider-neutral.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
@@ -142,4 +143,10 @@ class ReadinessArtifactOut(BaseSchema):
     prompt_version: str | None = None
     model_name: str | None = None
     content: str
-    created_at: str | None = None
+    created_at: datetime | None = None
+
+
+class ReadinessArtifactListOut(BaseModel):
+    """List response for readiness artifacts bound to an application."""
+
+    items: list[ReadinessArtifactOut] = Field(default_factory=list)

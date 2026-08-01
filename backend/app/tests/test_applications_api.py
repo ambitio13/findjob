@@ -532,3 +532,156 @@ def test_status_and_timeline_are_transactional(client: TestClient) -> None:
         assert last["type"] == "status_changed"
         assert last["from_status"] == "planned"
         assert last["to_status"] == "preparing"
+
+
+# ---------------------------------------------------------------------------
+# Readiness artifacts listing (GET /applications/{id}/artifacts)
+# ---------------------------------------------------------------------------
+
+
+def _persist_readiness_artifact(
+    db: Session,
+    *,
+    application_id: str,
+    job_id: str,
+    user_id: str,
+    resume_version_id: str,
+    artifact_type: str = "hr_opening_message",
+    content: str = "{}",
+    source_ids: dict[str, Any] | None = None,
+) -> None:
+    """Insert a readiness ``GeneratedArtifact`` row directly.
+
+    The readiness worker normally writes this after a successful run. Tests
+    bypass the worker and persist rows manually to exercise the listing query
+    (which scopes by ``job_id`` + ``source_ids['application_id']``).
+    """
+    from app.db.models.models import GeneratedArtifact
+
+    if source_ids is None:
+        source_ids = {"application_id": application_id}
+    db.add(
+        GeneratedArtifact(
+            artifact_type=artifact_type,
+            content=content,
+            user_id=user_id,
+            job_id=job_id,
+            resume_version_id=resume_version_id,
+            agent_run_id=None,
+            source_ids=source_ids,
+            prompt_version="v1",
+            model_name="fake-model",
+        )
+    )
+    db.flush()
+
+
+def test_list_application_artifacts_returns_scoped_rows(client: TestClient) -> None:
+    """The endpoint returns only readiness artifacts bound to this application.
+
+    We seed two readiness artifacts for the application plus one ``jd_analysis``
+    artifact for the same job (which must be excluded) and one readiness
+    artifact bound to a *different* application (also excluded).
+    """
+    ids = _seed()
+    app_id = client.post(
+        "/api/v1/applications",
+        json={
+            "job_id": ids["job_id"],
+            "resume_version_id": ids["resume_version_id"],
+        },
+        headers=_headers(ids["user_id"]),
+    ).json()["id"]
+
+    with SessionLocal() as db:
+        _persist_readiness_artifact(
+            db,
+            application_id=app_id,
+            job_id=ids["job_id"],
+            user_id=ids["user_id"],
+            resume_version_id=ids["resume_version_id"],
+            artifact_type="hr_opening_message",
+            content='{"hook":"h","message":"m"}',
+        )
+        _persist_readiness_artifact(
+            db,
+            application_id=app_id,
+            job_id=ids["job_id"],
+            user_id=ids["user_id"],
+            resume_version_id=ids["resume_version_id"],
+            artifact_type="skill_gap_plan",
+            content='{"critical_gaps":[]}',
+        )
+        # A jd_analysis artifact for the same job; must be excluded.
+        _persist_readiness_artifact(
+            db,
+            application_id=app_id,
+            job_id=ids["job_id"],
+            user_id=ids["user_id"],
+            resume_version_id=ids["resume_version_id"],
+            artifact_type="jd_analysis",
+            content='{"summary":"s"}',
+        )
+        # A readiness artifact bound to a different application id; excluded.
+        _persist_readiness_artifact(
+            db,
+            application_id="other_application",
+            job_id=ids["job_id"],
+            user_id=ids["user_id"],
+            resume_version_id=ids["resume_version_id"],
+            artifact_type="interview_prep",
+            content='{"likely_questions":[]}',
+        )
+        db.commit()
+
+    resp = client.get(
+        f"/api/v1/applications/{app_id}/artifacts",
+        headers=_headers(ids["user_id"]),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["items"]
+    # Only the two readiness artifacts bound to this application.
+    assert len(body) == 2
+    types = {row["artifact_type"] for row in body}
+    assert types == {"hr_opening_message", "skill_gap_plan"}
+    # Each row carries the validated content + source_ids provenance.
+    row_by_type = {row["artifact_type"]: row for row in body}
+    assert row_by_type["hr_opening_message"]["content"] == '{"hook":"h","message":"m"}'
+    assert row_by_type["skill_gap_plan"]["content"] == '{"critical_gaps":[]}'
+    for row in body:
+        assert row["source_ids"]["application_id"] == app_id
+
+
+def test_list_application_artifacts_empty(client: TestClient) -> None:
+    """An application with no generated artifacts returns an empty list."""
+    ids = _seed()
+    app_id = client.post(
+        "/api/v1/applications",
+        json={"job_id": ids["job_id"]},
+        headers=_headers(ids["user_id"]),
+    ).json()["id"]
+
+    resp = client.get(
+        f"/api/v1/applications/{app_id}/artifacts",
+        headers=_headers(ids["user_id"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"items": []}
+
+
+def test_list_application_artifacts_cross_user_returns_404(
+    client: TestClient,
+) -> None:
+    """Cross-user access returns 404 (not 403), consistent with other endpoints."""
+    ids = _seed()
+    app_id = client.post(
+        "/api/v1/applications",
+        json={"job_id": ids["job_id"]},
+        headers=_headers(ids["user_id"]),
+    ).json()["id"]
+
+    resp = client.get(
+        f"/api/v1/applications/{app_id}/artifacts",
+        headers=_headers(ids["other_user_id"]),
+    )
+    assert resp.status_code == 404

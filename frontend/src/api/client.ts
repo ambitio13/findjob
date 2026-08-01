@@ -20,6 +20,12 @@ import type {
   RunJdAnalysisSubmitResponse,
   ApplicationListOut,
   ApplicationOut,
+  ApplicationCreate,
+  ApplicationStatusUpdate,
+  ApplicationTimelineCreate,
+  ReadinessArtifactType,
+  ReadinessArtifactListOut,
+  RunReadinessSubmitResponse,
   ApplicationActionCreate,
   ApplicationActionListOut,
   ApplicationActionOut,
@@ -238,6 +244,59 @@ export async function listApplications(
 
 export async function getApplication(id: string): Promise<ApplicationOut> {
   const { data } = await apiClient.get<ApplicationOut>(`/applications/${id}`);
+  return data;
+}
+
+/** Create a new application record for a job (optionally binding a resume). */
+export async function createApplication(
+  payload: ApplicationCreate,
+): Promise<ApplicationOut> {
+  const { data } = await apiClient.post<ApplicationOut>("/applications", payload);
+  return data;
+}
+
+/** Apply a status transition, appending a timeline entry + failure envelope. */
+export async function updateApplicationStatus(
+  id: string,
+  payload: ApplicationStatusUpdate,
+): Promise<ApplicationOut> {
+  const { data } = await apiClient.patch<ApplicationOut>(
+    `/applications/${id}/status`,
+    payload,
+  );
+  return data;
+}
+
+/** Append a manual user note to the application timeline. */
+export async function appendTimelineNote(
+  id: string,
+  payload: ApplicationTimelineCreate,
+): Promise<ApplicationOut> {
+  const { data } = await apiClient.post<ApplicationOut>(
+    `/applications/${id}/timeline`,
+    payload,
+  );
+  return data;
+}
+
+/** Enqueue readiness artifact generation; returns the run summary for polling. */
+export async function generateReadinessArtifact(
+  applicationId: string,
+  artifactType: ReadinessArtifactType,
+): Promise<RunReadinessSubmitResponse> {
+  const { data } = await apiClient.post<RunReadinessSubmitResponse>(
+    `/applications/${applicationId}/artifacts/${artifactType}/generate`,
+  );
+  return data;
+}
+
+/** List persisted readiness artifacts for an application (newest first). */
+export async function listApplicationArtifacts(
+  applicationId: string,
+): Promise<ReadinessArtifactListOut> {
+  const { data } = await apiClient.get<ReadinessArtifactListOut>(
+    `/applications/${applicationId}/artifacts`,
+  );
   return data;
 }
 

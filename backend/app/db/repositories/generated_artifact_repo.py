@@ -79,6 +79,46 @@ def get_latest_for_run(
     )
 
 
+def list_for_application(
+    db: Session,
+    application_id: str,
+    *,
+    job_id: str,
+    artifact_types: tuple[str, ...] | None = None,
+    limit: int = 50,
+) -> list[GeneratedArtifact]:
+    """Return readiness artifacts for ``application_id``, newest first.
+
+    ``GeneratedArtifact`` has no ``application_id`` FK column; the binding
+    lives inside the ``source_ids`` JSON dict (key ``application_id``) written
+    by the readiness worker. We scope by ``job_id`` (indexed FK) first, then
+    filter in Python on ``source_ids['application_id']`` so the query stays
+    cheap and dialect-neutral. ``artifact_types`` optionally restricts to the
+    four readiness types (excluding e.g. ``jd_analysis``).
+    """
+    candidate_limit = max(limit * 10, 200)
+    base_filter = GeneratedArtifact.job_id == job_id
+    if artifact_types is not None:
+        base_filter = base_filter & (
+            GeneratedArtifact.artifact_type.in_(artifact_types)
+        )
+    rows = (
+        db.execute(
+            select(GeneratedArtifact)
+            .where(base_filter)
+            .order_by(GeneratedArtifact.created_at.desc())
+            .limit(candidate_limit)
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        r
+        for r in rows
+        if (r.source_ids or {}).get("application_id") == application_id
+    ][:limit]
+
+
 def list_for_job(
     db: Session,
     job_id: str,

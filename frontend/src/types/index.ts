@@ -627,3 +627,102 @@ export interface ApplicationActionCreate {
   resume_file_reference: string | null;
   source_snapshot: ApplicationActionSourceSnapshotInput;
 }
+
+// --- Application readiness: failure envelope, artifacts, payloads ---
+
+/** Mirrors backend ``ApplicationFailureCategory`` enum. */
+export type ApplicationFailureCategory =
+  | "queue"
+  | "model"
+  | "validation"
+  | "data"
+  | "user_action"
+  | "platform"
+  | "unknown";
+
+/** Mirrors backend ``ApplicationFailureNextAction`` enum. */
+export type ApplicationFailureNextAction =
+  | "retry"
+  | "edit_source"
+  | "choose_resume"
+  | "reapprove"
+  | "manual_review";
+
+/** Safe, sanitized representation of a failed readiness operation. */
+export interface ApplicationFailureEnvelope {
+  category: ApplicationFailureCategory;
+  code: string;
+  message: string;
+  retryable: boolean;
+  next_action: ApplicationFailureNextAction;
+  agent_run_id: string | null;
+  source_ids: Record<string, unknown>;
+  occurred_at: string;
+}
+
+/** Stable metadata snapshot used to detect stale artifacts. */
+export interface ApplicationSourceSnapshot {
+  job_id: string;
+  job_updated_at: string | null;
+  resume_version_id: string | null;
+  resume_version_no: number | null;
+  profile_updated_at: string | null;
+  prompt_versions: Record<string, string>;
+  source_hash: string;
+}
+
+export interface ApplicationCreate {
+  job_id: string;
+  resume_version_id?: string | null;
+}
+
+export interface ApplicationStatusUpdate {
+  status: string;
+  note?: string | null;
+  failure?: ApplicationFailureEnvelope | null;
+  agent_run_id?: string | null;
+}
+
+export interface ApplicationTimelineCreate {
+  summary: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** The four readiness artifact types the panel can generate. */
+export type ReadinessArtifactType =
+  | "hr_opening_message"
+  | "resume_rewrite_snippet"
+  | "skill_gap_plan"
+  | "interview_prep";
+
+/** Lightweight run summary returned immediately by the generate endpoint. */
+export interface RunReadinessRunSummary {
+  id: string;
+  status: string;
+  error: string | null;
+}
+
+export interface RunReadinessSubmitResponse {
+  run: RunReadinessRunSummary;
+  application_id: string;
+  artifact_type: ReadinessArtifactType;
+}
+
+/** Outbound view of a persisted readiness ``GeneratedArtifact`` row. */
+export interface ReadinessArtifactOut {
+  id: string;
+  user_id: string | null;
+  job_id: string | null;
+  resume_version_id: string | null;
+  agent_run_id: string | null;
+  artifact_type: string;
+  source_ids: Record<string, unknown> | null;
+  prompt_version: string | null;
+  model_name: string | null;
+  content: string;
+  created_at: string | null;
+}
+
+export interface ReadinessArtifactListOut {
+  items: ReadinessArtifactOut[];
+}

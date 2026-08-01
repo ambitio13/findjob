@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
   Button,
@@ -17,6 +17,7 @@ import {
 } from "antd";
 import {
   apiErrorMessage,
+  createApplication,
   getAgentRunDetail,
   getJob,
   listAgentRuns,
@@ -119,6 +120,7 @@ function formatDuration(start: string | null, end: string | null): string {
 
 export function JobDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [job, setJob] = useState<JobOut | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -131,6 +133,7 @@ export function JobDetailPage() {
     string | undefined
   >();
   const [versionsLoading, setVersionsLoading] = useState(false);
+  const [creatingApp, setCreatingApp] = useState(false);
 
   // Persisted analysis list, hydrated on load and refreshed after each run.
   const [analyses, setAnalyses] = useState<JobAnalysisDetailOut[]>([]);
@@ -343,6 +346,26 @@ export function JobDetailPage() {
     }
   };
 
+  // Create an application record for this job, optionally binding the
+  // currently-selected resume version. After creation, navigate to the
+  // applications page so the user can start generating readiness materials.
+  const handleCreateApplication = async () => {
+    if (!id) return;
+    try {
+      setCreatingApp(true);
+      await createApplication({
+        job_id: id,
+        resume_version_id: selectedVersionId ?? null,
+      });
+      messageApi.success("投递记录已创建");
+      navigate("/applications");
+    } catch (err) {
+      messageApi.error(apiErrorMessage(err));
+    } finally {
+      setCreatingApp(false);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {contextHolder}
@@ -355,6 +378,25 @@ export function JobDetailPage() {
           <Descriptions.Item label="薪资">{job.salary_range ?? "-"}</Descriptions.Item>
           <Descriptions.Item label="方向">{job.direction ?? "-"}</Descriptions.Item>
         </Descriptions>
+        <Space style={{ marginTop: 12 }}>
+          <Button
+            type="primary"
+            loading={creatingApp}
+            onClick={handleCreateApplication}
+          >
+            创建投递记录
+          </Button>
+          {selectedVersionId ? (
+            <Text type="secondary">
+              将绑定当前选择的简历版本（v{
+                versionsForSelected.find((v) => v.id === selectedVersionId)
+                  ?.version_no ?? "?"
+              }）
+            </Text>
+          ) : (
+            <Text type="secondary">未选择简历版本，将创建未绑定简历的记录</Text>
+          )}
+        </Space>
       </Card>
 
       <Card title="JD 原文">
