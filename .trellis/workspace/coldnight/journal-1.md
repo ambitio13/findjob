@@ -499,3 +499,36 @@ Implemented the application records center, replacing the placeholder route with
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: Readiness Artifact Generation
+
+**Date**: 2026-08-01
+**Task**: Readiness Artifact Generation
+**Branch**: `wanzhen`
+
+### Summary
+
+Implemented the readiness artifact generation workflow producing 4 application-scoped artifact types (hr_opening_message, resume_rewrite_snippet, skill_gap_plan, interview_prep) as async AgentRun-backed jobs with enqueue-and-poll pattern. Added schemas, prompt builder, executor, service orchestration with stale-source detection + failure envelopes, queue handler/worker registration, POST generate endpoint (202/409/404/422), fake gateway outputs, and 25 integration tests. Full suite: 378 passed, ruff clean.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `07e3e51` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
