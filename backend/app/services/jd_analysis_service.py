@@ -262,6 +262,14 @@ async def run_resume_aware_jd_analysis(
 ) -> tuple[AgentRun, JobAnalysis, GeneratedArtifact, JdAnalysisExecution]:
     """Drive the resume-aware JD analysis workflow end to end.
 
+    .. deprecated:: queue-migration
+
+       Kept only for synchronous callers and tests that still exercise the
+       in-process path. New callers should create a ``queued`` ``AgentRun``
+       and either call :func:`_execute_jd_analysis` directly (in-process) or
+       enqueue a :class:`~app.queue.payloads.ResumeAwareJdAnalysisPayload` so
+       the worker handler runs :func:`run_resume_aware_jd_analysis_worker`.
+
     Fixed steps (design.md read APIs / R3):
 
     1. ``load_context`` — verify ownership and build ``JdAnalysisContext``
@@ -296,24 +304,80 @@ async def run_resume_aware_jd_analysis(
         job_id=job_id,
     )
 
+    try:
+        execution = await _execute_jd_analysis(
+            db=db,
+            run=run,
+            current_user=current_user,
+            job_id=job_id,
+            resume_version_id=resume_version_id,
+            context=context,
+            gateway=gateway,
+            raise_on_failure=True,
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+
+    # The orchestrator persisted analysis/artifact inside _execute_jd_analysis;
+    # re-read them so the caller gets refreshed ORM objects with stable IDs.
+    analysis = job_analysis_repo.list_for_job(db, job_id, page=1, page_size=1)[0][0]
+    artifact = generated_artifact_repo.get_latest_for_run(db, run.id, _ARTIFACT_TYPE)
+    db.refresh(run)
+    db.refresh(analysis)
+    db.refresh(artifact)
+    return run, analysis, artifact, execution
+
+
+async def _execute_jd_analysis(
+    db: Session,
+    run: AgentRun,
+    current_user: UserProfile,
+    job_id: str,
+    resume_version_id: str,
+    context: JdAnalysisContext,
+    gateway: ModelGateway,
+    *,
+    raise_on_failure: bool = True,
+) -> JdAnalysisExecution:
+    """Drive the fixed-step JD analysis orchestration using an existing run.
+
+    Shared by the synchronous entry point
+    (:func:`run_resume_aware_jd_analysis`, ``raise_on_failure=True``) and the
+    queue worker (:func:`run_resume_aware_jd_analysis_worker`,
+    ``raise_on_failure=False``). The caller is responsible for creating the
+    ``AgentRun`` and loading ``context``; this function owns steps 1–6:
+
+    1. ``load_context`` — record the already-verified context as a succeeded step.
+    2. ``build_prompt_context`` — assemble the chat messages + truncation metadata.
+    3. ``call_model`` — send the chat request via the gateway. A gateway/provider
+       error fails the run with a sanitized step and (when ``raise_on_failure``)
+       raises HTTP 502.
+    4. ``validate_model_output`` — parse + schema-validate the response. On
+       :class:`JdAnalysisValidationError` a failed step + failed run are persisted
+       (sanitized) and (when ``raise_on_failure``) HTTP 502 is raised.
+    5. ``persist_outputs`` — create ``JobAnalysis`` + ``GeneratedArtifact``.
+    6. ``complete_run`` — finalize run status and metadata.
+
+    With ``raise_on_failure=False`` (worker path) failures return a placeholder
+    :class:`JdAnalysisExecution` instead of raising; the run is already marked
+    ``failed`` on disk so the worker simply stops.
+
+    All persisted ``AgentStep``/``AgentRun`` results are sanitized — no raw JD or
+    resume text crosses into the stored audit trail (design Phase 4 checklist).
+    """
     executor = JdAnalysisExecutor(gateway)
 
     def _fail_run(step_no: int, step_name: str, *, error: str, result: dict[str, Any]) -> None:
-        """Persist a failed step + failed run, commit, then re-raise as 502.
-
-        Centralizes the failure-trail contract (design.md Failure Handling /
-        R4): the failing step records a sanitized result + error message, the
-        run flips to ``failed`` with sanitized metadata, and no analysis /
-        artifact rows are created.
-        """
+        """Persist a failed step + failed run, then commit (sanitized)."""
         agent_run_repo.add_step(
             db,
             run_id=run.id,
             step_no=step_no,
             name=step_name,
             status="failed",
-            result=result,
             error=error,
+            result=result,
         )
         agent_run_repo.update_status(
             db,
@@ -321,17 +385,11 @@ async def run_resume_aware_jd_analysis(
             status="failed",
             finished_at=datetime.now(UTC),
             error=error,
-            result={
-                "job_id": job_id,
-                "resume_version_id": resume_version_id,
-                "failure": "model_invalid",
-                **result,
-            },
         )
         db.commit()
 
     # Step 1 — load_context succeeded (ownership + raw-text checks already done
-    # above; recording the step keeps the run history self-describing).
+    # by the caller; recording the step keeps the run history self-describing).
     agent_run_repo.add_step(
         db,
         run_id=run.id,
@@ -380,7 +438,9 @@ async def run_resume_aware_jd_analysis(
                 "error_type": type(exc).__name__,
             },
         )
-        raise HTTPException(status_code=502, detail="model call failed") from exc
+        if raise_on_failure:
+            raise HTTPException(status_code=502, detail="model call failed") from exc
+        return _failed_execution()
 
     agent_run_repo.add_step(
         db,
@@ -415,7 +475,9 @@ async def run_resume_aware_jd_analysis(
             error="model returned invalid analysis",
             result={"kind": exc.kind, "request_id": exc.request_id},
         )
-        raise HTTPException(status_code=502, detail="model returned invalid analysis") from exc
+        if raise_on_failure:
+            raise HTTPException(status_code=502, detail="model returned invalid analysis") from exc
+        return _failed_execution()
 
     agent_run_repo.add_step(
         db,
@@ -522,7 +584,214 @@ async def run_resume_aware_jd_analysis(
     )
 
     db.commit()
-    db.refresh(run)
-    db.refresh(analysis)
-    db.refresh(artifact)
-    return run, analysis, artifact, execution
+    return execution
+
+
+def _failed_execution() -> JdAnalysisExecution:
+    """Return a placeholder execution for the worker (no-output) failure path."""
+    return JdAnalysisExecution(
+        output=None,  # type: ignore[arg-type]
+        truncation={},
+        provider="",
+        model="",
+        request_id="",
+        latency_ms=0,
+        usage=None,
+    )
+
+
+async def run_resume_aware_jd_analysis_worker(
+    job_id: str,
+    resume_version_id: str,
+    user_id: str,
+    agent_run_id: str,
+    gateway: ModelGateway,
+) -> None:
+    """Queue worker entry point — executes analysis in the worker process.
+
+    Opens its own DB session (never reuses a request-scoped ``Session``),
+    re-loads + ownership-checks the job/resume/version, re-loads the queued
+    ``AgentRun`` by ID, flips it to ``running``, and delegates to
+    :func:`_execute_jd_analysis` for the fixed-step orchestration (model call
+    → validation → sanitized step/run persistence → ``JobAnalysis`` /
+    ``GeneratedArtifact``). Any unexpected error is caught by the handler
+    wrapper (``queue.handlers.resume_aware_jd_analysis``), which calls
+    :func:`fail_run` to persist a sanitized ``failed`` status so the run never
+    stays stuck on ``running``.
+
+    The ``gateway`` is constructed inside the worker via
+    :func:`app.models_gateway.factory.get_model_gateway` so no request-scoped
+    dependency is passed across the queue boundary.
+    """
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        run = agent_run_repo.get_run(db, agent_run_id)
+        if run is None:
+            _log.warning(
+                "jd_analysis.worker.skip",
+                job_id=job_id,
+                resume_version_id=resume_version_id,
+                agent_run_id=agent_run_id,
+                reason="agent run not found",
+            )
+            return
+
+        if run.status in {"succeeded", "failed"}:
+            _log.info(
+                "jd_analysis.worker.skip_terminal_run",
+                job_id=job_id,
+                resume_version_id=resume_version_id,
+                agent_run_id=agent_run_id,
+                status=run.status,
+            )
+            return
+
+        job = db.get(JobPosting, job_id)
+        if job is None or job.user_id != user_id:
+            _log.warning(
+                "jd_analysis.worker.skip",
+                job_id=job_id,
+                agent_run_id=agent_run_id,
+                reason="job not found or not owned",
+            )
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="job not found or not owned",
+            )
+            db.commit()
+            return
+
+        version = db.get(ResumeVersion, resume_version_id)
+        if version is None:
+            _log.warning(
+                "jd_analysis.worker.skip",
+                resume_version_id=resume_version_id,
+                agent_run_id=agent_run_id,
+                reason="resume version not found",
+            )
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="resume version not found",
+            )
+            db.commit()
+            return
+        resume = resume_repo.get(db, version.resume_id)
+        if resume is None or resume.user_id != user_id:
+            _log.warning(
+                "jd_analysis.worker.skip",
+                resume_version_id=resume_version_id,
+                agent_run_id=agent_run_id,
+                reason="resume not found or not owned",
+            )
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="resume version not found",
+            )
+            db.commit()
+            return
+
+        raw_text = (version.raw_text or "").strip()
+        if not raw_text:
+            _log.warning(
+                "jd_analysis.worker.skip",
+                resume_version_id=resume_version_id,
+                agent_run_id=agent_run_id,
+                reason="no parsed text",
+            )
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="resume version has no parsed text",
+            )
+            db.commit()
+            return
+
+        # Flip queued → running on entry (no-op if already running from a retry).
+        if run.started_at is None:
+            run.started_at = datetime.now(UTC)
+        agent_run_repo.update_status(db, run, status="running")
+        db.commit()
+
+        # Reconstruct a minimal UserProfile for the context loader. The loader
+        # only reads id + constraints; it does not persist, so a read-only
+        # projection is safe.
+        profile = db.get(UserProfile, user_id)
+        if profile is None:
+            _log.warning(
+                "jd_analysis.worker.skip",
+                agent_run_id=agent_run_id,
+                reason="user profile not found",
+            )
+            agent_run_repo.update_status(
+                db,
+                run,
+                status="failed",
+                finished_at=datetime.now(UTC),
+                error="user profile not found",
+            )
+            db.commit()
+            return
+
+        context = JdAnalysisContext(
+            user_id=user_id,
+            profile=_profile_to_dict(profile),
+            job=_job_to_dict(job),
+            resume=_resume_to_dict(resume, version),
+        )
+
+        try:
+            await _execute_jd_analysis(
+                db=db,
+                run=run,
+                current_user=profile,
+                job_id=job_id,
+                resume_version_id=resume_version_id,
+                context=context,
+                gateway=gateway,
+                raise_on_failure=False,
+            )
+        except HTTPException as exc:
+            # _execute_jd_analysis already persisted a failed run + step; just
+            # log so the handler's catch-all does not double-fail it.
+            _log.warning(
+                "jd_analysis.worker.http_error",
+                job_id=job_id,
+                agent_run_id=agent_run_id,
+                detail=exc.detail,
+            )
+        except Exception as exc:  # noqa: BLE001 — never let the worker crash unseen
+            _log.warning(
+                "jd_analysis.worker.error",
+                job_id=job_id,
+                agent_run_id=agent_run_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            # _execute_jd_analysis may have committed a partial failed run; if
+            # the run is still non-terminal, flip it to failed here.
+            db.rollback()
+            fresh_run = agent_run_repo.get_run(db, agent_run_id)
+            if fresh_run is not None and fresh_run.status not in {"succeeded", "failed"}:
+                agent_run_repo.update_status(
+                    db,
+                    fresh_run,
+                    status="failed",
+                    finished_at=datetime.now(UTC),
+                    error="jd analysis failed",
+                )
+                db.commit()
+    finally:
+        db.close()

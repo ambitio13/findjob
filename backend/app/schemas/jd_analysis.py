@@ -146,12 +146,49 @@ class RunJdAnalysisResponse(BaseModel):
 
     ``structured`` is the validated model output, echoed back so the frontend
     can render it without re-parsing ``artifact.content``.
+
+    .. deprecated:: queue-migration
+
+       Retained for older callers and the synchronous test path. The enqueue-
+       and-poll endpoint now returns :class:`RunJdAnalysisSubmitResponse`.
     """
 
     agent_run: dict[str, Any]
     analysis: JobAnalysisOut
     artifact: GeneratedArtifactOut
     structured: JdAnalysisModelOutput
+
+
+class RunJdAnalysisRunSummary(BaseModel):
+    """Lightweight run summary surfaced in the analysis submit response.
+
+    Carries just enough for the frontend to display the run status and poll
+    ``GET /agent-runs/{run_id}/detail`` until a terminal status is reached,
+    mirroring :class:`~app.schemas.jd_parse.JdParseRunSummary`.
+    """
+
+    id: str
+    status: str
+    error: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class RunJdAnalysisSubmitResponse(BaseModel):
+    """Immediate response for ``POST /jobs/{job_id}/analyses`` (enqueue-and-poll).
+
+    The endpoint creates a ``queued`` ``AgentRun`` and enqueues the analysis
+    job to the worker queue, then returns immediately with this response. The
+    frontend polls ``GET /agent-runs/{run_id}/detail`` until the run reaches a
+    terminal status (``succeeded`` or ``failed``), then hydrates the analysis
+    from the persisted ``JobAnalysis`` / ``GeneratedArtifact`` rows.
+
+    ``resume_version_id`` is echoed back so the form retains the user's
+    selection while polling.
+    """
+
+    run: RunJdAnalysisRunSummary
+    resume_version_id: str
 
 
 class JobAnalysisListOut(BaseModel):

@@ -14,10 +14,9 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_db_session, get_model_gateway_dep
+from app.api.deps import get_current_user, get_db_session
 from app.db.models.models import JobPosting, UserProfile
 from app.db.repositories import agent_run_repo, generated_artifact_repo, job_analysis_repo, job_repo
-from app.models_gateway.base import ModelGateway
 from app.schemas.api import JobCreate, JobListOut, JobOut, PaginatedMeta
 from app.schemas.jd_analysis import (
     GeneratedArtifactOut,
@@ -26,10 +25,11 @@ from app.schemas.jd_analysis import (
     JobAnalysisListOut,
     JobAnalysisOut,
     RunJdAnalysisRequest,
-    RunJdAnalysisResponse,
+    RunJdAnalysisRunSummary,
+    RunJdAnalysisSubmitResponse,
 )
 from app.schemas.jd_parse import JdParseRequest, JdParseRunSummary, JdParseSubmitResponse
-from app.services.jd_analysis_service import run_resume_aware_jd_analysis
+from app.services.jd_analysis_service import WORKFLOW_TYPE, load_jd_analysis_context
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -208,51 +208,113 @@ def _to_detail_out(db: Session, analysis) -> JobAnalysisDetailOut:
     )
 
 
-def _agent_run_to_out(run) -> dict:
-    """Project an ``AgentRun`` ORM row into the ``agent_run`` response dict.
-
-    Matches the shape of ``AgentRunOut`` (schemas/api.py) so the frontend can
-    reuse its existing run-rendering code.
-    """
-    return {
-        "id": run.id,
-        "workflow_type": run.workflow_type,
-        "status": run.status,
-        "started_at": run.started_at,
-        "finished_at": run.finished_at,
-        "error": run.error,
-        "result": run.result,
-    }
-
-
-@router.post("/{job_id}/analyses", response_model=RunJdAnalysisResponse, status_code=201)
+@router.post(
+    "/{job_id}/analyses",
+    response_model=RunJdAnalysisSubmitResponse,
+    status_code=202,
+)
 async def run_job_analysis(
     job_id: str,
     payload: RunJdAnalysisRequest,
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
-    gateway: ModelGateway = Depends(get_model_gateway_dep),
-) -> RunJdAnalysisResponse:
-    """Run the resume-aware JD analysis workflow for ``job_id``.
+) -> RunJdAnalysisSubmitResponse:
+    """Submit the resume-aware JD analysis workflow for ``job_id`` (enqueue-and-poll).
 
-    The route is a thin transport layer: it validates the body, resolves the
-    current user, and delegates to the service orchestrator. All workflow
-    logic (ownership, model call, persistence) lives in the service. Error
-    mapping per design.md §5.1: 404/422 bubble from the loader, 502 for model
-    validation failure.
+    Validates ownership + resume-version usability up front (404/422 bubble
+    from the context loader before any run is persisted), then creates a
+    ``queued`` ``AgentRun`` (``workflow_type="resume_aware_jd_analysis"``)
+    with sanitized request metadata, enqueues a
+    :class:`~app.queue.payloads.ResumeAwareJdAnalysisPayload` to the worker
+    queue, and returns immediately with the run reference. The frontend polls
+    ``GET /agent-runs/{run_id}/detail`` until the run reaches a terminal
+    status, then hydrates the analysis from the persisted ``JobAnalysis`` /
+    ``GeneratedArtifact`` rows.
+
+    Duplicate submit guard: while an active (``queued``/``running``) run exists
+    for the same job, the endpoint returns HTTP 409 instead of enqueuing a
+    second analysis. No raw JD or resume text is persisted — only IDs and
+    lengths are stored on the run.
+
+    If Redis is unavailable the run is flipped to ``failed`` before returning
+    so the user is never left with a silent spinner.
     """
-    run, analysis, artifact, execution = await run_resume_aware_jd_analysis(
-        db=db,
-        current_user=current_user,
+    from app.queue.payloads import ResumeAwareJdAnalysisPayload
+    from app.queue.runtime import enqueue_workflow
+
+    # 1. Validate job ownership (404 on missing/cross-user).
+    _require_owned_job(db, current_user, job_id)
+
+    # 2. Validate the resume version is owned + has usable text. This raises
+    #    404/422 directly and must run BEFORE any run is created so a bad
+    #    request never leaves a half-started run behind.
+    context = load_jd_analysis_context(db, current_user, job_id, payload.resume_version_id)
+
+    # 3. Duplicate active-run guard: reject if a queued/running analysis run
+    #    already exists for this job. This prevents the user from stacking
+    #    concurrent analyses while one is in flight (design.md "Duplicate
+    #    Submit" MVP). We deliberately allow re-analysis after a run reaches a
+    #    terminal state (succeeded/failed).
+    runs, _ = agent_run_repo.list_runs_for_user(
+        db,
+        current_user.id,
+        workflow_type=WORKFLOW_TYPE,
+        job_id=job_id,
+        page=1,
+        page_size=50,
+    )
+    if any(r.status in {"queued", "running"} for r in runs):
+        raise HTTPException(status_code=409, detail="analysis already in progress for this job")
+
+    # 4. Create the durable AgentRun in queued state *before* enqueue so
+    #    PostgreSQL stays the source of truth (design.md queue contract). The
+    #    result metadata is sanitized: only IDs + input lengths, no raw text.
+    resume_id = str(context.resume.get("resume_id") or "")
+    run = agent_run_repo.create_run(
+        db,
+        user_id=current_user.id,
+        workflow_type=WORKFLOW_TYPE,
+        status="queued",
+        job_id=job_id,
+        result={
+            "user_id": current_user.id,
+            "job_id": job_id,
+            "resume_version_id": payload.resume_version_id,
+            "resume_id": resume_id,
+            "jd_raw_len": len(context.job.get("jd_raw") or ""),
+            "resume_raw_text_len": len(context.resume.get("raw_text") or ""),
+        },
+    )
+    db.commit()
+    db.refresh(run)
+
+    # 5. Enqueue the analysis job. If Redis is down, flip the run to failed so
+    #    the frontend sees a terminal state instead of polling forever.
+    idempotency_key = f"jd_analysis:{run.id}"
+    enqueue_payload = ResumeAwareJdAnalysisPayload(
+        workflow_type=WORKFLOW_TYPE,
+        user_id=current_user.id,
+        agent_run_id=run.id,
+        idempotency_key=idempotency_key,
         job_id=job_id,
         resume_version_id=payload.resume_version_id,
-        gateway=gateway,
     )
-    return RunJdAnalysisResponse(
-        agent_run=_agent_run_to_out(run),
-        analysis=JobAnalysisOut.model_validate(analysis),
-        artifact=GeneratedArtifactOut.model_validate(artifact),
-        structured=execution.output,
+    try:
+        await enqueue_workflow(enqueue_payload, job_id=idempotency_key)
+    except Exception:
+        agent_run_repo.update_status(
+            db,
+            run,
+            status="failed",
+            finished_at=datetime.now(UTC),
+            error="queue enqueue failed",
+        )
+        db.commit()
+        db.refresh(run)
+
+    return RunJdAnalysisSubmitResponse(
+        run=RunJdAnalysisRunSummary.model_validate(run),
+        resume_version_id=payload.resume_version_id,
     )
 
 

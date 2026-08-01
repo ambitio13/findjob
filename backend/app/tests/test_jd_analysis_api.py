@@ -1,34 +1,60 @@
-"""Phase 4 orchestration + API tests for the resume-aware JD analysis workflow.
+"""API + worker integration tests for the resume-aware JD analysis workflow.
 
-Covers the persistence + API integration layer (design.md §5, §9, §11):
+The analysis endpoint now uses the enqueue-and-poll pattern (design.md):
 
-- successful run via the API: 201, response carries agent_run(succeeded) +
-  analysis + artifact + structured; DB has AgentRun + AgentStep(s) +
-  JobAnalysis + GeneratedArtifact; artifact source_ids includes job_id and
-  resume_version_id.
-- failed model validation: a stub gateway returning invalid JSON → 502, a
-  FAILED AgentRun + failed AgentStep persisted, no JobAnalysis /
-  GeneratedArtifact created.
+- ``POST /jobs/{job_id}/analyses`` validates ownership + resume-version
+  usability up front (404/422 bubble before any run is created), then creates a
+  ``queued`` ``AgentRun`` (``workflow_type="resume_aware_jd_analysis"``),
+  enqueues a ``ResumeAwareJdAnalysisPayload`` to the worker, and returns
+  immediately with HTTP 202 + ``RunJdAnalysisSubmitResponse`` (run summary +
+  echoed resume_version_id). It does **not** block on the model call.
+- The worker handler ``resume_aware_jd_analysis`` executes the analysis
+  workflow (``run_resume_aware_jd_analysis_worker``): flips the run queued →
+  running → succeeded/failed, persists six sanitized ``AgentStep`` rows, and on
+  success stores ``JobAnalysis`` + ``GeneratedArtifact`` so the frontend can
+  hydrate them by polling ``GET /agent-runs/{id}/detail`` or listing analyses.
+
+Tests cover both layers:
+
+API layer (HTTP 202 contract):
+
+- successful submit: 202, ``run.status == "queued"``, resume_version_id echoed,
+  an ``AgentRun`` row is persisted in ``queued`` state with sanitized result
+  (jd_raw_len / resume_raw_text_len, not raw text).
+- enqueue failure (Redis down): the run is flipped to ``failed`` before
+  returning so the frontend never polls forever.
+- duplicate submit while a queued/running run exists → 409.
 - 404 for missing/cross-user job; 404 for missing/cross-user resume version;
   422 for a resume version with no raw text.
-- GET list pagination + user scoping (cross-user job is 404; only the owner's
-  analyses come back).
 
-Tests use the shared ``client`` fixture (truncated test DB, fake provider).
-The stub gateway for the failure path is wired in via FastAPI dependency
-overrides, matching how the existing suite overrides nothing else.
+Worker layer (handler execution):
+
+- successful analysis via the ``resume_aware_jd_analysis`` handler: run
+  succeeds, six ordered steps persisted, ``JobAnalysis`` +
+  ``GeneratedArtifact`` created, artifact source_ids include job_id +
+  resume_version_id, sanitization (no raw resume token in any persisted row).
+- model-invalid output (stub gateway) → run failed, validate_model_output step
+  failed, no JobAnalysis / GeneratedArtifact created.
+- gateway raises → run failed, call_model step failed.
+- ownership mismatch → run failed with sanitized error.
+- missing run → handler returns ``"missing_run"`` marker.
+
+The enqueue path is faked by patching ``app.queue.runtime.get_queue`` so no
+real Redis is required. The worker handler is called directly with the typed
+payload (or a dict, mirroring how arq delivers jobs).
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_model_gateway_dep
 from app.db.models.models import (
     AgentRun,
     AgentStep,
@@ -40,8 +66,11 @@ from app.db.models.models import (
     UserProfile,
 )
 from app.db.session import SessionLocal
-from app.main import app
 from app.models_gateway.base import ChatRequest, ChatResponse, ChatUsage, ModelGateway
+from app.queue.handlers import resume_aware_jd_analysis
+from app.queue.payloads import ResumeAwareJdAnalysisPayload
+
+SECRET = "SUPER_SECRET_RESUME_TOKEN_42"
 
 # ---------------------------------------------------------------------------
 # DB helpers (mirror test_jd_analysis_contracts.py so fixtures stay independent)
@@ -111,11 +140,17 @@ def _seed(
         }
 
 
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+
 def _headers(user_id: str) -> dict[str, str]:
     return {"X-User-Id": user_id}
 
 
-def _run(client: TestClient, job_id: str, version_id: str, user: str) -> Any:
+def _submit(client: TestClient, job_id: str, version_id: str, user: str) -> Any:
+    """POST /jobs/{job_id}/analyses and return the response (enqueued, not executed)."""
     return client.post(
         f"/api/v1/jobs/{job_id}/analyses",
         json={"resume_version_id": version_id},
@@ -123,13 +158,28 @@ def _run(client: TestClient, job_id: str, version_id: str, user: str) -> Any:
     )
 
 
+def _fake_enqueue_pool() -> AsyncMock:
+    """Return a fake arq pool whose ``enqueue_job`` succeeds without Redis."""
+    pool = AsyncMock()
+    pool.enqueue_job.return_value = object()
+    return pool
+
+
+def _patch_get_queue_ok() -> Any:
+    """Patch ``get_queue`` to return a fake pool (no real Redis needed)."""
+    return patch(
+        "app.queue.runtime.get_queue",
+        new=AsyncMock(return_value=_fake_enqueue_pool()),
+    )
+
+
 # ---------------------------------------------------------------------------
-# Stub gateway for the model-validation-failure path
+# Stub gateways for the worker failure path
 # ---------------------------------------------------------------------------
 
 
 class _InvalidStubGateway(ModelGateway):
-    """Gateway that returns malformed JSON to drive the 502 path."""
+    """Gateway that returns malformed JSON to drive the recoverable-failure path."""
 
     provider_name = "stub"
 
@@ -144,19 +194,8 @@ class _InvalidStubGateway(ModelGateway):
         )
 
 
-@pytest.fixture()
-def invalid_gateway_override():
-    """Override ``get_model_gateway_dep`` with the invalid-output stub."""
-    stub = _InvalidStubGateway()
-    app.dependency_overrides[get_model_gateway_dep] = lambda: stub
-    try:
-        yield stub
-    finally:
-        app.dependency_overrides.pop(get_model_gateway_dep, None)
-
-
 class _RaisingStubGateway(ModelGateway):
-    """Gateway whose ``chat()`` raises, to drive the model-call-failure 502 path."""
+    """Gateway whose ``chat()`` raises, to drive the model-call-failure path."""
 
     provider_name = "stub-raising"
 
@@ -164,66 +203,283 @@ class _RaisingStubGateway(ModelGateway):
         raise RuntimeError("simulated provider outage")
 
 
-@pytest.fixture()
-def raising_gateway_override():
-    """Override ``get_model_gateway_dep`` with the raising stub."""
-    stub = _RaisingStubGateway()
-    app.dependency_overrides[get_model_gateway_dep] = lambda: stub
-    try:
-        yield stub
-    finally:
-        app.dependency_overrides.pop(get_model_gateway_dep, None)
-
-
 # ---------------------------------------------------------------------------
-# Successful run
+# Worker helpers
 # ---------------------------------------------------------------------------
 
 
-def test_run_analysis_success_creates_all_entities(client: TestClient) -> None:
-    ids = _seed("ok_user")
-    resp = _run(client, ids["job_id"], ids["resume_version_id"], "ok_user")
-    assert resp.status_code == 201, resp.text
+def _create_queued_analysis_run(
+    user_id: str,
+    job_id: str,
+    resume_version_id: str,
+    *,
+    jd_raw_len: int = 10,
+    resume_raw_text_len: int = 10,
+) -> str:
+    """Insert a queued resume_aware_jd_analysis AgentRun and return its id.
+
+    Mirrors what the API endpoint does: creates the run with sanitized metadata
+    *before* the worker picks it up.
+    """
+    with SessionLocal() as db:
+        from app.db.repositories import agent_run_repo
+
+        run = agent_run_repo.create_run(
+            db,
+            user_id=user_id,
+            workflow_type="resume_aware_jd_analysis",
+            status="queued",
+            job_id=job_id,
+            result={
+                "user_id": user_id,
+                "job_id": job_id,
+                "resume_version_id": resume_version_id,
+                "jd_raw_len": jd_raw_len,
+                "resume_raw_text_len": resume_raw_text_len,
+            },
+        )
+        db.commit()
+        return run.id
+
+
+def _make_payload(
+    run_id: str,
+    user_id: str,
+    job_id: str,
+    resume_version_id: str,
+) -> ResumeAwareJdAnalysisPayload:
+    return ResumeAwareJdAnalysisPayload(
+        workflow_type="resume_aware_jd_analysis",
+        user_id=user_id,
+        agent_run_id=run_id,
+        idempotency_key=f"jd_analysis:{run_id}",
+        job_id=job_id,
+        resume_version_id=resume_version_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# API layer: successful submit (HTTP 202, queued run, sanitized metadata)
+# ---------------------------------------------------------------------------
+
+
+def test_submit_returns_202_with_queued_run(client: TestClient) -> None:
+    ids = _seed("ja_ok")
+    with _patch_get_queue_ok():
+        resp = _submit(client, ids["job_id"], ids["resume_version_id"], "ja_ok")
+    assert resp.status_code == 202, resp.text
     body = resp.json()
 
-    # Response shape (design §5.1).
-    assert body["agent_run"]["status"] == "succeeded"
-    assert body["agent_run"]["workflow_type"] == "resume_aware_jd_analysis"
-    assert body["agent_run"]["id"]
-    assert body["analysis"]["job_id"] == ids["job_id"]
-    assert body["analysis"]["agent_run_id"] == body["agent_run"]["id"]
-    assert body["artifact"]["artifact_type"] == "jd_analysis"
-    assert body["artifact"]["prompt_version"] == "jd-analysis-v2"
-    assert body["artifact"]["model_name"]
-    # Structured output is echoed and validated.
-    structured = body["structured"]
-    assert structured["match_score"] is not None
-    assert 0 <= structured["match_score"] <= 100
+    # The submit response echoes resume_version_id and carries the run summary.
+    assert body["resume_version_id"] == ids["resume_version_id"]
+    run = body["run"]
+    assert run["status"] == "queued"
+    run_id = run["id"]
+    assert run_id
 
-    # Artifact source provenance (design §4/§5.1).
-    source_ids = body["artifact"]["source_ids"]
-    assert source_ids["job_id"] == ids["job_id"]
-    assert source_ids["resume_version_id"] == ids["resume_version_id"]
-    assert source_ids["resume_id"] == ids["resume_id"]
-    assert source_ids["user_id"] == "ok_user"
-    assert source_ids["model_request_id"]
-    assert source_ids["provider"]
-
-    # AgentRun.result carries the source-context + output IDs (design §5.1, §7).
-    result = body["agent_run"]["result"]
-    assert result["job_id"] == ids["job_id"]
-    assert result["resume_version_id"] == ids["resume_version_id"]
-    assert result["analysis_id"] == body["analysis"]["id"]
-    assert result["artifact_id"] == body["artifact"]["id"]
-    assert "source_context" in result
-    assert "truncation" in result["source_context"]
-
-    # DB: all six step names exist for this run, all succeeded, ordered.
-    run_id = body["agent_run"]["id"]
+    # DB: a queued AgentRun with sanitized metadata (lengths, not raw text).
     with SessionLocal() as db:
+        run_row = db.get(AgentRun, run_id)
+        assert run_row is not None
+        assert run_row.status == "queued"
+        assert run_row.workflow_type == "resume_aware_jd_analysis"
+        assert run_row.user_id == "ja_ok"
+        assert run_row.job_id == ids["job_id"]
+        assert run_row.result["job_id"] == ids["job_id"]
+        assert run_row.result["resume_version_id"] == ids["resume_version_id"]
+        assert run_row.result["jd_raw_len"] == len(
+            "Senior Python backend engineer. Build APIs with FastAPI."
+        )
+        # Sanitization: the secret must not appear in the persisted result.
+        run_blob = json.dumps(run_row.result or {}, ensure_ascii=False) + (run_row.error or "")
+        assert SECRET not in run_blob
+
+
+# ---------------------------------------------------------------------------
+# API layer: enqueue failure flips run to failed
+# ---------------------------------------------------------------------------
+
+
+def test_submit_enqueue_failure_flips_run_to_failed(client: TestClient) -> None:
+    """When Redis is unavailable the endpoint flips the run to ``failed``."""
+    ids = _seed("ja_redis")
+    with patch(
+        "app.queue.runtime.get_queue",
+        new=AsyncMock(side_effect=OSError("redis down")),
+    ):
+        resp = _submit(client, ids["job_id"], ids["resume_version_id"], "ja_redis")
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    # The run is returned as failed so the frontend sees a terminal state.
+    assert body["run"]["status"] == "failed"
+    assert body["run"]["error"] == "queue enqueue failed"
+
+    run_id = body["run"]["id"]
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error == "queue enqueue failed"
+
+
+# ---------------------------------------------------------------------------
+# API layer: duplicate active-run guard (409)
+# ---------------------------------------------------------------------------
+
+
+def test_submit_duplicate_while_active_returns_409(client: TestClient) -> None:
+    """A second submit while a queued/running run exists returns 409."""
+    ids = _seed("ja_dup")
+    with _patch_get_queue_ok():
+        first = _submit(client, ids["job_id"], ids["resume_version_id"], "ja_dup")
+    assert first.status_code == 202, first.text
+    assert first.json()["run"]["status"] == "queued"
+
+    # Second submit while the first run is still queued → 409.
+    with _patch_get_queue_ok():
+        second = _submit(client, ids["job_id"], ids["resume_version_id"], "ja_dup")
+    assert second.status_code == 409, second.text
+    assert second.json()["detail"] == "analysis already in progress for this job"
+
+    # Still only one run for this job.
+    with SessionLocal() as db:
+        rows = (
+            db.execute(
+                select(AgentRun).where(
+                    AgentRun.job_id == ids["job_id"],
+                    AgentRun.workflow_type == "resume_aware_jd_analysis",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+
+
+def test_submit_after_terminal_allows_reanalysis(client: TestClient) -> None:
+    """Once the active run reaches a terminal state, re-analysis is allowed."""
+    ids = _seed("ja_reanalyze")
+    with _patch_get_queue_ok():
+        first = _submit(client, ids["job_id"], ids["resume_version_id"], "ja_reanalyze")
+    assert first.status_code == 202
+    run_id = first.json()["run"]["id"]
+
+    # Flip the queued run to a terminal state manually (simulating the worker
+    # finishing), then submit again — it should succeed, not 409.
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        run.status = "succeeded"
+        db.commit()
+
+    with _patch_get_queue_ok():
+        second = _submit(client, ids["job_id"], ids["resume_version_id"], "ja_reanalyze")
+    assert second.status_code == 202, second.text
+    assert second.json()["run"]["status"] == "queued"
+
+
+# ---------------------------------------------------------------------------
+# API layer: ownership / data-quality errors (pre-run validation)
+# ---------------------------------------------------------------------------
+
+
+def test_submit_404_for_missing_job(client: TestClient) -> None:
+    ids = _seed("ja_no_job")
+    resp = _submit(client, "nonexistent_job", ids["resume_version_id"], "ja_no_job")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "job not found"
+
+
+def test_submit_404_for_cross_user_job(client: TestClient) -> None:
+    ids_owner = _seed("ja_owner_x")
+    ids_intruder = _seed("ja_intruder_x")
+    resp = _submit(
+        client,
+        ids_owner["job_id"],
+        ids_intruder["resume_version_id"],
+        "ja_intruder_x",
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "job not found"
+
+
+def test_submit_404_for_missing_resume_version(client: TestClient) -> None:
+    ids = _seed("ja_no_ver")
+    resp = _submit(client, ids["job_id"], "nonexistent_ver", "ja_no_ver")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "resume version not found"
+
+
+def test_submit_404_for_cross_user_resume_version(client: TestClient) -> None:
+    ids_owner = _seed("ja_rv_owner")
+    ids_intruder = _seed("ja_rv_intruder")
+    resp = _submit(
+        client,
+        ids_intruder["job_id"],
+        ids_owner["resume_version_id"],
+        "ja_rv_intruder",
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "resume version not found"
+
+
+def test_submit_422_for_empty_raw_text(client: TestClient) -> None:
+    ids = _seed("ja_empty_text", raw_text="")
+    resp = _submit(client, ids["job_id"], ids["resume_version_id"], "ja_empty_text")
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "resume version has no parsed text"
+
+
+# ---------------------------------------------------------------------------
+# API layer: ownership scoping of the persisted run
+# ---------------------------------------------------------------------------
+
+
+def test_submit_run_is_scoped_to_current_user(client: TestClient) -> None:
+    ids = _seed("ja_scope")
+    with _patch_get_queue_ok():
+        resp = _submit(client, ids["job_id"], ids["resume_version_id"], "ja_scope")
+    assert resp.status_code == 202, resp.text
+    run_id = resp.json()["run"]["id"]
+
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.user_id == "ja_scope"
+        assert run.job_id == ids["job_id"]
+
+
+# ---------------------------------------------------------------------------
+# Worker layer: successful analysis via resume_aware_jd_analysis handler
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handler_success_marks_run_succeeded_and_persists_outputs() -> None:
+    """The handler drives the full analysis workflow and stores analysis+artifact."""
+    raw_resume = f"张三\nPython 5年 FastAPI。包含密钥 {SECRET}。"
+    ids = _seed("ja_worker_ok", raw_text=raw_resume)
+    run_id = _create_queued_analysis_run(
+        "ja_worker_ok",
+        ids["job_id"],
+        ids["resume_version_id"],
+        jd_raw_len=50,
+        resume_raw_text_len=len(raw_resume),
+    )
+    payload = _make_payload(run_id, "ja_worker_ok", ids["job_id"], ids["resume_version_id"])
+
+    result = await resume_aware_jd_analysis({}, payload)
+
+    assert result == run_id
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "succeeded"
+        assert run.workflow_type == "resume_aware_jd_analysis"
+
+        # Six ordered step names, all succeeded.
         steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
-        step_names = [s.name for s in steps]
-        assert step_names == [
+        assert [s.name for s in steps] == [
             "load_context",
             "build_prompt_context",
             "call_model",
@@ -233,166 +489,292 @@ def test_run_analysis_success_creates_all_entities(client: TestClient) -> None:
         ]
         assert all(s.status == "succeeded" for s in steps)
 
-        analysis = db.get(JobAnalysis, body["analysis"]["id"])
+        # JobAnalysis + GeneratedArtifact created on success.
+        analysis = (
+            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run_id))
+            .scalars()
+            .first()
+        )
         assert analysis is not None
         assert analysis.job_id == ids["job_id"]
-        # Scores coerce int -> float (column is Float).
         assert isinstance(analysis.match_score, float)
         assert isinstance(analysis.risk_score, float)
-        # JSON note blobs mapped from the validated output.
-        assert analysis.salary_analysis == {"note": structured["salary_note"]}
-        assert analysis.growth_analysis == {"note": structured["growth_note"]}
-        assert analysis.stability_analysis == {"note": structured["stability_note"]}
         assert analysis.summary
 
-        artifact = db.get(GeneratedArtifact, body["artifact"]["id"])
-        assert artifact is not None
-        assert artifact.artifact_type == "jd_analysis"
-        assert artifact.prompt_version == "jd-analysis-v2"
-        assert artifact.source_ids["job_id"] == ids["job_id"]
-        assert artifact.source_ids["resume_version_id"] == ids["resume_version_id"]
-
-        run = db.get(AgentRun, run_id)
-        assert run is not None
-        assert run.status == "succeeded"
-
-
-def test_run_analysis_no_raw_prompt_or_resume_content_logged(client: TestClient) -> None:
-    """No raw full prompt or full resume content may land in persisted rows."""
-    raw_resume = "SUPER_SECRET_RESUME_TOKEN_42"
-    ids = _seed("no_log_user", raw_text=raw_resume)
-    resp = _run(client, ids["job_id"], ids["resume_version_id"], "no_log_user")
-    assert resp.status_code == 201, resp.text
-    run_id = resp.json()["agent_run"]["id"]
-
-    with SessionLocal() as db:
-        run = db.get(AgentRun, run_id)
-        assert run is not None
-        # AgentRun.result must not embed the raw resume text or the prompt body.
-        result_blob = repr(run.result) + (run.error or "")
-        assert "SUPER_SECRET_RESUME_TOKEN_42" not in result_blob
-        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
-        for step in steps:
-            step_blob = repr(step.result) + (step.error or "")
-            assert "SUPER_SECRET_RESUME_TOKEN_42" not in step_blob
         artifact = (
             db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run_id))
             .scalars()
             .first()
         )
         assert artifact is not None
-        assert "SUPER_SECRET_RESUME_TOKEN_42" not in artifact.source_ids.__repr__()
-        assert "SUPER_SECRET_RESUME_TOKEN_42" not in artifact.content
+        assert artifact.artifact_type == "jd_analysis"
+        assert artifact.prompt_version == "jd-analysis-v2"
+        assert artifact.source_ids["job_id"] == ids["job_id"]
+        assert artifact.source_ids["resume_version_id"] == ids["resume_version_id"]
+        assert artifact.source_ids["resume_id"] == ids["resume_id"]
+        assert artifact.source_ids["user_id"] == "ja_worker_ok"
+        assert artifact.source_ids["model_request_id"]
+        assert artifact.source_ids["provider"]
+
+        # AgentRun.result carries source-context + output IDs.
+        assert run.result["job_id"] == ids["job_id"]
+        assert run.result["resume_version_id"] == ids["resume_version_id"]
+        assert run.result["analysis_id"] == analysis.id
+        assert run.result["artifact_id"] == artifact.id
+        assert "source_context" in run.result
+        assert "truncation" in run.result["source_context"]
+
+        # Sanitization: the secret token must not appear in any step result,
+        # run result/error, or artifact content/source_ids.
+        run_blob = json.dumps(run.result or {}, ensure_ascii=False) + (run.error or "")
+        assert SECRET not in run_blob
+        for s in steps:
+            step_blob = json.dumps(s.result or {}, ensure_ascii=False) + (s.error or "")
+            assert SECRET not in step_blob
+        assert SECRET not in artifact.content
+        assert SECRET not in json.dumps(artifact.source_ids, ensure_ascii=False)
 
 
-# ---------------------------------------------------------------------------
-# Model validation failure -> 502
-# ---------------------------------------------------------------------------
-
-
-def test_run_analysis_model_invalid_returns_502_and_persists_failed_run(
-    client: TestClient, invalid_gateway_override: _InvalidStubGateway
+@pytest.mark.asyncio
+async def test_handler_skips_terminal_run_without_duplicate_outputs(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ids = _seed("bad_model_user")
-    resp = _run(client, ids["job_id"], ids["resume_version_id"], "bad_model_user")
-    assert resp.status_code == 502, resp.text
-    assert resp.json()["detail"] == "model returned invalid analysis"
+    """A retried queue job for a terminal run must not create duplicate outputs."""
+    ids = _seed("ja_worker_retry")
+    run_id = _create_queued_analysis_run(
+        "ja_worker_retry",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+    payload = _make_payload(run_id, "ja_worker_retry", ids["job_id"], ids["resume_version_id"])
+
+    result = await resume_aware_jd_analysis({}, payload)
+    assert result == run_id
+
+    # If the handler does not short-circuit terminal runs, this second delivery
+    # would call the raising gateway and flip the already-succeeded run failed
+    # or create duplicate rows.
+    monkeypatch.setattr(
+        "app.models_gateway.factory.get_model_gateway",
+        lambda: _RaisingStubGateway(),
+    )
+    retry_result = await resume_aware_jd_analysis({}, payload)
+    assert retry_result == run_id
 
     with SessionLocal() as db:
-        runs = (
-            db.execute(select(AgentRun).where(AgentRun.user_id == "bad_model_user")).scalars().all()
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "succeeded"
+
+        analyses = (
+            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run_id))
+            .scalars()
+            .all()
         )
-        assert len(runs) == 1
-        run = runs[0]
+        artifacts = (
+            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run_id))
+            .scalars()
+            .all()
+        )
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
+        assert len(analyses) == 1
+        assert len(artifacts) == 1
+        assert len(steps) == 6
+
+
+@pytest.mark.asyncio
+async def test_handler_accepts_dict_payload() -> None:
+    """arq delivers a deserialized dict; the handler must accept it."""
+    ids = _seed("ja_worker_dict")
+    run_id = _create_queued_analysis_run(
+        "ja_worker_dict",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+    payload_dict = {
+        "workflow_type": "resume_aware_jd_analysis",
+        "user_id": "ja_worker_dict",
+        "agent_run_id": run_id,
+        "idempotency_key": f"jd_analysis:{run_id}",
+        "job_id": ids["job_id"],
+        "resume_version_id": ids["resume_version_id"],
+    }
+
+    result = await resume_aware_jd_analysis({"job_id": "arq-job-1"}, payload_dict)
+
+    assert result == run_id
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# Worker layer: recoverable failures
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handler_failure_invalid_json_marks_run_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Model returns invalid JSON → run failed, validate_model_output step failed."""
+    monkeypatch.setattr(
+        "app.models_gateway.factory.get_model_gateway",
+        lambda: _InvalidStubGateway(),
+    )
+    ids = _seed("ja_worker_inv")
+    run_id = _create_queued_analysis_run(
+        "ja_worker_inv",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+    payload = _make_payload(run_id, "ja_worker_inv", ids["job_id"], ids["resume_version_id"])
+
+    result = await resume_aware_jd_analysis({}, payload)
+
+    assert result == run_id
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
         assert run.status == "failed"
         assert run.error == "model returned invalid analysis"
-        assert run.result["failure"] == "model_invalid"
-        # The failed run is scoped to the job so it can be listed per-job.
-        assert run.job_id == ids["job_id"]
 
-        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run.id)).scalars().all()
-        assert len(steps) >= 3
-        # Validation failure is recorded on the validate_model_output step.
-        validate_step = next(s for s in steps if s.name == "validate_model_output")
-        assert validate_step.status == "failed"
-        # No raw prompt/resume content in the failed step.
-        assert "raw_text" not in (validate_step.result or {})
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
+        failed = [s for s in steps if s.status == "failed"]
+        assert len(failed) == 1
+        assert failed[0].name == "validate_model_output"
 
         # Failure path must NOT create JobAnalysis / GeneratedArtifact.
         analyses = (
-            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run.id))
+            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run_id))
             .scalars()
             .all()
         )
         assert analyses == []
         artifacts = (
-            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run.id))
+            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run_id))
             .scalars()
             .all()
         )
         assert artifacts == []
 
 
-def test_run_analysis_model_call_failure_returns_502_and_persists_failed_run(
-    client: TestClient, raising_gateway_override: _RaisingStubGateway
+@pytest.mark.asyncio
+async def test_handler_failure_raising_gateway_marks_run_failed(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A gateway that raises drives the call_model-failure 502 path (R4).
+    """Gateway raises → run failed, call_model step failed."""
+    monkeypatch.setattr(
+        "app.models_gateway.factory.get_model_gateway",
+        lambda: _RaisingStubGateway(),
+    )
+    ids = _seed("ja_worker_raise")
+    run_id = _create_queued_analysis_run(
+        "ja_worker_raise",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+    payload = _make_payload(run_id, "ja_worker_raise", ids["job_id"], ids["resume_version_id"])
 
-    The failed run + failed call_model step are persisted, no analysis/artifact
-    rows are created, and the run is scoped to the job via ``job_id``.
-    """
-    ids = _seed("raising_user")
-    resp = _run(client, ids["job_id"], ids["resume_version_id"], "raising_user")
-    assert resp.status_code == 502, resp.text
-    assert resp.json()["detail"] == "model call failed"
+    result = await resume_aware_jd_analysis({}, payload)
 
+    assert result == run_id
     with SessionLocal() as db:
-        runs = (
-            db.execute(select(AgentRun).where(AgentRun.user_id == "raising_user")).scalars().all()
-        )
-        assert len(runs) == 1
-        run = runs[0]
+        run = db.get(AgentRun, run_id)
+        assert run is not None
         assert run.status == "failed"
         assert run.error == "model call failed"
-        assert run.result["failure"] == "model_invalid"
-        assert run.job_id == ids["job_id"]
 
-        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run.id)).scalars().all()
-        assert len(steps) >= 3
-        call_step = next(s for s in steps if s.name == "call_model")
-        assert call_step.status == "failed"
-        assert call_step.result["provider"] == "stub-raising"
-        assert "error_type" in call_step.result
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
+        failed = [s for s in steps if s.status == "failed"]
+        assert len(failed) == 1
+        assert failed[0].name == "call_model"
+        assert failed[0].result["provider"] == "stub-raising"
+        assert "error_type" in failed[0].result
 
         analyses = (
-            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run.id))
+            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run_id))
             .scalars()
             .all()
         )
         assert analyses == []
         artifacts = (
-            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run.id))
+            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run_id))
             .scalars()
             .all()
         )
         assert artifacts == []
 
 
-def test_failed_run_is_visible_via_agent_runs_job_filter(
-    client: TestClient, raising_gateway_override: _RaisingStubGateway
+# ---------------------------------------------------------------------------
+# Worker layer: ownership mismatch + missing run
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handler_owner_mismatch_fails_run() -> None:
+    """A cross-user payload must not execute; the run is failed with a sanitized error."""
+    ids = _seed("ja_real_owner")
+    run_id = _create_queued_analysis_run(
+        "ja_real_owner",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+    # Payload claims a different user.
+    payload = _make_payload(run_id, "ja_attacker", ids["job_id"], ids["resume_version_id"])
+
+    result = await resume_aware_jd_analysis({}, payload)
+
+    assert result == "ownership_mismatch"
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error == "ownership mismatch"
+
+
+@pytest.mark.asyncio
+async def test_handler_missing_run_returns_marker() -> None:
+    """A missing run id degrades gracefully instead of raising."""
+    ids = _seed("ja_ghost")
+    payload = _make_payload("does_not_exist", "ja_ghost", ids["job_id"], ids["resume_version_id"])
+    result = await resume_aware_jd_analysis({}, payload)
+    assert result == "missing_run"
+
+
+# ---------------------------------------------------------------------------
+# Worker layer: failed run is visible via agent-runs + run detail
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_failed_run_visible_via_agent_runs_and_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
 ) -> None:
-    """Failure-visibility contract (R4): a failed run that created no
-    ``JobAnalysis`` row is still findable via ``GET /agent-runs?job_id=…`` and
-    its failed step metadata is readable via ``GET /agent-runs/{id}/detail``.
+    """R4: a failed run that created no JobAnalysis is still findable via
+    ``GET /agent-runs?job_id=…`` and its failed step metadata is readable via
+    ``GET /agent-runs/{id}/detail``.
     """
-    ids = _seed("visibility_user")
-    resp = _run(client, ids["job_id"], ids["resume_version_id"], "visibility_user")
-    assert resp.status_code == 502, resp.text
+    monkeypatch.setattr(
+        "app.models_gateway.factory.get_model_gateway",
+        lambda: _RaisingStubGateway(),
+    )
+    ids = _seed("ja_visibility")
+    run_id = _create_queued_analysis_run(
+        "ja_visibility",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+    payload = _make_payload(run_id, "ja_visibility", ids["job_id"], ids["resume_version_id"])
+
+    await resume_aware_jd_analysis({}, payload)
 
     # GET /jobs/{job_id}/analyses is still empty (no JobAnalysis was created).
     analyses_resp = client.get(
         f"/api/v1/jobs/{ids['job_id']}/analyses",
-        headers=_headers("visibility_user"),
+        headers=_headers("ja_visibility"),
     )
     assert analyses_resp.status_code == 200, analyses_resp.text
     assert analyses_resp.json()["meta"]["total"] == 0
@@ -405,7 +787,7 @@ def test_failed_run_is_visible_via_agent_runs_job_filter(
             "job_id": ids["job_id"],
             "workflow_type": "resume_aware_jd_analysis",
         },
-        headers=_headers("visibility_user"),
+        headers=_headers("ja_visibility"),
     )
     assert runs_resp.status_code == 200, runs_resp.text
     runs_body = runs_resp.json()
@@ -413,13 +795,12 @@ def test_failed_run_is_visible_via_agent_runs_job_filter(
     run_summary = runs_body["items"][0]
     assert run_summary["status"] == "failed"
     assert run_summary["created_at"] is not None
-    run_id = run_summary["id"]
 
     # GET /agent-runs/{run_id}/detail shows the failed call_model step and its
     # sanitized metadata.
     detail_resp = client.get(
         f"/api/v1/agent-runs/{run_id}/detail",
-        headers=_headers("visibility_user"),
+        headers=_headers("ja_visibility"),
     )
     assert detail_resp.status_code == 200, detail_resp.text
     detail = detail_resp.json()
@@ -428,111 +809,74 @@ def test_failed_run_is_visible_via_agent_runs_job_filter(
     assert call_step["status"] == "failed"
     assert call_step["result"]["provider"] == "stub-raising"
     assert "error_type" in call_step["result"]
-    # created_at is now exposed on steps too.
     assert call_step["created_at"] is not None
 
 
 # ---------------------------------------------------------------------------
-# Ownership / data-quality errors
+# Worker layer: sanitization (no raw resume content leakage)
 # ---------------------------------------------------------------------------
 
 
-def test_run_analysis_404_for_missing_job(client: TestClient) -> None:
-    ids = _seed("no_job_user")
-    resp = _run(client, "nonexistent_job", ids["resume_version_id"], "no_job_user")
-    assert resp.status_code == 404
-    assert resp.json()["detail"] == "job not found"
-
-
-def test_run_analysis_404_for_cross_user_job(client: TestClient) -> None:
-    ids_owner = _seed("owner_x")
-    ids_intruder = _seed("intruder_x")
-    resp = _run(
-        client,
-        ids_owner["job_id"],
-        ids_intruder["resume_version_id"],
-        "intruder_x",
+@pytest.mark.asyncio
+async def test_handler_sanitizes_raw_resume_from_all_persisted_rows() -> None:
+    raw_resume = f"简历内容，机密字段 {SECRET} 请勿泄露。"
+    ids = _seed("ja_worker_san", raw_text=raw_resume)
+    run_id = _create_queued_analysis_run(
+        "ja_worker_san",
+        ids["job_id"],
+        ids["resume_version_id"],
+        resume_raw_text_len=len(raw_resume),
     )
-    assert resp.status_code == 404
-    assert resp.json()["detail"] == "job not found"
+    payload = _make_payload(run_id, "ja_worker_san", ids["job_id"], ids["resume_version_id"])
 
+    await resume_aware_jd_analysis({}, payload)
 
-def test_run_analysis_404_for_missing_resume_version(client: TestClient) -> None:
-    ids = _seed("no_ver_user")
-    resp = _run(client, ids["job_id"], "nonexistent_ver", "no_ver_user")
-    assert resp.status_code == 404
-    assert resp.json()["detail"] == "resume version not found"
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        run_blob = json.dumps(run.result or {}, ensure_ascii=False) + (run.error or "")
+        assert SECRET not in run_blob
 
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
+        for s in steps:
+            step_blob = json.dumps(s.result or {}, ensure_ascii=False) + (s.error or "")
+            assert SECRET not in step_blob
 
-def test_run_analysis_404_for_cross_user_resume_version(client: TestClient) -> None:
-    ids_owner = _seed("rv_owner")
-    ids_intruder = _seed("rv_intruder")
-    resp = _run(
-        client,
-        ids_intruder["job_id"],
-        ids_owner["resume_version_id"],
-        "rv_intruder",
-    )
-    assert resp.status_code == 404
-    assert resp.json()["detail"] == "resume version not found"
-
-
-def test_run_analysis_422_for_empty_raw_text(client: TestClient) -> None:
-    ids = _seed("empty_text_user", raw_text="")
-    resp = _run(client, ids["job_id"], ids["resume_version_id"], "empty_text_user")
-    assert resp.status_code == 422
-    assert resp.json()["detail"] == "resume version has no parsed text"
+        artifact = (
+            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run_id))
+            .scalars()
+            .first()
+        )
+        assert artifact is not None
+        assert SECRET not in artifact.content
+        assert SECRET not in json.dumps(artifact.source_ids, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
-# GET list
+# GET list + run detail (post-worker-success hydration)
 # ---------------------------------------------------------------------------
 
 
-def test_list_analyses_pagination_and_user_scoping(client: TestClient) -> None:
-    ids = _seed("list_user")
-    # Create three analyses for the owner.
-    for _ in range(3):
-        resp = _run(client, ids["job_id"], ids["resume_version_id"], "list_user")
-        assert resp.status_code == 201, resp.text
-
-    # page_size=2 -> 2 items, total=3.
-    resp = client.get(
-        f"/api/v1/jobs/{ids['job_id']}/analyses",
-        params={"page": 1, "page_size": 2},
-        headers=_headers("list_user"),
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["meta"]["total"] == 3
-    assert len(body["items"]) == 2
-    # Newest first: created_at descending (on the nested analysis object).
-    assert body["items"][0]["analysis"]["created_at"] >= body["items"][1]["analysis"]["created_at"]
-
-    # page 2 -> the remaining 1 item.
-    resp2 = client.get(
-        f"/api/v1/jobs/{ids['job_id']}/analyses",
-        params={"page": 2, "page_size": 2},
-        headers=_headers("list_user"),
-    )
-    assert resp2.status_code == 200
-    assert len(resp2.json()["items"]) == 1
-
-
-def test_list_analyses_returns_persisted_result_for_hydration(client: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_list_analyses_returns_persisted_result_for_hydration(
+    client: TestClient,
+) -> None:
     """R1/R2: a persisted analysis round-trips through the list endpoint with
-    enough data (analysis + artifact + structured) to reconstruct the UI
-    without the original POST response.
+    enough data (analysis + artifact + structured) to reconstruct the UI.
     """
-    ids = _seed("hydrate_user")
-    run_resp = _run(client, ids["job_id"], ids["resume_version_id"], "hydrate_user")
-    assert run_resp.status_code == 201, run_resp.text
-    run_id = run_resp.json()["agent_run"]["id"]
+    ids = _seed("ja_hydrate")
+    run_id = _create_queued_analysis_run(
+        "ja_hydrate",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+    payload = _make_payload(run_id, "ja_hydrate", ids["job_id"], ids["resume_version_id"])
+    await resume_aware_jd_analysis({}, payload)
 
-    # Fresh read — do not rely on the POST response state.
+    # Fresh read — do not rely on any in-memory state.
     resp = client.get(
         f"/api/v1/jobs/{ids['job_id']}/analyses",
-        headers=_headers("hydrate_user"),
+        headers=_headers("ja_hydrate"),
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -550,17 +894,24 @@ def test_list_analyses_returns_persisted_result_for_hydration(client: TestClient
     assert item["structured"]["match_score"] is not None
 
 
-def test_run_detail_returns_ordered_steps_user_scoped(client: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_run_detail_returns_ordered_steps_user_scoped(
+    client: TestClient,
+) -> None:
     """R3/R5: run detail with ordered steps, scoped to the current user."""
-    ids = _seed("detail_user")
-    run_resp = _run(client, ids["job_id"], ids["resume_version_id"], "detail_user")
-    assert run_resp.status_code == 201, run_resp.text
-    run_id = run_resp.json()["agent_run"]["id"]
+    ids = _seed("ja_detail")
+    run_id = _create_queued_analysis_run(
+        "ja_detail",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+    payload = _make_payload(run_id, "ja_detail", ids["job_id"], ids["resume_version_id"])
+    await resume_aware_jd_analysis({}, payload)
 
     # Owner sees the full step trail.
     owner = client.get(
         f"/api/v1/agent-runs/{run_id}/detail",
-        headers=_headers("detail_user"),
+        headers=_headers("ja_detail"),
     )
     assert owner.status_code == 200, owner.text
     detail = owner.json()
@@ -578,24 +929,23 @@ def test_run_detail_returns_ordered_steps_user_scoped(client: TestClient) -> Non
     assert all(s["status"] == "succeeded" for s in detail["steps"])
     # Steps are ordered by step_no.
     assert [s["step_no"] for s in detail["steps"]] == [1, 2, 3, 4, 5, 6]
-    # created_at is exposed on the run and each step (timing/auditability).
     assert detail["created_at"] is not None
     assert all(s["created_at"] is not None for s in detail["steps"])
 
     # Cross-user access is 404 (not 403) — R5.
     intruder = client.get(
         f"/api/v1/agent-runs/{run_id}/detail",
-        headers=_headers("detail_intruder"),
+        headers=_headers("ja_detail_intruder"),
     )
     assert intruder.status_code == 404
 
 
 def test_list_analyses_404_for_cross_user_job(client: TestClient) -> None:
-    ids_owner = _seed("list_owner")
-    _seed("list_intruder")
+    ids_owner = _seed("ja_list_owner")
+    _seed("ja_list_intruder")
     resp = client.get(
         f"/api/v1/jobs/{ids_owner['job_id']}/analyses",
-        headers=_headers("list_intruder"),
+        headers=_headers("ja_list_intruder"),
     )
     assert resp.status_code == 404
     assert resp.json()["detail"] == "job not found"

@@ -3,7 +3,7 @@
   "name": "async-jd-analysis-workflow",
   "title": "Async JD Analysis Workflow",
   "description": "Move resume-aware JD analysis to queue-backed execution with immediate run creation, polling, result hydration, and failure visibility.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

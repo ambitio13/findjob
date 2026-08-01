@@ -108,3 +108,25 @@ class ResumeFactExtractionPayload(WorkflowPayload):
 
     resume_id: str
     version_id: str
+
+
+class ResumeAwareJdAnalysisPayload(WorkflowPayload):
+    """Payload for the resume-aware JD analysis workflow.
+
+    References the durable ``JobPosting`` + ``ResumeVersion`` rows by ID — the
+    worker re-reads them from its own DB session, so no raw JD or resume
+    content crosses the queue boundary (same reference-by-ID approach as
+    :class:`ResumeFactExtractionPayload`). This keeps a leaked queue entry
+    from exposing user content.
+
+    The ``AgentRun`` (``workflow_type="resume_aware_jd_analysis"``) is created
+    in the ``queued`` state by the API before enqueue and linked to the job
+    via ``AgentRun.job_id``; the worker flips it to ``running`` →
+    ``succeeded``/``failed``, persisting ``JobAnalysis`` +
+    ``GeneratedArtifact`` only on success.
+    """
+
+    workflow_type: Literal["resume_aware_jd_analysis"] = "resume_aware_jd_analysis"
+
+    job_id: str
+    resume_version_id: str

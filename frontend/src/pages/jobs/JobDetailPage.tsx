@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   Alert,
@@ -25,6 +25,9 @@ import {
   listResumeVersions,
   runJdAnalysis,
 } from "@/api/client";
+import {
+  TERMINAL_JD_PARSE_STATUSES,
+} from "@/types";
 import type {
   AgentRunDetailOut,
   AgentRunOut,
@@ -72,6 +75,12 @@ const RUN_STATUS_COLOR: Record<string, string> = {
   running: "blue",
   queued: "gray",
 };
+
+/** Polling interval for the analysis run detail (enqueue-and-poll). */
+const JD_ANALYSIS_POLL_MS = 3000;
+
+/** A run that is queued or running — the submit button stays disabled. */
+const ACTIVE_RUN_STATUSES: ReadonlySet<string> = new Set(["queued", "running"]);
 
 /**
  * A run merged with its persisted analysis (if any). Successful runs have a
@@ -126,6 +135,22 @@ export function JobDetailPage() {
   const [analysesLoading, setAnalysesLoading] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+
+  // Polling refs for the in-flight analysis run (enqueue-and-poll). Mirrors
+  // the recursive setTimeout + token pattern in JobCreateModal.
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollTokenRef = useRef(0);
+
+  const stopPolling = useCallback(() => {
+    pollTokenRef.current += 1;
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  // Stop polling when the component unmounts so no timers leak.
+  useEffect(() => () => stopPolling(), [stopPolling]);
 
   // Load job detail.
   useEffect(() => {
@@ -258,6 +283,55 @@ export function JobDetailPage() {
     return entry?.versions ?? [];
   }, [resumeOptions, selectedResumeId]);
 
+  // Duplicate active-run guard: while a queued/running run already exists for
+  // this job the submit button stays disabled (the backend also enforces a 409
+  // on duplicate submit, this is the UX mirror).
+  const hasActiveRun = useMemo(
+    () => runs.some((r) => ACTIVE_RUN_STATUSES.has(r.status)),
+    [runs],
+  );
+
+  /**
+   * Poll ``GET /agent-runs/{id}/detail`` until the analysis run reaches a
+   * terminal status (``succeeded`` / ``failed``). On each tick the run list is
+   * refreshed so the merge of runs + analyses reflects durable state. Mirrors
+   * the recursive ``setTimeout`` + token pattern in JobCreateModal.
+   */
+  const pollRunDetail = useCallback(
+    (runId: string) => {
+      const token = pollTokenRef.current;
+
+      const poll = async () => {
+        try {
+          const detail = await getAgentRunDetail(runId);
+          if (token !== pollTokenRef.current) return;
+          // Refresh persisted state on each tick so the run/analysis merge
+          // reflects the latest durable rows (the worker persists the analysis
+          // only on success).
+          await refreshData(false);
+          if (TERMINAL_JD_PARSE_STATUSES.has(detail.status)) {
+            setRunning(false);
+            if (detail.status === "succeeded") {
+              message.success("分析运行完成");
+            } else {
+              message.warning(`分析未成功（${detail.error ?? detail.status}）`);
+            }
+            return;
+          }
+          pollTimerRef.current = setTimeout(poll, JD_ANALYSIS_POLL_MS);
+        } catch {
+          // Network blips during polling are non-fatal; retry on next tick.
+          if (token === pollTokenRef.current) {
+            pollTimerRef.current = setTimeout(poll, JD_ANALYSIS_POLL_MS);
+          }
+        }
+      };
+
+      pollTimerRef.current = setTimeout(poll, JD_ANALYSIS_POLL_MS);
+    },
+    [refreshData],
+  );
+
   if (loading) return <Spin />;
   if (error || !job) {
     return <Alert type="error" message="加载失败" description={error ?? undefined} />;
@@ -267,26 +341,34 @@ export function JobDetailPage() {
 
   const handleRun = async () => {
     if (!id || !selectedVersionId) return;
+    stopPolling();
     setRunning(true);
     try {
       const res = await runJdAnalysis(id, selectedVersionId);
-      // On success, surface a message and refresh persisted state so the UI
-      // reflects durable rows rather than only the POST response.
-      if (res.agent_run.status === "succeeded") {
-        message.success("分析运行完成");
-      } else {
-        message.warning(`分析未成功（${res.agent_run.status}）`);
+      setSelectedRunId(res.run.id);
+      // If the enqueue itself failed (Redis down), the backend flips the run
+      // to ``failed`` before returning — surface that immediately.
+      if (TERMINAL_JD_PARSE_STATUSES.has(res.run.status)) {
+        setRunning(false);
+        if (res.run.status === "succeeded") {
+          message.success("分析运行完成");
+        } else {
+          message.warning(`分析未成功（${res.run.error ?? res.run.status}）`);
+        }
+        await refreshData(true);
+        return;
       }
-      setSelectedRunId(res.agent_run.id);
+      // The run is ``queued`` — refresh once to reflect the queued row, then
+      // poll until terminal status.
       await refreshData(false);
+      pollRunDetail(res.run.id);
     } catch (err) {
+      setRunning(false);
       message.error(apiErrorMessage(err));
-      // Even on failure, the backend persists a failed run (scoped to this
+      // Even on failure, the backend may persist a failed run (scoped to this
       // job via job_id) — refresh and force-select the newest run so the
       // failure trail is immediately visible (R4).
       await refreshData(true);
-    } finally {
-      setRunning(false);
     }
   };
 
@@ -364,7 +446,7 @@ export function JobDetailPage() {
               <Button
                 type="primary"
                 loading={running}
-                disabled={!selectedVersionId}
+                disabled={!selectedVersionId || hasActiveRun}
                 onClick={handleRun}
               >
                 运行 JD 分析

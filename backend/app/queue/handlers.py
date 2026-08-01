@@ -27,7 +27,12 @@ from typing import Any
 from app.core.logging import get_logger
 from app.db.repositories import agent_run_repo
 from app.db.session import SessionLocal
-from app.queue.payloads import JdPasteParsePayload, ResumeFactExtractionPayload, SmokePayload
+from app.queue.payloads import (
+    JdPasteParsePayload,
+    ResumeAwareJdAnalysisPayload,
+    ResumeFactExtractionPayload,
+    SmokePayload,
+)
 
 _log = get_logger("app.queue.handlers")
 
@@ -247,4 +252,83 @@ async def resume_fact_extraction(
             error=str(exc),
         )
         fail_run(payload.agent_run_id, error="resume fact extraction failed")
+        return "failed"
+
+
+async def resume_aware_jd_analysis(
+    ctx: dict[str, Any],
+    payload: ResumeAwareJdAnalysisPayload | dict[str, Any],
+) -> str:
+    """Resume-aware JD analysis worker handler — executes the analysis workflow.
+
+    Receives only durable resource IDs (``job_id``, ``resume_version_id``) in the
+    payload — no raw JD or resume text crosses the queue boundary. The worker
+    re-reads the ``JobPosting`` / ``ResumeVersion`` from its own DB session,
+    re-loads the queued ``AgentRun`` by ID, re-checks user ownership, and
+    delegates to
+    :func:`app.services.jd_analysis_service.run_resume_aware_jd_analysis_worker`
+    for the fixed-step orchestration (model call → validation → sanitized
+    step/run persistence → ``JobAnalysis`` / ``GeneratedArtifact``).
+
+    The model gateway is constructed inside the worker via
+    :func:`app.models_gateway.factory.get_model_gateway` so no request-scoped
+    dependency is passed across the queue boundary.
+
+    On any uncaught exception the shared :func:`fail_run` guard flips the run
+    to ``failed`` with a sanitized error so it never stays stuck on
+    ``running``.
+    """
+    _ = ctx
+    if isinstance(payload, dict):
+        payload = ResumeAwareJdAnalysisPayload.model_validate(payload)
+
+    # Construct the model gateway inside the worker process.
+    from app.models_gateway.factory import get_model_gateway
+    from app.services.jd_analysis_service import run_resume_aware_jd_analysis_worker
+
+    gateway = get_model_gateway()
+
+    try:
+        with SessionLocal() as db:
+            run = agent_run_repo.get_run(db, payload.agent_run_id)
+            if run is None:
+                _log.warning(
+                    "queue.resume_aware_jd_analysis_missing_run",
+                    agent_run_id=payload.agent_run_id,
+                )
+                return "missing_run"
+
+            # Re-check ownership: a cross-user payload must not execute.
+            if run.user_id != payload.user_id:
+                _log.warning(
+                    "queue.resume_aware_jd_analysis_owner_mismatch",
+                    agent_run_id=payload.agent_run_id,
+                    payload_user=payload.user_id,
+                    run_user=run.user_id,
+                )
+                fail_run(payload.agent_run_id, error="ownership mismatch")
+                return "ownership_mismatch"
+
+        # The worker runner opens its own session; the ownership check above is
+        # a fast-fail guard so a cross-user payload never reaches the service.
+        await run_resume_aware_jd_analysis_worker(
+            job_id=payload.job_id,
+            resume_version_id=payload.resume_version_id,
+            user_id=payload.user_id,
+            agent_run_id=payload.agent_run_id,
+            gateway=gateway,
+        )
+        _log.info(
+            "queue.resume_aware_jd_analysis_completed",
+            agent_run_id=payload.agent_run_id,
+        )
+        return payload.agent_run_id
+    except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
+        _log.warning(
+            "queue.resume_aware_jd_analysis_error",
+            agent_run_id=payload.agent_run_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        fail_run(payload.agent_run_id, error="jd analysis failed")
         return "failed"

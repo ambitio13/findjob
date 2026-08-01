@@ -440,12 +440,37 @@ export interface GeneratedArtifactOut {
   created_at?: string | null;
 }
 
-/** Response shape for POST /jobs/{job_id}/analyses (design.md §5.1). */
+/**
+ * Response shape for POST /jobs/{job_id}/analyses (design.md §5.1).
+ *
+ * @deprecated queue-migration — retained for older callers; the enqueue-and-poll
+ * endpoint now returns {@link RunJdAnalysisSubmitResponse}.
+ */
 export interface RunJdAnalysisResponse {
   agent_run: AgentRunOut;
   analysis: JobAnalysisOut;
   artifact: GeneratedArtifactOut;
   structured: JdAnalysisModelOutput;
+}
+
+/** Lightweight run summary surfaced in the analysis submit response. */
+export interface RunJdAnalysisRunSummary {
+  id: string;
+  status: string;
+  error?: string | null;
+}
+
+/**
+ * Immediate response for POST /jobs/{job_id}/analyses (enqueue-and-poll).
+ *
+ * The endpoint creates a queued AgentRun and enqueues the analysis job to the
+ * worker queue, then returns immediately with this response. The frontend
+ * polls GET /agent-runs/{run_id}/detail until the run reaches a terminal
+ * status, then hydrates the analysis from persisted rows.
+ */
+export interface RunJdAnalysisSubmitResponse {
+  run: RunJdAnalysisRunSummary;
+  resume_version_id: string;
 }
 
 /**

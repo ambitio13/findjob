@@ -17,7 +17,7 @@ import type {
   UserProfile,
   UserProfileUpdate,
   JobAnalysisListOut,
-  RunJdAnalysisResponse,
+  RunJdAnalysisSubmitResponse,
 } from "@/types";
 
 const baseURL = "/api/v1";
@@ -196,8 +196,8 @@ export async function applyProfileDraft(
 export async function runJdAnalysis(
   jobId: string,
   resumeVersionId: string,
-): Promise<RunJdAnalysisResponse> {
-  const { data } = await apiClient.post<RunJdAnalysisResponse>(
+): Promise<RunJdAnalysisSubmitResponse> {
+  const { data } = await apiClient.post<RunJdAnalysisSubmitResponse>(
     `/jobs/${jobId}/analyses`,
     { resume_version_id: resumeVersionId },
   );

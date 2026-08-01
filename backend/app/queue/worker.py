@@ -22,7 +22,12 @@ from __future__ import annotations
 from arq.worker import Function
 
 from app.core.config import get_settings
-from app.queue.handlers import jd_paste_parsing, resume_fact_extraction, smoke
+from app.queue.handlers import (
+    jd_paste_parsing,
+    resume_aware_jd_analysis,
+    resume_fact_extraction,
+    smoke,
+)
 from app.queue.runtime import get_redis_settings
 
 _settings = get_settings()
@@ -56,6 +61,14 @@ def _functions() -> list[Function]:
         Function(
             name="resume_fact_extraction",
             coroutine=resume_fact_extraction,
+            timeout_s=_settings.queue_job_timeout,
+            keep_result_s=3600,
+            keep_result_forever=False,
+            max_tries=_settings.queue_max_retries + 1,
+        ),
+        Function(
+            name="resume_aware_jd_analysis",
+            coroutine=resume_aware_jd_analysis,
             timeout_s=_settings.queue_job_timeout,
             keep_result_s=3600,
             keep_result_forever=False,
