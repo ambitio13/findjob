@@ -110,6 +110,48 @@ by arbitrary token count alone.
 - Validate structured outputs before saving.
 - Display AI analysis as analysis, not verified truth.
 
+### Editable System Prompt Templates
+
+System-level prompt instructions for model-backed workflows should live in
+plain `.md` templates under `app/agents/prompts/templates/`, loaded through
+`load_prompt_template()`. The prompt builder module should keep the public
+builder function, prompt version constant, truncation rules, source/context
+rendering, and JSON schema text in Python.
+
+This split lets the project owner tune model behavior by editing Markdown while
+keeping structured-output contracts reviewed with code and Pydantic validators.
+
+Required pattern:
+
+```python
+SYSTEM_PROMPT_TEMPLATE = "workflow_system.md"
+
+messages = [
+    ChatMessage(
+        role="system",
+        content=load_prompt_template(SYSTEM_PROMPT_TEMPLATE),
+    ),
+    ChatMessage(role="user", content=user_content),
+]
+```
+
+When fake-gateway routing depends on a marker string, inject it through a named
+template variable rather than duplicating the literal in multiple places:
+
+```python
+load_prompt_template(
+    "jd_paste_system.md",
+    variables={"JD_PASTE_MARKER": _JD_PASTE_MARKER},
+)
+```
+
+Tests for every prompt builder should assert:
+
+- the built system message equals the rendered template;
+- required safety wording remains present, such as no-fabrication rules;
+- fake-gateway markers remain present when a local fake provider depends on
+  them.
+
 ## MVP Output Scope
 
 The first product version does not generate a complete Word/PDF resume file.

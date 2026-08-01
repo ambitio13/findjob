@@ -48,10 +48,14 @@ packages = [
     "app.agents",
     "app.agents.tools",
     "app.agents.prompts",
+    "app.agents.prompts.templates",
     "app.integrations",
     "app.integrations.llm_providers",
     "app.tests",
 ]
+
+[tool.setuptools.package-data]
+"app.agents.prompts.templates" = ["*.md"]
 
 [tool.ruff]
 line-length = 100

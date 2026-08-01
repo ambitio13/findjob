@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend verification checklist for tests and style checks."}
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "Prompt template safety and contract assertions."}

@@ -1,0 +1,2 @@
+"""Editable prompt template resources."""
+
