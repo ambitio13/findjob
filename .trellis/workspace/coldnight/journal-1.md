@@ -400,3 +400,36 @@ Migrated resume fact extraction from FastAPI BackgroundTasks (upload) and synchr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Prompt template extraction
+
+**Date**: 2026-08-01
+**Task**: Prompt template extraction
+**Branch**: `wanzhen`
+
+### Summary
+
+Moved JD analysis, JD paste parsing, and resume fact extraction system prompts into editable Markdown templates; added loader/tests, package data wiring, and backend prompt-template spec guidance. Verified backend ruff and pytest with an isolated test database.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7e063c6` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

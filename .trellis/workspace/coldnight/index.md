@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
+- **Total Sessions**: 10
 - **Last Active**: 2026-08-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~352 | Active |
+| `journal-1.md` | ~435 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-08-01 | Prompt template extraction | `7e063c6` | `wanzhen` |
 | 9 | 2026-08-01 | 异步 JD 分析工作流入队迁移 | `3fba4ae` | `master` |
 | 8 | 2026-08-01 | Async resume fact extraction (enqueue-and-poll) | `a4ec9bb` | `master` |
 | 7 | 2026-08-01 | Async JD paste parsing (enqueue-and-poll) | `2dad958` | `master` |
