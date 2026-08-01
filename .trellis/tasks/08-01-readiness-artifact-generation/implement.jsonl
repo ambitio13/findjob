@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "Prompt templates, AgentRun, artifact provenance, output validation."}
+{"file": ".trellis/spec/backend/performance.md", "reason": "Queue-backed long-running model workflows."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Failure envelope and retry behavior."}
+{"file": ".trellis/spec/backend/database.md", "reason": "GeneratedArtifact and ApplicationRecord linkage."}

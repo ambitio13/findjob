@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/big-question/platform-integration-strategy.md", "reason": "Platform pilot strategy."}
+{"file": ".trellis/spec/big-question/agent-safety-sandbox.md", "reason": "Automation safety and side-effect controls."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "User approval and permission evidence."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Failure coverage review."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "State transitions and auditability."}

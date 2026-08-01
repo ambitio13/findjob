@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "New application APIs."}
+{"file": ".trellis/spec/backend/database.md", "reason": "ApplicationRecord persistence and migration."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "User-scoped ownership and 404 behavior."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Invalid transition and duplicate behavior."}

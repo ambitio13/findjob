@@ -1,0 +1,33 @@
+{
+  "id": "post-mvp-application-readiness-loop",
+  "name": "post-mvp-application-readiness-loop",
+  "title": "Post-MVP Application Readiness Loop",
+  "description": "Plan the post-MVP application readiness loop, prioritizing failure handling, recovery, auditability, and readiness criteria before any automated application agent.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "coldnight",
+  "assignee": "coldnight",
+  "createdAt": "2026-08-01",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "wanzhen",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-01-application-state-machine-and-failure-envelope",
+    "08-01-application-records-center",
+    "08-01-readiness-artifact-generation",
+    "08-01-readiness-panel-ux",
+    "08-01-approval-boundary-for-external-actions",
+    "08-01-automation-readiness-review"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

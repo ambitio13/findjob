@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/authentication.md", "reason": "User approval and permission boundary."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Approval preview/approve/revoke APIs."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Stale/missing approval failures."}
+{"file": ".trellis/spec/big-question/agent-safety-sandbox.md", "reason": "External side-effect safety."}
+{"file": ".trellis/spec/frontend/ai-sdk-integration.md", "reason": "Approval UI for generated artifacts/actions."}

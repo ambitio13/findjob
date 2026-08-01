@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/components.md", "reason": "Operational UI and component conventions."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Async polling and backend contract use."}
+{"file": ".trellis/spec/frontend/table-detail-views.md", "reason": "Application list/detail patterns."}
+{"file": ".trellis/spec/frontend/ai-sdk-integration.md", "reason": "Agent UI, approvals, and generated artifacts."}

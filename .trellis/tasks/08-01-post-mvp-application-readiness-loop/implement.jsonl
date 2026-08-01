@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/backend/ai-sdk-integration.md", "reason": "AgentRun, artifact provenance, prompt/output, and external side-effect rules."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Future application and approval APIs must preserve scoped contracts."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "External action approval and user boundary planning."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Failure envelope, retry, and user-visible error planning."}
+{"file": ".trellis/spec/backend/performance.md", "reason": "Queue-backed workflows and timeout/retry planning."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Async run polling and failure UX expectations."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Explicit state transitions and AI output auditability."}
+{"file": ".trellis/spec/big-question/platform-integration-strategy.md", "reason": "Future platform automation boundaries."}
+{"file": ".trellis/spec/big-question/agent-safety-sandbox.md", "reason": "External action safety and sandbox planning."}

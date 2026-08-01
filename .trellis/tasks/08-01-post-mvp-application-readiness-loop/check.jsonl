@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend verification checklist for future implementation tasks."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Frontend verification checklist for readiness UI."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Application flow crosses UI, API, worker, storage, and agent audit."}
+{"file": ".trellis/spec/guides/pre-implementation-checklist.md", "reason": "Pre-flight checks before implementation starts."}
