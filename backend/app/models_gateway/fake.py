@@ -37,6 +37,11 @@ _RESUME_FACT_MARKER = "resume fact extraction assistant"
 # without inspecting provider-specific metadata.
 _JD_PASTE_MARKER = "jd paste parsing assistant"
 
+# Marker present in the readiness artifact generation system prompt built by
+# ``build_readiness_messages``. Routes the fake gateway to the readiness branch
+# without inspecting provider-specific metadata.
+_READINESS_MARKER = "career readiness assistant"
+
 
 class FakeModelGateway(ModelGateway):
     provider_name = "fake"
@@ -93,6 +98,27 @@ class FakeModelGateway(ModelGateway):
                 raw={"jd_paste_parsing": True},
             )
 
+        if _is_readiness_prompt(request.messages):
+            artifact_type = _detect_readiness_artifact_type(request.messages)
+            fake_output = _READINESS_FAKE_OUTPUTS.get(
+                artifact_type, _READINESS_FAKE_OUTPUTS["hr_opening_message"]
+            )
+            content = json.dumps(fake_output, ensure_ascii=False)
+            usage = ChatUsage(
+                prompt_tokens=len(content) + sum(len(m.content) for m in request.messages),
+                completion_tokens=len(content),
+                total_tokens=len(content) * 2,
+            )
+            return ChatResponse(
+                content=content,
+                model=request.model or "fake-model",
+                provider=self.provider_name,
+                request_id=request.request_id,
+                latency_ms=1,
+                usage=usage,
+                raw={"readiness_generation": True, "artifact_type": artifact_type},
+            )
+
         joined = " | ".join(m.content for m in request.messages)
         content = f"[fake-model] echo: {joined[:200]}"
         usage = ChatUsage(
@@ -143,6 +169,34 @@ def _is_jd_paste_prompt(messages: list) -> bool:
     mirroring ``_is_jd_analysis_prompt``.
     """
     return any(_JD_PASTE_MARKER in m.content for m in messages)
+
+
+def _is_readiness_prompt(messages: list) -> bool:
+    """True when the message set looks like a readiness artifact generation prompt.
+
+    Detection relies on the marker the readiness system message injects,
+    mirroring ``_is_jd_analysis_prompt``.
+    """
+    return any(_READINESS_MARKER in m.content for m in messages)
+
+
+def _detect_readiness_artifact_type(messages: list) -> str:
+    """Return the artifact type requested in a readiness prompt.
+
+    The user message includes a ``Generate a '{artifact_type}' artifact`` line;
+    this function extracts the type so the fake gateway can return the matching
+    schema-valid output.
+    """
+    for msg in messages:
+        for at in (
+            "hr_opening_message",
+            "resume_rewrite_snippet",
+            "skill_gap_plan",
+            "interview_prep",
+        ):
+            if f"'{at}'" in msg.content:
+                return at
+    return "hr_opening_message"
 
 
 # Deterministic, schema-valid JD-analysis payload. Every required field is set
@@ -217,6 +271,40 @@ _JD_PASTE_FAKE_OUTPUT = {
     "nice_to_have_requirements": ["Kafka", "Redis"],
     "benefits_or_risk_clues": ["弹性工作", "期权激励"],
     "uncertain_fields": [],
+}
+
+
+# Deterministic, schema-valid readiness artifact payloads. One per artifact
+# type, each matching its Pydantic output model so the executor and tests can
+# run fully offline. Keeping them constant makes assertions stable.
+_READINESS_FAKE_OUTPUTS = {
+    "hr_opening_message": {
+        "hook": "5年Python后端经验",
+        "message": (
+            "您好，我是一名有5年Python后端开发经验的工程师，"
+            "对贵司的后端工程师职位非常感兴趣。"
+        ),
+        "evidence": ["简历中提到Python 5年经验", "JD要求Python后端"],
+        "risk_note": "Kafka经验不足",
+    },
+    "resume_rewrite_snippet": {
+        "project_snippets": ["主导核心服务重构，QPS提升3倍"],
+        "skill_snippets": ["Python, FastAPI, PostgreSQL"],
+        "experience_snippets": ["某公司后端工程师，负责API设计与实现"],
+        "do_not_claim": ["Kafka深度经验", "前端开发能力"],
+    },
+    "skill_gap_plan": {
+        "critical_gaps": ["Kafka消息队列"],
+        "quick_wins": ["复习Redis基础"],
+        "study_plan": ["第1周：Kafka基础概念", "第2周：Kafka实战项目"],
+        "interview_risk": ["Kafka相关面试题可能无法回答"],
+    },
+    "interview_prep": {
+        "likely_questions": ["请介绍一下你的Python后端经验", "如何设计高并发API"],
+        "answer_points": ["重点描述FastAPI项目经验", "结合QPS提升3倍的案例"],
+        "portfolio_talking_points": ["核心服务重构项目", "API性能优化"],
+        "questions_to_ask_interviewer": ["团队的CI/CD流程是怎样的", "技术栈未来规划"],
+    },
 }
 
 

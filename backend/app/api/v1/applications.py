@@ -12,11 +12,12 @@ state-machine transition table), and manual timeline notes.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db_session
 from app.db.models.models import UserProfile
+from app.db.repositories import agent_run_repo
 from app.schemas.api import (
     ApplicationCreate,
     ApplicationListOut,
@@ -25,7 +26,21 @@ from app.schemas.api import (
     ApplicationTimelineCreate,
     PaginatedMeta,
 )
+from app.schemas.application import (
+    ApplicationFailureCategory,
+    ApplicationFailureNextAction,
+)
+from app.schemas.readiness import (
+    ReadinessArtifactType,
+    RunReadinessRunSummary,
+    RunReadinessSubmitResponse,
+)
 from app.services import application_service
+from app.services.readiness_service import (
+    WORKFLOW_TYPE,
+    load_readiness_context,
+    persist_application_failure,
+)
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 
@@ -141,3 +156,131 @@ def append_timeline_event(
         metadata=payload.metadata,
     )
     return _to_out(record)
+
+
+@router.post(
+    "/{application_id}/artifacts/{artifact_type}/generate",
+    response_model=RunReadinessSubmitResponse,
+    status_code=202,
+)
+async def generate_readiness_artifact(
+    application_id: str,
+    artifact_type: ReadinessArtifactType,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> RunReadinessSubmitResponse:
+    """Submit the readiness artifact generation workflow (enqueue-and-poll).
+
+    Validates ownership + resume-version usability up front (404/422 bubble from
+    the context loader before any run is persisted), then creates a ``queued``
+    ``AgentRun`` (``workflow_type="readiness_generation"``) with sanitized
+    request metadata, enqueues a
+    :class:`~app.queue.payloads.ReadinessGenerationPayload` to the worker queue,
+    and returns immediately with the run reference. The frontend polls
+    ``GET /agent-runs/{run_id}/detail`` until the run reaches a terminal status,
+    then hydrates the artifact from the persisted ``GeneratedArtifact`` row.
+
+    Duplicate active-run guard: while an active (``queued``/``running``) run
+    exists for the same application + artifact type, the endpoint returns HTTP
+    409 instead of enqueuing a second generation. No raw JD or resume text is
+    persisted — only IDs and lengths are stored on the run.
+
+    If Redis is unavailable the run is flipped to ``failed`` before returning so
+    the user is never left with a silent spinner.
+    """
+    from app.queue.payloads import ReadinessGenerationPayload
+    from app.queue.runtime import enqueue_workflow
+
+    # 1. Validate application/job/resume ownership + data quality (404/422).
+    #    This runs BEFORE any run is created so a bad request never leaves a
+    #    half-started run behind.
+    context, record, job, version, resume = load_readiness_context(
+        db, current_user, application_id, artifact_type.value
+    )
+
+    # 2. Duplicate active-run guard: reject if a queued/running readiness run
+    #    already exists for this application + artifact type. We deliberately
+    #    allow re-generation after a run reaches a terminal state.
+    runs, _ = agent_run_repo.list_runs_for_user(
+        db,
+        current_user.id,
+        workflow_type=WORKFLOW_TYPE,
+        job_id=record.job_id,
+        page=1,
+        page_size=50,
+    )
+    for r in runs:
+        if r.status not in {"queued", "running"}:
+            continue
+        r_result = r.result or {}
+        if (
+            r_result.get("application_id") == application_id
+            and r_result.get("artifact_type") == artifact_type.value
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="artifact generation already in progress for this application",
+            )
+
+    # 3. Create the durable AgentRun in queued state *before* enqueue so
+    #    PostgreSQL stays the source of truth. The result metadata is sanitized:
+    #    only IDs + input lengths, no raw text.
+    run = agent_run_repo.create_run(
+        db,
+        user_id=current_user.id,
+        workflow_type=WORKFLOW_TYPE,
+        status="queued",
+        job_id=record.job_id,
+        result={
+            "user_id": current_user.id,
+            "application_id": application_id,
+            "job_id": record.job_id,
+            "resume_version_id": version.id,
+            "resume_id": resume.id,
+            "artifact_type": artifact_type.value,
+            "source_hash": context.source_hash,
+            "jd_raw_len": len(context.job.get("jd_raw") or ""),
+            "resume_raw_text_len": len(context.resume.get("raw_text") or ""),
+        },
+    )
+    db.commit()
+    db.refresh(run)
+
+    # 4. Enqueue the readiness generation job. If Redis is down, flip the run
+    #    to failed so the frontend sees a terminal state instead of polling
+    #    forever.
+    idempotency_key = f"readiness_generation:{run.id}"
+    enqueue_payload = ReadinessGenerationPayload(
+        workflow_type=WORKFLOW_TYPE,
+        user_id=current_user.id,
+        agent_run_id=run.id,
+        idempotency_key=idempotency_key,
+        application_id=application_id,
+        job_id=record.job_id,
+        resume_version_id=version.id,
+        artifact_type=artifact_type.value,
+        source_hash=context.source_hash,
+    )
+    try:
+        await enqueue_workflow(enqueue_payload, job_id=idempotency_key)
+    except Exception:
+        persist_application_failure(
+            db,
+            run=run,
+            application_id=application_id,
+            artifact_type=artifact_type.value,
+            error="queue enqueue failed",
+            category=ApplicationFailureCategory.queue,
+            code="queue_enqueue_failed",
+            message="queue enqueue failed",
+            retryable=True,
+            next_action=ApplicationFailureNextAction.retry,
+        )
+        db.commit()
+        db.refresh(run)
+
+    return RunReadinessSubmitResponse(
+        run=RunReadinessRunSummary.model_validate(run),
+        application_id=application_id,
+        artifact_type=artifact_type,
+    )

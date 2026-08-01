@@ -30,6 +30,7 @@ WorkflowType = Literal[
     "jd_paste_parsing",
     "resume_fact_extraction",
     "resume_aware_jd_analysis",
+    "readiness_generation",
 ]
 
 
@@ -130,3 +131,30 @@ class ResumeAwareJdAnalysisPayload(WorkflowPayload):
 
     job_id: str
     resume_version_id: str
+
+
+class ReadinessGenerationPayload(WorkflowPayload):
+    """Payload for the readiness artifact generation workflow.
+
+    References the durable ``ApplicationRecord`` + ``JobPosting`` +
+    ``ResumeVersion`` rows by ID — the worker re-reads them from its own DB
+    session, so no raw JD or resume content crosses the queue boundary. The
+    ``artifact_type`` selects which of the four readiness artifacts to
+    generate. The ``source_hash`` captured at enqueue time lets the worker
+    detect stale sources (the snapshot changed between enqueue and execution)
+    and refuse to persist a potentially-mismatched artifact.
+
+    The ``AgentRun`` (``workflow_type="readiness_generation"``) is created in
+    the ``queued`` state by the API before enqueue and linked to the job via
+    ``AgentRun.job_id``; the worker flips it to ``running`` →
+    ``succeeded``/``failed``, persisting a ``GeneratedArtifact`` only on
+    success.
+    """
+
+    workflow_type: Literal["readiness_generation"] = "readiness_generation"
+
+    application_id: str
+    job_id: str
+    resume_version_id: str
+    artifact_type: str
+    source_hash: str

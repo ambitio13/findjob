@@ -29,6 +29,7 @@ from app.db.repositories import agent_run_repo
 from app.db.session import SessionLocal
 from app.queue.payloads import (
     JdPasteParsePayload,
+    ReadinessGenerationPayload,
     ResumeAwareJdAnalysisPayload,
     ResumeFactExtractionPayload,
     SmokePayload,
@@ -331,4 +332,87 @@ async def resume_aware_jd_analysis(
             error=str(exc),
         )
         fail_run(payload.agent_run_id, error="jd analysis failed")
+        return "failed"
+
+
+async def readiness_generation(
+    ctx: dict[str, Any],
+    payload: ReadinessGenerationPayload | dict[str, Any],
+) -> str:
+    """Readiness artifact generation worker handler — executes the generation workflow.
+
+    Receives only durable resource IDs (``application_id``, ``job_id``,
+    ``resume_version_id``) and the ``artifact_type`` + ``source_hash`` captured
+    at enqueue time — no raw JD or resume text crosses the queue boundary. The
+    worker re-reads the ``ApplicationRecord`` / ``JobPosting`` / ``ResumeVersion``
+    from its own DB session, re-loads the queued ``AgentRun`` by ID, re-checks
+    user ownership, and delegates to
+    :func:`app.services.readiness_service.run_readiness_generation_worker`
+    for the fixed-step orchestration (model call → validation → sanitized
+    step/run persistence → ``GeneratedArtifact`` + application timeline event).
+
+    The model gateway is constructed inside the worker via
+    :func:`app.models_gateway.factory.get_model_gateway` so no request-scoped
+    dependency is passed across the queue boundary.
+
+    On any uncaught exception the shared :func:`fail_run` guard flips the run
+    to ``failed`` with a sanitized error so it never stays stuck on
+    ``running``.
+    """
+    _ = ctx
+    if isinstance(payload, dict):
+        payload = ReadinessGenerationPayload.model_validate(payload)
+
+    # Construct the model gateway inside the worker process.
+    from app.models_gateway.factory import get_model_gateway
+    from app.services.readiness_service import run_readiness_generation_worker
+
+    gateway = get_model_gateway()
+
+    try:
+        with SessionLocal() as db:
+            run = agent_run_repo.get_run(db, payload.agent_run_id)
+            if run is None:
+                _log.warning(
+                    "queue.readiness_generation_missing_run",
+                    agent_run_id=payload.agent_run_id,
+                )
+                return "missing_run"
+
+            # Re-check ownership: a cross-user payload must not execute.
+            if run.user_id != payload.user_id:
+                _log.warning(
+                    "queue.readiness_generation_owner_mismatch",
+                    agent_run_id=payload.agent_run_id,
+                    payload_user=payload.user_id,
+                    run_user=run.user_id,
+                )
+                fail_run(payload.agent_run_id, error="ownership mismatch")
+                return "ownership_mismatch"
+
+        # The worker runner opens its own session; the ownership check above is
+        # a fast-fail guard so a cross-user payload never reaches the service.
+        await run_readiness_generation_worker(
+            application_id=payload.application_id,
+            job_id=payload.job_id,
+            resume_version_id=payload.resume_version_id,
+            user_id=payload.user_id,
+            artifact_type=payload.artifact_type,
+            source_hash=payload.source_hash,
+            agent_run_id=payload.agent_run_id,
+            gateway=gateway,
+        )
+        _log.info(
+            "queue.readiness_generation_completed",
+            agent_run_id=payload.agent_run_id,
+        )
+        return payload.agent_run_id
+    except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
+        _log.warning(
+            "queue.readiness_generation_error",
+            agent_run_id=payload.agent_run_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        fail_run(payload.agent_run_id, error="readiness generation failed")
         return "failed"
