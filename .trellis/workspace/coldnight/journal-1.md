@@ -433,3 +433,36 @@ Moved JD analysis, JD paste parsing, and resume fact extraction system prompts i
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Application state machine and failure envelope
+
+**Date**: 2026-08-01
+**Task**: Application state machine and failure envelope
+**Branch**: `wanzhen`
+
+### Summary
+
+Implemented the reliability foundation for the application-readiness loop: ApplicationStatus StrEnum with a full transition table, ApplicationFailureEnvelope (safe, metadata-only, strips over-long source IDs), ApplicationSourceSnapshot with a deterministic sha256 hash over job/resume/profile/prompt-version metadata (never raw text), ActiveOperationKey for duplicate-run detection, and a timeline event model. Added 135 unit tests covering all 6 acceptance criteria (transition validity, failure-envelope validation, source-hash change detection, no-raw-text-leak, dedup contract). All 333 backend tests pass; ruff clean.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3205d2b` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
