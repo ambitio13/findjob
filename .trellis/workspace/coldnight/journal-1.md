@@ -565,3 +565,36 @@ Implemented the durable approval boundary that represents 'the user approved thi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Readiness Panel UX — 完成就绪面板前端
+
+**Date**: 2026-08-01
+**Task**: Readiness Panel UX — 完成就绪面板前端
+**Branch**: `wanzhen`
+
+### Summary
+
+为投递记录构建完整的就绪面板：新增 GET /applications/{id}/artifacts 端点及 list_for_application 仓储方法（22 测试通过）；前端创建 status.ts、ReadinessSummary、SourceSnapshotPanel、FailurePanel、ArtifactChecklist 五个组件，改写 ApplicationsPage 按 design.md 顺序组合并接入生成/重试/暂停/恢复/标记已投递/添加备注等状态操作，JobDetailPage 新增「创建投递记录」入口。pnpm lint/type-check/build 全部通过。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9b1d65e` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
