@@ -1,14 +1,13 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
   ModalForm,
   ProFormText,
   ProFormTextArea,
 } from "@ant-design/pro-components";
-import { Alert, Button, Input, Space, Typography, message } from "antd";
+import { Alert, Button, Input, Space, message } from "antd";
 import {
   apiErrorMessage,
   createJob,
-  getAgentRunDetail,
   parseJobJd,
 } from "@/api/client";
 import type {
@@ -19,7 +18,14 @@ import type {
   JdParseSubmitResponse,
   JobCreate,
 } from "@/types";
-import { TERMINAL_JD_PARSE_STATUSES } from "@/types";
+import { TERMINAL_AGENT_RUN_STATUSES, type AgentRunStatus } from "@/features/agent-runs/status";
+import { useAgentRunPolling } from "@/features/agent-runs/useAgentRunPolling";
+import {
+  asyncRunFailureMessage,
+  asyncRunProgressMessage,
+  asyncRunSuccessMessage,
+  runIdHint,
+} from "@/features/agent-runs/copy";
 
 interface Props {
   open: boolean;
@@ -42,8 +48,7 @@ const EMPTY_FIELDS: JdParseDraftFields = {
   uncertain_fields: [],
 };
 
-/** Polling interval for non-terminal JD parse status (milliseconds). */
-const JD_PARSE_POLL_MS = 3000;
+const WORKFLOW_LABEL = "JD 解析";
 
 /**
  * Safely coerce an unknown value (from the JSON ``result`` column) into the
@@ -95,68 +100,42 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
     null,
   );
   const [runSummary, setRunSummary] = useState<JdParseRunSummary | null>(null);
+  const [pollRunId, setPollRunId] = useState<string | null>(null);
   const [rawJd, setRawJd] = useState("");
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollTokenRef = useRef(0);
   const [messageApi, contextHolder] = message.useMessage();
 
-  const stopPolling = () => {
-    pollTokenRef.current += 1;
-    if (pollTimerRef.current) {
-      clearTimeout(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
-  };
-
-  /**
-   * Poll ``GET /agent-runs/{id}/detail`` until the run reaches a terminal
-   * status (``succeeded`` or ``failed``). On success, hydrate the draft fields
-   * and extraction from ``AgentRun.result``. On failure, surface a warning and
-   * let the user fall back to manual entry or retry. Mirrors the recursive
-   * ``setTimeout`` + ``active`` flag pattern in ``ResumeDetailPage``.
-   */
-  const pollRunDetail = (runId: string) => {
-    const token = pollTokenRef.current;
-
-    const poll = async () => {
-      try {
-        const detail = await getAgentRunDetail(runId);
-        if (token !== pollTokenRef.current) return;
-        setRunSummary({ id: detail.id, status: detail.status, error: detail.error });
-        if (TERMINAL_JD_PARSE_STATUSES.has(detail.status)) {
-          setParsing(false);
-          if (detail.status === "succeeded") {
-            setFields(hydrateFields(detail.result));
-            setExtraction(hydrateExtraction(detail.result));
-            setParsed(true);
-            messageApi.success("解析完成，请确认并补充字段");
-          } else {
-            // Recoverable failure: keep empty fields so the user can fall
-            // back to manual entry, and surface the failed run for inspection.
-            setFields(EMPTY_FIELDS);
-            setExtraction(null);
-            setParsed(true);
-            messageApi.warning("解析未成功，可手动填写字段或重试");
-          }
-          return;
-        }
-        pollTimerRef.current = setTimeout(poll, JD_PARSE_POLL_MS);
-      } catch {
-        // Network blips during polling are non-fatal; retry on next tick.
-        if (token === pollTokenRef.current) {
-          pollTimerRef.current = setTimeout(poll, JD_PARSE_POLL_MS);
-        }
+  // Shared polling hook — handles recursive setTimeout, token-based
+  // cancellation, and cleanup on unmount. The hook automatically stops when
+  // the run reaches a terminal status.
+  useAgentRunPolling(pollRunId, {
+    onUpdate: (detail) => {
+      setRunSummary({ id: detail.id, status: detail.status, error: detail.error });
+    },
+    onTerminal: (detail) => {
+      setParsing(false);
+      setPollRunId(null);
+      if (detail.status === "succeeded") {
+        setFields(hydrateFields(detail.result));
+        setExtraction(hydrateExtraction(detail.result));
+        setParsed(true);
+        messageApi.success(asyncRunSuccessMessage(WORKFLOW_LABEL));
+      } else {
+        // Recoverable failure: keep empty fields so the user can fall
+        // back to manual entry, and surface the failed run for inspection.
+        setFields(EMPTY_FIELDS);
+        setExtraction(null);
+        setParsed(true);
+        messageApi.warning(asyncRunFailureMessage(WORKFLOW_LABEL, detail.error));
       }
-    };
+    },
+  });
 
-    pollTimerRef.current = setTimeout(poll, JD_PARSE_POLL_MS);
-  };
   const handleParse = async () => {
     if (!rawJd.trim()) {
       messageApi.warning("请先粘贴 JD 原文");
       return;
     }
-    stopPolling();
+    setPollRunId(null);
     setParsing(true);
     setRunSummary(null);
     setExtraction(null);
@@ -166,21 +145,21 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
       setRunSummary(res.run);
       // If the enqueue itself failed (Redis down), the backend flips the run
       // to ``failed`` before returning — surface that immediately.
-      if (TERMINAL_JD_PARSE_STATUSES.has(res.run.status)) {
+      if (TERMINAL_AGENT_RUN_STATUSES.has(res.run.status as AgentRunStatus)) {
         setParsing(false);
         if (res.run.status === "succeeded") {
           setFields(hydrateFields(null));
           setParsed(true);
-          messageApi.success("解析完成，请确认并补充字段");
+          messageApi.success(asyncRunSuccessMessage(WORKFLOW_LABEL));
         } else {
           setFields(EMPTY_FIELDS);
           setParsed(true);
-          messageApi.warning("解析未成功，可手动填写字段或重试");
+          messageApi.warning(asyncRunFailureMessage(WORKFLOW_LABEL, res.run.error));
         }
         return;
       }
       // The run is ``queued`` — start polling until terminal status.
-      pollRunDetail(res.run.id);
+      setPollRunId(res.run.id);
     } catch (err) {
       setParsing(false);
       messageApi.error(apiErrorMessage(err));
@@ -188,7 +167,7 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
   };
 
   const handleReset = () => {
-    stopPolling();
+    setPollRunId(null);
     setParsing(false);
     setParsed(false);
     setFields(EMPTY_FIELDS);
@@ -198,7 +177,7 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
   };
 
   const handleSkipParse = () => {
-    stopPolling();
+    setPollRunId(null);
     setParsing(false);
     setParsed(true);
     setExtraction(null);
@@ -273,7 +252,7 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
             <Alert
               type="info"
               showIcon
-              message={`已提交解析任务，正在轮询运行状态…（运行 ID: ${runSummary.id}）`}
+              message={`${asyncRunProgressMessage(WORKFLOW_LABEL)}（${runIdHint(runSummary.id)}）`}
               style={{ marginTop: 12 }}
             />
           )}
@@ -284,12 +263,10 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
             <Alert
               type="warning"
               showIcon
-              message="JD 解析未成功"
+              message={`${WORKFLOW_LABEL}未成功`}
               description={
                 <span>
-                  运行 ID:{" "}
-                  <Typography.Text code>{runSummary.id}</Typography.Text>
-                  （可前往「Agent 运行」查看轨迹），请手动填写字段后保存，或点击下方「重新解析」重试。
+                  {runIdHint(runSummary.id)}（可前往「Agent 运行」查看轨迹），请手动填写字段后保存，或点击下方「重新解析」重试。
                 </span>
               }
               style={{ marginBottom: 12 }}

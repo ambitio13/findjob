@@ -3,7 +3,7 @@
   "name": "async-job-ux-observability",
   "title": "Async Job UX and Observability",
   "description": "Unify frontend async job UX: non-blocking actions, polling hooks, progress panels, retry/cancel affordances where supported, and result hydration across workflows.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

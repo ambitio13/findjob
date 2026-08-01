@@ -93,7 +93,13 @@ export interface JdParseSubmitResponse {
   platform: string | null;
 }
 
-/** Terminal run statuses — once reached, JD parse polling can stop. */
+/**
+ * Terminal run statuses — once reached, JD parse polling can stop.
+ *
+ * @deprecated import from `@/features/agent-runs/status` instead. Kept here
+ * for backward compatibility with existing call sites that import from
+ * `@/types`; new code should use `TERMINAL_AGENT_RUN_STATUSES`.
+ */
 export const TERMINAL_JD_PARSE_STATUSES: ReadonlySet<string> = new Set([
   "succeeded",
   "failed",

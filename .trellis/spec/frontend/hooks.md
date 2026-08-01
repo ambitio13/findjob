@@ -15,8 +15,9 @@
 - Keep mutation side effects explicit: invalidate relevant queries, show
   feedback, and update the route or selected record when needed.
 - Do not combine unrelated domains in one hook.
-- Preserve async agent-run state: queued, running, waiting for approval,
-  succeeded, failed, cancelled.
+- Preserve async agent-run state: queued, running, succeeded, failed, not_run.
+- For agent-run detail polling, use the shared `useAgentRunPolling` hook rather
+  than reimplementing recursive `setTimeout` + token cancellation per component.
 
 ## Testing
 

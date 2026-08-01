@@ -32,6 +32,9 @@ import type {
   ResumeVersionListItem,
 } from "@/types";
 import { TERMINAL_EXTRACTION_STATUSES } from "@/types";
+import {
+  asyncRunFailureMessage,
+} from "@/features/agent-runs/copy";
 
 const { Paragraph, Text } = Typography;
 
@@ -583,11 +586,14 @@ export function ResumeDetailPage() {
     try {
       const updated = await reextractResumeFacts(id, versionId);
       setResume(updated);
-      // Re-extract now enqueues and returns immediately with pending status;
-      // the polling effect picks up automatically. Tell the user to wait.
-      messageApi.success("已提交重新抽取，结果稍后更新");
+  // Re-extract now enqueues and returns immediately with pending status;
+  // the polling effect picks up automatically. Tell the user to wait.
+  messageApi.success("已提交重新抽取，结果稍后更新");
     } catch (err) {
-      messageApi.error(apiErrorMessage(err) ?? "重新解析失败");
+      messageApi.error(
+        apiErrorMessage(err) ??
+          asyncRunFailureMessage("抽取"),
+      );
     } finally {
       setReextracting(false);
     }

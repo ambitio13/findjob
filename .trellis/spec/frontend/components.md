@@ -15,6 +15,8 @@ Use Ant Design Pro for operational screens:
 - Page components assemble layout, data hooks, and domain components.
 - Domain components display business concepts such as `JobAnalysisPanel`,
   `ResumeVersionSelector`, `ApplicationStatusTag`, and `AgentRunTimeline`.
+- Reuse `AgentRunStatusTag` (`@/features/agent-runs/AgentRunStatusTag`) for any
+  agent-run status tag so colors and labels stay consistent.
 - Shared components should be business-neutral: loading states, empty states,
   error boundaries, and layout wrappers.
 

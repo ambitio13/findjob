@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   Alert,
@@ -26,8 +26,15 @@ import {
   runJdAnalysis,
 } from "@/api/client";
 import {
-  TERMINAL_JD_PARSE_STATUSES,
-} from "@/types";
+  ACTIVE_AGENT_RUN_STATUSES,
+  TERMINAL_AGENT_RUN_STATUSES,
+  type AgentRunStatus,
+} from "@/features/agent-runs/status";
+import { useAgentRunPolling } from "@/features/agent-runs/useAgentRunPolling";
+import {
+  asyncRunFailureMessage,
+  asyncRunSuccessMessage,
+} from "@/features/agent-runs/copy";
 import type {
   AgentRunDetailOut,
   AgentRunOut,
@@ -76,11 +83,7 @@ const RUN_STATUS_COLOR: Record<string, string> = {
   queued: "gray",
 };
 
-/** Polling interval for the analysis run detail (enqueue-and-poll). */
-const JD_ANALYSIS_POLL_MS = 3000;
-
-/** A run that is queued or running — the submit button stays disabled. */
-const ACTIVE_RUN_STATUSES: ReadonlySet<string> = new Set(["queued", "running"]);
+const WORKFLOW_LABEL = "分析";
 
 /**
  * A run merged with its persisted analysis (if any). Successful runs have a
@@ -135,41 +138,9 @@ export function JobDetailPage() {
   const [analysesLoading, setAnalysesLoading] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-
-  // Polling refs for the in-flight analysis run (enqueue-and-poll). Mirrors
-  // the recursive setTimeout + token pattern in JobCreateModal.
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollTokenRef = useRef(0);
-
-  const stopPolling = useCallback(() => {
-    pollTokenRef.current += 1;
-    if (pollTimerRef.current) {
-      clearTimeout(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
-  }, []);
-
-  // Stop polling when the component unmounts so no timers leak.
-  useEffect(() => () => stopPolling(), [stopPolling]);
-
-  // Load job detail.
-  useEffect(() => {
-    if (!id) return;
-    let active = true;
-    (async () => {
-      try {
-        const data = await getJob(id);
-        if (active) setJob(data);
-      } catch (err) {
-        if (active) setError(apiErrorMessage(err));
-      } finally {
-        if (active) setLoading(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [id]);
+  // The run currently being polled (null when no active run).
+  const [pollRunId, setPollRunId] = useState<string | null>(null);
+  const [messageApi, contextHolder] = message.useMessage();
 
   // R1/R2: hydrate persisted state for this job from BOTH the analyses list
   // (successful runs) and the agent-runs list filtered by job + workflow
@@ -194,16 +165,55 @@ export function JobDetailPage() {
           setSelectedRunId((prev) => prev ?? runData.items[0]?.id ?? null);
         }
       } catch (err) {
-        message.warning(apiErrorMessage(err));
+        messageApi.warning(apiErrorMessage(err));
       } finally {
         setAnalysesLoading(false);
       }
     },
-    [id],
+    [id, messageApi],
   );
 
+  // Shared polling hook — handles recursive setTimeout, token-based
+  // cancellation, and cleanup on unmount. On each tick, refresh persisted
+  // state so the merge of runs + analyses reflects the latest durable rows.
+  useAgentRunPolling(pollRunId, {
+    onUpdate: () => {
+      void refreshData(false);
+    },
+    onTerminal: (detail) => {
+      setRunning(false);
+      setPollRunId(null);
+      if (detail.status === "succeeded") {
+        messageApi.success(asyncRunSuccessMessage(WORKFLOW_LABEL));
+      } else {
+        messageApi.warning(
+          asyncRunFailureMessage(WORKFLOW_LABEL, detail.error),
+        );
+      }
+    },
+  });
+
+  // Load job detail.
   useEffect(() => {
-    refreshData();
+    if (!id) return;
+    let active = true;
+    (async () => {
+      try {
+        const data = await getJob(id);
+        if (active) setJob(data);
+      } catch (err) {
+        if (active) setError(apiErrorMessage(err));
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [id]);
+
+  useEffect(() => {
+    void refreshData();
   }, [refreshData]);
 
   // Merge runs (all runs for the job, including failed) with their persisted
@@ -227,7 +237,7 @@ export function JobDetailPage() {
         if (!active) return;
         setResumes(data.items);
       } catch (err) {
-        if (active) message.warning(apiErrorMessage(err));
+        if (active) messageApi.warning(apiErrorMessage(err));
       } finally {
         if (active) setResumesLoading(false);
       }
@@ -235,7 +245,7 @@ export function JobDetailPage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [messageApi]);
 
   // Load versions for all resumes once resumes arrive.
   useEffect(() => {
@@ -287,49 +297,8 @@ export function JobDetailPage() {
   // this job the submit button stays disabled (the backend also enforces a 409
   // on duplicate submit, this is the UX mirror).
   const hasActiveRun = useMemo(
-    () => runs.some((r) => ACTIVE_RUN_STATUSES.has(r.status)),
+    () => runs.some((r) => ACTIVE_AGENT_RUN_STATUSES.has(r.status as AgentRunStatus)),
     [runs],
-  );
-
-  /**
-   * Poll ``GET /agent-runs/{id}/detail`` until the analysis run reaches a
-   * terminal status (``succeeded`` / ``failed``). On each tick the run list is
-   * refreshed so the merge of runs + analyses reflects durable state. Mirrors
-   * the recursive ``setTimeout`` + token pattern in JobCreateModal.
-   */
-  const pollRunDetail = useCallback(
-    (runId: string) => {
-      const token = pollTokenRef.current;
-
-      const poll = async () => {
-        try {
-          const detail = await getAgentRunDetail(runId);
-          if (token !== pollTokenRef.current) return;
-          // Refresh persisted state on each tick so the run/analysis merge
-          // reflects the latest durable rows (the worker persists the analysis
-          // only on success).
-          await refreshData(false);
-          if (TERMINAL_JD_PARSE_STATUSES.has(detail.status)) {
-            setRunning(false);
-            if (detail.status === "succeeded") {
-              message.success("分析运行完成");
-            } else {
-              message.warning(`分析未成功（${detail.error ?? detail.status}）`);
-            }
-            return;
-          }
-          pollTimerRef.current = setTimeout(poll, JD_ANALYSIS_POLL_MS);
-        } catch {
-          // Network blips during polling are non-fatal; retry on next tick.
-          if (token === pollTokenRef.current) {
-            pollTimerRef.current = setTimeout(poll, JD_ANALYSIS_POLL_MS);
-          }
-        }
-      };
-
-      pollTimerRef.current = setTimeout(poll, JD_ANALYSIS_POLL_MS);
-    },
-    [refreshData],
   );
 
   if (loading) return <Spin />;
@@ -341,19 +310,21 @@ export function JobDetailPage() {
 
   const handleRun = async () => {
     if (!id || !selectedVersionId) return;
-    stopPolling();
+    setPollRunId(null);
     setRunning(true);
     try {
       const res = await runJdAnalysis(id, selectedVersionId);
       setSelectedRunId(res.run.id);
       // If the enqueue itself failed (Redis down), the backend flips the run
       // to ``failed`` before returning — surface that immediately.
-      if (TERMINAL_JD_PARSE_STATUSES.has(res.run.status)) {
+      if (TERMINAL_AGENT_RUN_STATUSES.has(res.run.status as AgentRunStatus)) {
         setRunning(false);
         if (res.run.status === "succeeded") {
-          message.success("分析运行完成");
+          messageApi.success(asyncRunSuccessMessage(WORKFLOW_LABEL));
         } else {
-          message.warning(`分析未成功（${res.run.error ?? res.run.status}）`);
+          messageApi.warning(
+            asyncRunFailureMessage(WORKFLOW_LABEL, res.run.error),
+          );
         }
         await refreshData(true);
         return;
@@ -361,10 +332,10 @@ export function JobDetailPage() {
       // The run is ``queued`` — refresh once to reflect the queued row, then
       // poll until terminal status.
       await refreshData(false);
-      pollRunDetail(res.run.id);
+      setPollRunId(res.run.id);
     } catch (err) {
       setRunning(false);
-      message.error(apiErrorMessage(err));
+      messageApi.error(apiErrorMessage(err));
       // Even on failure, the backend may persist a failed run (scoped to this
       // job via job_id) — refresh and force-select the newest run so the
       // failure trail is immediately visible (R4).
@@ -374,6 +345,7 @@ export function JobDetailPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {contextHolder}
       <Card title="职位详情">
         <Descriptions column={2}>
           <Descriptions.Item label="平台">{job.platform}</Descriptions.Item>
