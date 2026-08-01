@@ -466,3 +466,36 @@ Implemented the reliability foundation for the application-readiness loop: Appli
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Application Records Center
+
+**Date**: 2026-08-01
+**Task**: Application Records Center
+**Branch**: `wanzhen`
+
+### Summary
+
+Implemented the application records center, replacing the placeholder route with full CRUD + state machine. Extended ApplicationRecord with user_id/latest_agent_run_id/latest_error/readiness_snapshot (migration 0003), added application_repo + application_service, and implemented GET/POST /applications, GET /applications/{id}, PATCH /applications/{id}/status, POST /applications/{id}/timeline. Enforces transition table (422), cross-user 404, duplicate-create returns existing record, and transactional status+timeline. 19 tests added, all passing, ruff clean.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `56dcfc7` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
