@@ -317,3 +317,36 @@ Migrated resume fact extraction from FastAPI BackgroundTasks (upload) and synchr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: 异步 JD 分析工作流入队迁移
+
+**Date**: 2026-08-01
+**Task**: 异步 JD 分析工作流入队迁移
+**Branch**: `master`
+
+### Summary
+
+将简历感知 JD 分析从同步请求等待迁移为异步队列执行（enqueue-and-poll）。后端新增 ResumeAwareJdAnalysisPayload、run_resume_aware_jd_analysis_worker、resume_aware_jd_analysis handler；路由改为 202 + 入队立即返回，前置校验 404/422、重复活跃 run 409 守卫、Redis 故障翻转 failed。前端 JobDetailPage 轮询 getAgentRunDetail + hasActiveRun 禁用按钮。测试全面重写为异步模式（21 项全绿）。质量门全部通过。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3fba4ae` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
