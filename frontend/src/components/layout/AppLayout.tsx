@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation } from "react-router-dom";
 import { ProLayout } from "@ant-design/pro-components";
-import { DesktopOutlined, FileTextOutlined, SolutionOutlined, UserOutlined } from "@ant-design/icons";
+import { DesktopOutlined, FileTextOutlined, SolutionOutlined, UserOutlined, AppstoreOutlined } from "@ant-design/icons";
 
 const menuRoutes = {
   path: "/",
@@ -8,6 +8,7 @@ const menuRoutes = {
     { path: "/", name: "概览", icon: <DesktopOutlined /> },
     { path: "/jobs", name: "职位", icon: <FileTextOutlined /> },
     { path: "/resumes", name: "简历", icon: <SolutionOutlined /> },
+    { path: "/applications", name: "投递", icon: <AppstoreOutlined /> },
     { path: "/profile", name: "我的画像", icon: <UserOutlined /> },
   ],
 };

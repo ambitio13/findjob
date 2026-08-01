@@ -184,6 +184,52 @@ class ApplicationRecord(Base, TimestampMixin):
     readiness_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     job: Mapped[JobPosting] = relationship(back_populates="applications")
+    actions: Mapped[list[ApplicationAction]] = relationship(
+        back_populates="application", cascade="all, delete-orphan"
+    )
+
+
+# ---------------------------------------------------------------------------
+# External-action approval boundary
+# ---------------------------------------------------------------------------
+
+
+class ApplicationAction(Base, TimestampMixin):
+    """A planned external action awaiting user approval.
+
+    One row per planned side effect (platform submit, HR message, resume upload,
+    profile fill, follow-up). The action binds the exact preview payload (via
+    ``payload_hash``) and the readiness source snapshot (via ``source_hash`` in
+    ``source_snapshot``) at preview time. Approval is recorded in
+    ``approval`` (who/when/hash); if payload or source later drifts the action
+    becomes ``stale`` and execution is blocked by
+    ``app.services.approval_boundary.assert_action_approved``.
+
+    No secrets, cookies, tokens, or browser/session data are stored in
+    ``payload_preview`` or ``source_snapshot`` — only identifiers, outgoing
+    message text, and hashes.
+    """
+
+    __tablename__ = "application_actions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    application_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("application_records.id"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("user_profiles.id"), nullable=False, index=True
+    )
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="approval_required", index=True
+    )
+    payload_preview: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    source_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    approval: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    application: Mapped[ApplicationRecord] = relationship(back_populates="actions")
 
 
 # ---------------------------------------------------------------------------

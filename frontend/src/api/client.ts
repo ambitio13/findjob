@@ -18,6 +18,11 @@ import type {
   UserProfileUpdate,
   JobAnalysisListOut,
   RunJdAnalysisSubmitResponse,
+  ApplicationListOut,
+  ApplicationOut,
+  ApplicationActionCreate,
+  ApplicationActionListOut,
+  ApplicationActionOut,
 } from "@/types";
 
 const baseURL = "/api/v1";
@@ -214,6 +219,81 @@ export async function listJobAnalyses(
     {
       params: { page, page_size: pageSize },
     },
+  );
+  return data;
+}
+
+// --- Applications ---
+
+export async function listApplications(
+  page = 1,
+  pageSize = 20,
+  status?: string,
+): Promise<ApplicationListOut> {
+  const { data } = await apiClient.get<ApplicationListOut>("/applications", {
+    params: { page, page_size: pageSize, ...(status ? { status } : {}) },
+  });
+  return data;
+}
+
+export async function getApplication(id: string): Promise<ApplicationOut> {
+  const { data } = await apiClient.get<ApplicationOut>(`/applications/${id}`);
+  return data;
+}
+
+// --- Approval boundary (planned external actions) ---
+//
+// These functions let the user preview, approve, revoke, and inspect planned
+// external actions. They deliberately do NOT include an execute/submit call —
+// the backend exposes no such endpoint yet and future platform tools must pass
+// the approval-boundary guard before touching any platform.
+
+export async function previewApplicationAction(
+  applicationId: string,
+  payload: ApplicationActionCreate,
+): Promise<ApplicationActionOut> {
+  const { data } = await apiClient.post<ApplicationActionOut>(
+    `/applications/${applicationId}/actions/preview`,
+    payload,
+  );
+  return data;
+}
+
+export async function approveApplicationAction(
+  applicationId: string,
+  actionId: string,
+): Promise<ApplicationActionOut> {
+  const { data } = await apiClient.post<ApplicationActionOut>(
+    `/applications/${applicationId}/actions/${actionId}/approve`,
+  );
+  return data;
+}
+
+export async function revokeApplicationAction(
+  applicationId: string,
+  actionId: string,
+): Promise<ApplicationActionOut> {
+  const { data } = await apiClient.post<ApplicationActionOut>(
+    `/applications/${applicationId}/actions/${actionId}/revoke`,
+  );
+  return data;
+}
+
+export async function getApplicationAction(
+  applicationId: string,
+  actionId: string,
+): Promise<ApplicationActionOut> {
+  const { data } = await apiClient.get<ApplicationActionOut>(
+    `/applications/${applicationId}/actions/${actionId}`,
+  );
+  return data;
+}
+
+export async function listApplicationActions(
+  applicationId: string,
+): Promise<ApplicationActionListOut> {
+  const { data } = await apiClient.get<ApplicationActionListOut>(
+    `/applications/${applicationId}/actions`,
   );
   return data;
 }

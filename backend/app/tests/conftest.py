@@ -52,7 +52,8 @@ def client() -> TestClient:
             text(
                 "TRUNCATE TABLE user_profiles, resumes, resume_versions, "
                 "job_postings, job_analyses, generated_artifacts, "
-                "application_records, agent_runs, agent_steps, tool_calls "
+                "application_records, application_actions, agent_runs, "
+                "agent_steps, tool_calls "
                 "RESTART IDENTITY CASCADE"
             )
         )

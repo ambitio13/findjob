@@ -9,6 +9,7 @@ import { JobsPage } from "@/pages/jobs/JobsPage";
 import { JobDetailPage } from "@/pages/jobs/JobDetailPage";
 import { ResumesPage } from "@/pages/resumes/ResumesPage";
 import { ResumeDetailPage } from "@/pages/resumes/ResumeDetailPage";
+import { ApplicationsPage } from "@/pages/applications/ApplicationsPage";
 import { ProfilePage } from "@/pages/profile/ProfilePage";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -22,6 +23,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="/jobs/:id" element={<JobDetailPage />} />
             <Route path="/resumes" element={<ResumesPage />} />
             <Route path="/resumes/:id" element={<ResumeDetailPage />} />
+            <Route path="/applications" element={<ApplicationsPage />} />
             <Route path="/profile" element={<ProfilePage />} />
           </Route>
         </Routes>

@@ -520,3 +520,110 @@ export interface ApplyProfileDraftResponse {
   diffs: ProfileDraftFieldDiff[];
   updated_profile: Record<string, unknown> | null;
 }
+
+// --- Applications ---
+
+export interface ApplicationTimelineEventOut {
+  id: string;
+  type: string;
+  at: string;
+  actor: string;
+  from_status: string | null;
+  to_status: string | null;
+  summary: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface ApplicationOut {
+  id: string;
+  user_id: string;
+  job_id: string;
+  resume_version_id: string | null;
+  status: string;
+  timeline: ApplicationTimelineEventOut[];
+  latest_error: Record<string, unknown> | null;
+  latest_agent_run_id: string | null;
+  readiness_snapshot: Record<string, unknown> | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ApplicationListOut {
+  meta: { page: number; page_size: number; total: number };
+  items: ApplicationOut[];
+}
+
+// --- External-action approval boundary ---
+
+export type ExternalActionType =
+  | "platform_submit"
+  | "hr_message"
+  | "resume_upload"
+  | "profile_fill"
+  | "follow_up_message";
+
+export type ExternalActionStatus =
+  | "draft"
+  | "approval_required"
+  | "approved"
+  | "stale"
+  | "revoked"
+  | "blocked";
+
+export interface ApprovalRecord {
+  approved_by: string;
+  approved_at: string;
+  approved_payload_hash: string;
+}
+
+export interface ApplicationActionSourceSnapshot {
+  job_id: string;
+  resume_version_id: string | null;
+  artifact_ids: string[];
+  source_hash: string;
+}
+
+export interface ApplicationActionPreview {
+  action_type: ExternalActionType;
+  target_platform: string | null;
+  target_resource: string | null;
+  selected_artifact_ids: string[];
+  outgoing_text: string | null;
+  resume_file_reference: string | null;
+}
+
+export interface ApplicationActionOut {
+  id: string;
+  application_id: string;
+  user_id: string;
+  action_type: ExternalActionType;
+  status: ExternalActionStatus;
+  payload_preview: ApplicationActionPreview;
+  payload_hash: string;
+  source_snapshot: ApplicationActionSourceSnapshot;
+  approval: ApprovalRecord | null;
+  stale_reason: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ApplicationActionListOut {
+  items: ApplicationActionOut[];
+}
+
+export interface ApplicationActionSourceSnapshotInput {
+  job_id: string;
+  resume_version_id: string | null;
+  artifact_ids: string[];
+  source_hash: string;
+}
+
+export interface ApplicationActionCreate {
+  action_type: ExternalActionType;
+  target_platform: string | null;
+  target_resource: string | null;
+  selected_artifact_ids: string[];
+  outgoing_text: string | null;
+  resume_file_reference: string | null;
+  source_snapshot: ApplicationActionSourceSnapshotInput;
+}
