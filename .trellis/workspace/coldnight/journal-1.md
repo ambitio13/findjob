@@ -807,3 +807,37 @@ the only remaining blocker before the PRD acceptance item "dry-run navigation
 ### Next Steps
 - 后续可探索 CDP DOM API 替代 Runtime.evaluate 以减少被检测概率
 - 真实投递试点需用户手动导航到目标页面后运行适配器
+
+
+## Session 18: 油猴桥接 P1 修复 + BOSS JD 读取自动沟通规划任务验收
+
+**Date**: 2026-08-03
+**Task**: 油猴桥接 P1 修复 + BOSS JD 读取自动沟通规划任务验收
+**Branch**: `wanzhen`
+
+### Summary
+
+完成两件工作：(1) 修复 userscript-bridge-adapter 两个 P1 安全问题——目标页面 URL 绑定验证（prepare/submit 在 classify/fill/click 前校验 sanitize_url(ctx.target_resource) == 当前页面 URL hash，不匹配则硬停止）和 textarea 填充 setter 修复（按元素类型选择 HTMLTextAreaElement/HTMLInputElement prototype value setter，contenteditable 用 textContent，不支持的元素返回失败）。新增 2 个 URL 不匹配测试，更新全部 22 个既有测试适配 read_url 指令，580 测试全通过。(2) 验收 boss-jd-read-auto-communicate-agent 规划任务：逐条核对 8 项验收标准全部满足——prd 回答了'为什么不用纯油猴'、design 定义了边界和数据流、implement 拆出 7 个可并行子任务且各有验收点、4 个 spec 文件已更新（read_jd 受限例外、BOSS 主路径为 userscript bridge、外部沟通动作具备页面绑定/幂等/审计/失败矩阵）、修复 implement.jsonl 中已归档的 bridge 任务路径、task.py validate 通过、任务激活。修复 implement.jsonl 路径引用（08-03-userscript-bridge-adapter → archive/2026-08/...）。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6dbe224` | (see git log) |
+| `95dd382` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
