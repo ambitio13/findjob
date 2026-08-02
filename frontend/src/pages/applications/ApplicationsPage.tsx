@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   Alert,
   Button,
@@ -72,6 +72,20 @@ export function ApplicationsPage() {
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const location = useLocation();
+
+  // Router state passed from the create-application flow. The create endpoint
+  // returns ``is_duplicate`` accurately; a later GET resets it to its default
+  // (false), so we carry the fresh-create signal forward here instead of
+  // relying on the application object loaded inside ``ApplicationDetail``.
+  const freshState = useMemo(() => {
+    const s = location.state as
+      | { freshApplicationId?: string; freshIsDuplicate?: boolean }
+      | null;
+    return s && typeof s.freshApplicationId === "string"
+      ? { id: s.freshApplicationId, isDuplicate: s.freshIsDuplicate ?? false }
+      : null;
+  }, [location.state]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -89,6 +103,15 @@ export function ApplicationsPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // After the list loads, auto-select the freshly-created application so the
+  // user lands on its readiness panel and auto-generation can fire.
+  useEffect(() => {
+    if (freshState && applications.length > 0) {
+      const exists = applications.some((a) => a.id === freshState.id);
+      if (exists) setSelectedId(freshState.id);
+    }
+  }, [freshState, applications]);
 
   const selected =
     applications.find((a) => a.id === selectedId) ?? applications[0] ?? null;
@@ -120,7 +143,16 @@ export function ApplicationsPage() {
               }))}
             />
           )}
-          {selected ? <ApplicationDetail applicationId={selected.id} /> : null}
+          {selected ? (
+            <ApplicationDetail
+              applicationId={selected.id}
+              freshCreate={
+                freshState && freshState.id === selected.id
+                  ? !freshState.isDuplicate
+                  : undefined
+              }
+            />
+          ) : null}
         </Space>
       </Card>
     </div>
@@ -128,7 +160,22 @@ export function ApplicationsPage() {
 }
 
 /** Detailed view for a single application: the full readiness panel. */
-function ApplicationDetail({ applicationId }: { applicationId: string }) {
+function ApplicationDetail({
+  applicationId,
+  freshCreate,
+}: {
+  applicationId: string;
+  /**
+   * ``true`` when this detail was opened directly from a successful
+   * (non-duplicate) create-application flow. The readiness panel uses this to
+   * auto-generate artifacts *only* for genuinely new records, instead of
+   * relying on ``ApplicationOut.is_duplicate`` which a later GET resets to its
+   * default (false) — that would cause old planned records to spuriously
+   * auto-generate on every visit. ``undefined`` means "no fresh-create signal"
+   * (normal navigation/reload), in which case auto-generation never fires.
+   */
+  freshCreate?: boolean;
+}) {
   const [app, setApp] = useState<ApplicationOut | null>(null);
   const [job, setJob] = useState<JobOut | null>(null);
   const [artifacts, setArtifacts] = useState<ReadinessArtifactOut[]>([]);
@@ -284,6 +331,7 @@ function ApplicationDetail({ applicationId }: { applicationId: string }) {
       {/* 3. Artifact checklist (generation + retry) */}
       <ArtifactChecklist
         application={app}
+        autoGenerate={freshCreate === true}
         onTerminal={() => {
           handleTerminal();
           // The checklist manages its own artifact list; we refresh application

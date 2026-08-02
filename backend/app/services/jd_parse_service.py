@@ -97,6 +97,7 @@ async def parse_jd_with_run(
     raw_jd: str,
     platform_hint: str | None,
     gateway: ModelGateway,
+    job_id: str | None = None,
 ) -> JdParseOutcome:
     """Drive the JD paste parsing workflow using an *existing* ``AgentRun``.
 
@@ -111,8 +112,11 @@ async def parse_jd_with_run(
     4. ``validate_model_output`` — parse + schema-validate the response. On
        :class:`JdPasteValidationError` a FAILED ``AgentRun`` + ``AgentStep``
        are persisted (sanitized) and a failed outcome is returned.
-    5. ``persist_outputs`` — record field/uncertain counts (the parsed fields
-       live in the API response, not in step metadata).
+    5. ``persist_outputs`` — record field/uncertain counts. When ``job_id`` is
+       supplied (create-job-first path), also write the parsed fields back to
+       ``JobPosting.jd_normalized`` and overwrite the placeholder
+       company/title/location/salary/direction so the job list reflects the
+       parsed draft without a second user round-trip.
     6. ``complete_run`` — finalize run status and metadata.
 
     On success the parsed fields are written into ``AgentRun.result`` under the
@@ -275,11 +279,59 @@ async def parse_jd_with_run(
         usage=_usage_to_dict(response.usage),
     )
 
-    # Step 5 — persist_outputs. No JobPosting to write (parse-then-create);
-    # the parsed draft lives in the run result so the frontend can hydrate it.
-    # Step records counts only.
+    # Step 5 — persist_outputs. When ``job_id`` is supplied (create-job-first
+    # path), write the parsed draft back to ``JobPosting.jd_normalized`` and
+    # overwrite the placeholder company/title so the job list reflects the
+    # parse result without a second user round-trip. When ``job_id`` is ``None``
+    # (legacy parse-then-create path) the parsed draft lives only in the run
+    # result so the frontend can hydrate it. Step records counts only.
     field_count = _count_non_empty_fields(output)
     uncertain_count = len(output.uncertain_fields)
+
+    job_written = False
+    if job_id is not None:
+        from app.db.models.models import JobPosting
+
+        # Owned lookup: the worker must not write back to a job it does not own
+        # or that was not linked to *this* run. A payload carrying a foreign
+        # ``job_id`` (cross-user, or a stale id from another run) must fail the
+        # run loudly instead of silently mutating another user's job row.
+        job = db.get(JobPosting, job_id)
+        if job is None or job.user_id != user_id or run.job_id != job_id:
+            _log.warning(
+                "jd_paste.write_back_owner_mismatch",
+                run_id=run.id,
+                job_id=job_id,
+                job_user=getattr(job, "user_id", None),
+                run_job_id=run.job_id,
+                payload_user=user_id,
+            )
+            raise PermissionError("jd parse write-back job ownership mismatch")
+        extraction_block = _build_extraction(
+            run,
+            status="succeeded",
+            provider=execution.provider,
+            model=execution.model,
+        ).model_dump(mode="json")
+        job.jd_normalized = {
+            "_extraction": extraction_block,
+            "fields": output.model_dump(mode="json"),
+        }
+        # Overwrite placeholder company/title with parsed values when the
+        # model produced them, so the job list stops showing "(解析中…)".
+        if output.company:
+            job.company = output.company
+        if output.title:
+            job.title = output.title
+        if output.location:
+            job.location = output.location
+        if output.salary_range:
+            job.salary_range = output.salary_range
+        if output.direction:
+            job.direction = output.direction
+        db.flush()
+        job_written = True
+
     agent_run_repo.add_step(
         db,
         run_id=run.id,
@@ -289,6 +341,8 @@ async def parse_jd_with_run(
         result={
             "field_count": field_count,
             "uncertain_count": uncertain_count,
+            "job_id": job_id,
+            "job_written": job_written,
         },
     )
 

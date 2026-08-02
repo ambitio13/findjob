@@ -160,6 +160,7 @@ async def jd_paste_parsing(
                 raw_jd=payload.raw_jd,
                 platform_hint=payload.platform,
                 gateway=gateway,
+                job_id=payload.job_id,
             )
             _log.info(
                 "queue.jd_paste_parsing_completed",

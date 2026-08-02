@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -13,6 +13,7 @@ import {
   Tag,
   Typography,
 } from "antd";
+import axios from "axios";
 import {
   apiErrorMessage,
   generateReadinessArtifact,
@@ -58,30 +59,60 @@ interface Props {
     artifacts: ReadinessArtifactOut[];
     generating: boolean;
   }) => void;
+  /**
+   * When ``true``, auto-generate all four readiness artifacts on mount. The
+   * parent sets this *only* for genuinely new records (opened directly from a
+   * successful create-application flow), never for records loaded via a later
+   * GET — that would risk spuriously auto-generating on every visit to an old
+   * planned record. When ``false``/``undefined`` auto-generation never fires,
+   * so old records are safe regardless of their status/artifacts.
+   */
+  autoGenerate?: boolean;
 }
 
 /**
  * Checklist + generator for the four readiness artifact types.
  *
- * For each type the panel shows the latest persisted artifact (or an empty
- * slot), a generate/retry button, and the active run status when polling.
- * Reuses the shared ``useAgentRunPolling`` hook so polling/cleanup logic is
- * identical to the JD analysis and resume extraction workflows.
+ * Supports both single-type generation (user clicks one) and bulk
+ * auto-generation (all four types triggered in parallel on mount when
+ * ``autoGenerate`` is ``true``). The 409 duplicate-active-run guard is silently
+ * swallowed during auto-generation so a re-mount never blocks on an in-flight
+ * run.
+ *
+ * Multiple concurrent runs are tracked via a ``Map<type, runId>``. A single
+ * ``useAgentRunPolling`` instance polls the most-recently-enqueued run; on
+ * each tick the artifacts list is refreshed so completed types appear
+ * immediately while others continue.
  */
 export function ArtifactChecklist({
   application,
   onTerminal,
   resumeMissing,
   onStateChange,
+  autoGenerate,
 }: Props) {
   const [artifacts, setArtifacts] = useState<ReadinessArtifactOut[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedType, setSelectedType] = useState<ReadinessArtifactType>(
     "hr_opening_message",
   );
-  const [pollRunId, setPollRunId] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
+  // Track all active generation runs: type → runId. When non-empty, the panel
+  // shows an aggregate "generating" state.
+  const [pollRunIds, setPollRunIds] = useState<
+    Map<ReadinessArtifactType, string>
+  >(new Map());
   const [messageApi, contextHolder] = message.useMessage();
+
+  // The polling hook only accepts a single runId at a time. We poll the first
+  // active run; on each tick we refresh artifacts (which surfaces completed
+  // types) and advance to the next active run. This is simpler than spawning
+  // N polling hooks and still gives near-real-time updates.
+  const activeRunId = useMemo(() => {
+    const ids = Array.from(pollRunIds.values());
+    return ids.length > 0 ? ids[0] : null;
+  }, [pollRunIds]);
+
+  const generating = pollRunIds.size > 0;
 
   // Lift artifact + generating state to the parent so it can compute
   // staleness (source-hash comparison) and feed the ReadinessSummary.
@@ -105,21 +136,31 @@ export function ArtifactChecklist({
     void refresh();
   }, [refresh]);
 
-  // Poll the active generation run. On terminal status, refresh artifacts and
-  // notify the parent so the application detail (snapshot/timeline) updates.
-  useAgentRunPolling(pollRunId, {
+  /** Remove a run from the active set (called on terminal). */
+  const clearRun = useCallback((runId: string) => {
+    setPollRunIds((prev) => {
+      const next = new Map(prev);
+      for (const [k, v] of next) {
+        if (v === runId) next.delete(k);
+      }
+      return next;
+    });
+  }, []);
+
+  // Poll the currently-active run. On terminal, remove it from the active set,
+  // refresh artifacts, and notify the parent. If other runs are still active,
+  // the hook will re-arm on the next render (activeRunId changes).
+  useAgentRunPolling(activeRunId, {
+    onUpdate: () => {
+      // Refresh on each tick so completed types appear while others continue.
+      void refresh();
+    },
     onTerminal: (detail) => {
-      setGenerating(false);
-      setPollRunId(null);
+      if (detail.id) clearRun(detail.id);
       if (detail.status === "succeeded") {
-        messageApi.success(`${ARTIFACT_TYPE_LABEL[selectedType] ?? WORKFLOW_LABEL}生成完成`);
+        messageApi.success("材料生成完成");
       } else {
-        messageApi.warning(
-          asyncRunFailureMessage(
-            ARTIFACT_TYPE_LABEL[selectedType] ?? WORKFLOW_LABEL,
-            detail.error,
-          ),
-        );
+        messageApi.warning(asyncRunFailureMessage(WORKFLOW_LABEL, detail.error));
       }
       void refresh();
       onTerminal();
@@ -135,36 +176,92 @@ export function ArtifactChecklist({
     return map;
   }, [artifacts]);
 
-  const handleGenerate = async (type: ReadinessArtifactType) => {
-    if (resumeMissing) {
-      messageApi.error("尚未绑定简历版本，无法生成材料");
-      return;
-    }
-    setGenerating(true);
-    setSelectedType(type);
-    try {
-      const res = await generateReadinessArtifact(application.id, type);
-      // If enqueue itself failed (Redis down), the backend flips to failed.
-      if (TERMINAL_AGENT_RUN_STATUSES.has(res.run.status as AgentRunStatus)) {
-        setGenerating(false);
-        if (res.run.status === "succeeded") {
-          messageApi.success(`${ARTIFACT_TYPE_LABEL[type]}生成完成`);
-        } else {
-          messageApi.warning(
-            asyncRunFailureMessage(ARTIFACT_TYPE_LABEL[type], res.run.error),
-          );
-        }
-        void refresh();
-        onTerminal();
-        return;
+  /** Enqueue a single artifact generation run. Returns the runId or null. */
+  const enqueueGeneration = useCallback(
+    async (
+      type: ReadinessArtifactType,
+      opts?: { silentOn409?: boolean },
+    ): Promise<string | null> => {
+      if (resumeMissing) {
+        messageApi.error("尚未绑定简历版本，无法生成材料");
+        return null;
       }
+      try {
+        const res = await generateReadinessArtifact(application.id, type);
+        // If enqueue itself failed (Redis down), the backend flips to failed.
+        if (TERMINAL_AGENT_RUN_STATUSES.has(res.run.status as AgentRunStatus)) {
+          if (res.run.status === "succeeded") {
+            messageApi.success(`${ARTIFACT_TYPE_LABEL[type]}生成完成`);
+          } else {
+            messageApi.warning(
+              asyncRunFailureMessage(ARTIFACT_TYPE_LABEL[type], res.run.error),
+            );
+          }
+          void refresh();
+          onTerminal();
+          return null;
+        }
+        return res.run.id;
+      } catch (err) {
+        // 409 = duplicate active run: during auto-generation this is expected
+        // (re-mount, or a run already in flight). Swallow silently when
+        // silentOn409 is set; otherwise surface a friendly message.
+        if (opts?.silentOn409 && axios.isAxiosError(err) && err.response?.status === 409) {
+          return null;
+        }
+        messageApi.error(apiErrorMessage(err));
+        return null;
+      }
+    },
+    [application.id, resumeMissing, refresh, onTerminal, messageApi],
+  );
+
+  const handleGenerate = async (type: ReadinessArtifactType) => {
+    setSelectedType(type);
+    const runId = await enqueueGeneration(type);
+    if (runId) {
       messageApi.info(asyncRunProgressMessage(ARTIFACT_TYPE_LABEL[type] ?? WORKFLOW_LABEL));
-      setPollRunId(res.run.id);
-    } catch (err) {
-      setGenerating(false);
-      messageApi.error(apiErrorMessage(err));
+      setPollRunIds((prev) => {
+        const next = new Map(prev);
+        next.set(type, runId);
+        return next;
+      });
     }
   };
+
+  // ── Auto-generation ──────────────────────────────────────────────────────
+  // On first mount, auto-generate all four readiness artifacts *only* when the
+  // parent explicitly signals a fresh create (``autoGenerate === true``). We do
+  // NOT infer freshness from ``application.status``/``artifacts.length``/
+  //``application.is_duplicate`` because those are unreliable after a navigation
+  // that re-GETs the record (``is_duplicate`` defaults to false, so an old
+  // planned record with no artifacts would spuriously trigger). A ref guard
+  // ensures this only fires once per mount.
+  const autoGenFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoGenFiredRef.current) return;
+    if (!autoGenerate) return;
+    if (resumeMissing) return;
+    if (pollRunIds.size > 0) return;
+
+    autoGenFiredRef.current = true;
+    (async () => {
+      messageApi.info("正在自动生成就绪材料…");
+      const entries: [ReadinessArtifactType, string][] = [];
+      for (const type of ARTIFACT_TYPES) {
+        const runId = await enqueueGeneration(type, { silentOn409: true });
+        if (runId) entries.push([type, runId]);
+      }
+      if (entries.length > 0) {
+        setPollRunIds((prev) => {
+          const next = new Map(prev);
+          for (const [type, runId] of entries) next.set(type, runId);
+          return next;
+        });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoGenerate, resumeMissing, pollRunIds.size]);
 
   return (
     <Card type="inner" title="就绪材料" size="small">
@@ -203,15 +300,22 @@ export function ArtifactChecklist({
           ) : null}
         </Space>
 
-        {generating && pollRunId ? (
+        {generating ? (
           <Alert
             type="info"
             showIcon
-            message={`${ARTIFACT_TYPE_LABEL[selectedType] ?? WORKFLOW_LABEL}生成中…`}
+            message="材料生成中…"
             description={
               <Space direction="vertical" size={0}>
-                <Text type="secondary">{runIdHint(pollRunId)}</Text>
-                <AgentRunStatusTag status="running" />
+                {Array.from(pollRunIds.entries()).map(([type, runId]) => (
+                  <Space key={type} size="small">
+                    <Text type="secondary">{ARTIFACT_TYPE_LABEL[type]}</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {runIdHint(runId)}
+                    </Text>
+                    <AgentRunStatusTag status="running" />
+                  </Space>
+                ))}
               </Space>
             }
           />
@@ -233,7 +337,7 @@ export function ArtifactChecklist({
                 <ArtifactRow
                   type={type}
                   artifact={artifact}
-                  generating={generating && selectedType === type}
+                  generating={generating && pollRunIds.has(type)}
                   onGenerate={() => handleGenerate(type)}
                   disabled={resumeMissing}
                 />

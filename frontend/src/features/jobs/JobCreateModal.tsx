@@ -1,31 +1,9 @@
 import { useState } from "react";
-import {
-  ModalForm,
-  ProFormText,
-  ProFormTextArea,
-} from "@ant-design/pro-components";
-import { Alert, Button, Input, Space, message } from "antd";
-import {
-  apiErrorMessage,
-  createJob,
-  parseJobJd,
-} from "@/api/client";
-import type {
-  JdNormalized,
-  JdNormalizedExtraction,
-  JdParseDraftFields,
-  JdParseRunSummary,
-  JdParseSubmitResponse,
-  JobCreate,
-} from "@/types";
-import { TERMINAL_AGENT_RUN_STATUSES, type AgentRunStatus } from "@/features/agent-runs/status";
-import { useAgentRunPolling } from "@/features/agent-runs/useAgentRunPolling";
-import {
-  asyncRunFailureMessage,
-  asyncRunProgressMessage,
-  asyncRunSuccessMessage,
-  runIdHint,
-} from "@/features/agent-runs/copy";
+import { ModalForm, ProFormText, ProFormTextArea } from "@ant-design/pro-components";
+import { Alert, Button, Space, message } from "antd";
+import { apiErrorMessage, createJob, parseJobJd } from "@/api/client";
+import type { JobCreate } from "@/types";
+import { asyncRunProgressMessage, runIdHint } from "@/features/agent-runs/copy";
 
 interface Props {
   open: boolean;
@@ -33,133 +11,47 @@ interface Props {
   onCreated: () => void;
 }
 
-/** Empty draft shape mirroring the backend's default JdPasteFactsModelOutput. */
-const EMPTY_FIELDS: JdParseDraftFields = {
-  title: null,
-  company: null,
-  platform: null,
-  location: null,
-  salary_range: null,
-  direction: null,
-  responsibilities: [],
-  hard_requirements: [],
-  nice_to_have_requirements: [],
-  benefits_or_risk_clues: [],
-  uncertain_fields: [],
-};
-
 const WORKFLOW_LABEL = "JD 解析";
 
 /**
- * Safely coerce an unknown value (from the JSON ``result`` column) into the
- * typed draft-fields shape. If the shape is missing or malformed (e.g. an
- * older run without ``fields``), fall back to empty fields so the UI never
- * crashes on hydration.
- */
-function hydrateFields(result: Record<string, unknown> | null): JdParseDraftFields {
-  if (!result) return EMPTY_FIELDS;
-  const raw = result.fields;
-  if (typeof raw !== "object" || raw === null) return EMPTY_FIELDS;
-  // Shallow-merge over the empty shape so missing keys get their defaults.
-  return { ...EMPTY_FIELDS, ...(raw as Partial<JdParseDraftFields>) };
-}
-
-/**
- * Safely coerce the ``extraction`` block from ``AgentRun.result`` into the
- * typed provenance shape. Returns ``null`` on malformed/missing data so the
- * save path falls back to ``jd_normalized=null`` (manual entry).
- */
-function hydrateExtraction(
-  result: Record<string, unknown> | null,
-): JdNormalizedExtraction | null {
-  if (!result) return null;
-  const raw = result.extraction;
-  if (typeof raw !== "object" || raw === null) return null;
-  return raw as JdNormalizedExtraction;
-}
-
-/**
- * Two-phase paste-first job creation modal (enqueue-and-poll):
- *  1. Paste raw JD → click "智能解析" → the endpoint enqueues a parse job and
- *     returns immediately with a ``queued`` AgentRun. The modal polls the run
- *     detail until terminal status, then hydrates the draft fields from
- *     ``AgentRun.result.fields`` on success.
- *  2. Edit the pre-filled fields (company/title required) → save creates the
- *     JobPosting with the parsed draft persisted in ``jd_normalized``.
+ * Paste-first job creation modal (create-job-first async flow):
  *
- * Parse failure is recoverable: a warning is shown with the run ID, and the
- * user proceeds to manual entry with empty fields. A retry button lets them
- * re-submit the same JD without retyping.
+ *  **智能解析**: paste raw JD → click "智能解析" → the endpoint creates a
+ *  ``JobPosting`` row up front (company/title placeholder) plus a ``queued``
+ *  AgentRun, enqueues the parse job, and returns immediately with HTTP 202.
+ *  The modal closes right away so the user sees the new job in the list with a
+ *  "解析中" status; the worker writes the parsed draft back into
+ *  ``job.jd_normalized`` and overwrites the placeholder company/title on
+ *  success. The list polls and refreshes naturally (see ``JobsTable``).
+ *
+ *  **跳过解析手动填写**: a manual-entry two-field form (company/title required
+ *  + JD text) that creates the job synchronously via ``POST /jobs``.
  */
 export function JobCreateModal({ open, onClose, onCreated }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [parsing, setParsing] = useState(false);
-  const [parsed, setParsed] = useState(false);
-  const [fields, setFields] = useState<JdParseDraftFields>(EMPTY_FIELDS);
-  const [extraction, setExtraction] = useState<JdNormalizedExtraction | null>(
-    null,
-  );
-  const [runSummary, setRunSummary] = useState<JdParseRunSummary | null>(null);
-  const [pollRunId, setPollRunId] = useState<string | null>(null);
+  const [manualMode, setManualMode] = useState(false);
   const [rawJd, setRawJd] = useState("");
   const [messageApi, contextHolder] = message.useMessage();
-
-  // Shared polling hook — handles recursive setTimeout, token-based
-  // cancellation, and cleanup on unmount. The hook automatically stops when
-  // the run reaches a terminal status.
-  useAgentRunPolling(pollRunId, {
-    onUpdate: (detail) => {
-      setRunSummary({ id: detail.id, status: detail.status, error: detail.error });
-    },
-    onTerminal: (detail) => {
-      setParsing(false);
-      setPollRunId(null);
-      if (detail.status === "succeeded") {
-        setFields(hydrateFields(detail.result));
-        setExtraction(hydrateExtraction(detail.result));
-        setParsed(true);
-        messageApi.success(asyncRunSuccessMessage(WORKFLOW_LABEL));
-      } else {
-        // Recoverable failure: keep empty fields so the user can fall
-        // back to manual entry, and surface the failed run for inspection.
-        setFields(EMPTY_FIELDS);
-        setExtraction(null);
-        setParsed(true);
-        messageApi.warning(asyncRunFailureMessage(WORKFLOW_LABEL, detail.error));
-      }
-    },
-  });
 
   const handleParse = async () => {
     if (!rawJd.trim()) {
       messageApi.warning("请先粘贴 JD 原文");
       return;
     }
-    setPollRunId(null);
     setParsing(true);
-    setRunSummary(null);
-    setExtraction(null);
-    setFields(EMPTY_FIELDS);
     try {
-      const res: JdParseSubmitResponse = await parseJobJd(rawJd);
-      setRunSummary(res.run);
-      // If the enqueue itself failed (Redis down), the backend flips the run
-      // to ``failed`` before returning — surface that immediately.
-      if (TERMINAL_AGENT_RUN_STATUSES.has(res.run.status as AgentRunStatus)) {
-        setParsing(false);
-        if (res.run.status === "succeeded") {
-          setFields(hydrateFields(null));
-          setParsed(true);
-          messageApi.success(asyncRunSuccessMessage(WORKFLOW_LABEL));
-        } else {
-          setFields(EMPTY_FIELDS);
-          setParsed(true);
-          messageApi.warning(asyncRunFailureMessage(WORKFLOW_LABEL, res.run.error));
-        }
-        return;
-      }
-      // The run is ``queued`` — start polling until terminal status.
-      setPollRunId(res.run.id);
+      const res = await parseJobJd(rawJd);
+      // The backend created the job up front and enqueued the parse. Close the
+      // modal immediately — the job list will show the new row with a "解析中"
+      // status and refresh as the worker writes back the parsed draft.
+      messageApi.success(
+        `${asyncRunProgressMessage(WORKFLOW_LABEL)}，职位已加入列表，${runIdHint(res.run.id)}`,
+      );
+      onCreated();
+      // Reset local state for the next open.
+      setRawJd("");
+      setParsing(false);
     } catch (err) {
       setParsing(false);
       messageApi.error(apiErrorMessage(err));
@@ -167,27 +59,18 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
   };
 
   const handleReset = () => {
-    setPollRunId(null);
     setParsing(false);
-    setParsed(false);
-    setFields(EMPTY_FIELDS);
-    setExtraction(null);
-    setRunSummary(null);
+    setManualMode(false);
     setRawJd("");
   };
 
   const handleSkipParse = () => {
-    setPollRunId(null);
-    setParsing(false);
-    setParsed(true);
-    setExtraction(null);
-    setRunSummary(null);
-    setFields(EMPTY_FIELDS);
+    setManualMode(true);
   };
 
   return (
     <ModalForm<JobCreate>
-      title="手动录入 JD"
+      title={manualMode ? "手动录入 JD" : "粘贴 JD 智能解析"}
       open={open}
       modalProps={{
         onCancel: () => {
@@ -199,24 +82,25 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
         width: 640,
       }}
       initialValues={{ platform: "manual" }}
+      submitter={
+        manualMode
+          ? undefined
+          : {
+              // In parse mode the primary action is the "智能解析" button below;
+              // hide the default submitter so only manual-entry uses onFinish.
+              submitButtonProps: { style: { display: "none" } },
+              resetButtonProps: { style: { display: "none" } },
+            }
+      }
       onFinish={async (values) => {
+        // Manual-entry save path: create the job synchronously with the typed
+        // fields + JD text. jd_normalized stays null (no parse).
         setSubmitting(true);
         try {
-          // Assemble the durable jd_normalized shape (design.md §"jd_normalized
-          // shape"): ``fields`` is the model-parsed draft snapshot,
-          // ``_extraction`` carries parse provenance. On manual entry (no
-          // parse) jd_normalized stays null. The typed ``JdNormalized`` is
-          // widened to the loose ``Record<string, unknown> | null`` expected by
-          // the JobCreate API boundary.
-          const jdNormalized: JdNormalized | null =
-            parsed && extraction
-              ? { _extraction: extraction, fields }
-              : null;
           await createJob({
             ...values,
             jd_raw: rawJd,
             platform: values.platform ?? "manual",
-            jd_normalized: jdNormalized as JobCreate["jd_normalized"],
           });
           onCreated();
           handleReset();
@@ -230,12 +114,12 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
       }}
     >
       {contextHolder}
-      {!parsed ? (
+      {!manualMode ? (
         <>
           <ProFormTextArea
             name="jd_raw_input"
             label="JD 原文"
-            placeholder="粘贴完整 JD 原文，点击「智能解析」自动提取字段"
+            placeholder="粘贴完整 JD 原文，点击「智能解析」后会自动创建职位并在列表中异步填充字段"
             rules={[{ required: true, message: "请粘贴 JD 原文" }]}
             fieldProps={{
               autoSize: { minRows: 6, maxRows: 16 },
@@ -244,105 +128,45 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
           />
           <Space>
             <Button type="primary" loading={parsing} onClick={handleParse}>
-              {parsing ? "解析中…" : "智能解析"}
+              {parsing ? "提交中…" : "智能解析"}
             </Button>
             <Button onClick={handleSkipParse}>跳过解析，手动填写</Button>
           </Space>
-          {parsing && runSummary && (
-            <Alert
-              type="info"
-              showIcon
-              message={`${asyncRunProgressMessage(WORKFLOW_LABEL)}（${runIdHint(runSummary.id)}）`}
-              style={{ marginTop: 12 }}
-            />
-          )}
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginTop: 12 }}
+            message="点击「智能解析」后会立即创建职位并关闭弹窗，解析在后台进行，完成后自动填充到列表。"
+          />
         </>
       ) : (
         <>
-          {runSummary && runSummary.status === "failed" && (
-            <Alert
-              type="warning"
-              showIcon
-              message={`${WORKFLOW_LABEL}未成功`}
-              description={
-                <span>
-                  {runIdHint(runSummary.id)}（可前往「Agent 运行」查看轨迹），请手动填写字段后保存，或点击下方「重新解析」重试。
-                </span>
-              }
-              style={{ marginBottom: 12 }}
-            />
-          )}
           <ProFormText
             name="company"
             label="公司"
-            initialValue={fields.company ?? undefined}
             rules={[{ required: true, message: "请输入公司名称" }]}
           />
           <ProFormText
             name="title"
             label="职位"
-            initialValue={fields.title ?? undefined}
             rules={[{ required: true, message: "请输入职位名称" }]}
           />
-          <ProFormText
-            name="location"
-            label="城市"
-            initialValue={fields.location ?? undefined}
-          />
-          <ProFormText
-            name="salary_range"
-            label="薪资范围"
-            initialValue={fields.salary_range ?? undefined}
-          />
-          <ProFormText
-            name="direction"
-            label="方向"
-            initialValue={fields.direction ?? undefined}
-          />
+          <ProFormText name="location" label="城市" />
+          <ProFormText name="salary_range" label="薪资范围" />
+          <ProFormText name="direction" label="方向" />
           <ProFormText name="platform" label="平台" />
-
-          {fields.responsibilities.length > 0 && (
-            <FormListPreview title="职责" items={fields.responsibilities} />
-          )}
-          {fields.hard_requirements.length > 0 && (
-            <FormListPreview title="硬性要求" items={fields.hard_requirements} />
-          )}
-          {fields.nice_to_have_requirements.length > 0 && (
-            <FormListPreview
-              title="加分项"
-              items={fields.nice_to_have_requirements}
-            />
-          )}
-
-          <div style={{ marginTop: 12 }}>
-            <Space direction="vertical" size="small" style={{ width: "100%" }}>
-              <Input.TextArea
-                value={rawJd}
-                onChange={(e) => setRawJd(e.target.value)}
-                autoSize={{ minRows: 4, maxRows: 12 }}
-                placeholder="JD 原文（可编辑）"
-              />
-              <Button type="link" onClick={handleReset} style={{ padding: 0 }}>
-                ← 重新解析
-              </Button>
-            </Space>
-          </div>
+          <ProFormTextArea
+            name="jd_raw_input"
+            label="JD 原文"
+            placeholder="粘贴或输入 JD 原文"
+            rules={[{ required: true, message: "请输入 JD 原文" }]}
+            fieldProps={{
+              autoSize: { minRows: 4, maxRows: 12 },
+              onChange: (e) => setRawJd(e.target.value),
+            }}
+          />
         </>
       )}
     </ModalForm>
-  );
-}
-
-/** Read-only bullet preview of a parsed list field. */
-function FormListPreview({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div style={{ marginBottom: 8 }}>
-      <strong>{title}</strong>
-      <ul style={{ margin: "4px 0", paddingLeft: 20 }}>
-        {items.map((item, idx) => (
-          <li key={idx}>{item}</li>
-        ))}
-      </ul>
-    </div>
   );
 }

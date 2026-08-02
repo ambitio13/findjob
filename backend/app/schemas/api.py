@@ -39,6 +39,23 @@ class JobCreate(BaseModel):
     jd_normalized: dict[str, Any] | None = None
 
 
+class JobUpdate(BaseModel):
+    """Partial update payload for ``PATCH /jobs/{job_id}``.
+
+    All fields are optional; only supplied fields are overwritten. This lets
+    the user correct the parsed draft (or the ``(解析中…)`` placeholder) after
+    an async parse completes, without re-submitting the whole job.
+    """
+
+    company: str | None = None
+    title: str | None = None
+    location: str | None = None
+    salary_range: str | None = None
+    direction: str | None = None
+    platform: str | None = None
+    jd_raw: str | None = None
+
+
 class JobOut(BaseSchema):
     id: str
     platform: str
@@ -157,6 +174,7 @@ class ApplicationOut(BaseSchema):
     readiness_snapshot: dict[str, Any] | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    is_duplicate: bool = False
 
 
 class ApplicationListOut(BaseModel):

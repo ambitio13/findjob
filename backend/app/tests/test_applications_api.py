@@ -120,6 +120,8 @@ def test_create_application_happy_path(client: TestClient) -> None:
     assert body["resume_version_id"] == ids["resume_version_id"]
     assert body["status"] == "planned"
     assert body["user_id"] == ids["user_id"]
+    # A fresh create is not a duplicate.
+    assert body["is_duplicate"] is False
     # The ``created`` timeline event must be present.
     assert len(body["timeline"]) == 1
     event = body["timeline"][0]
@@ -418,7 +420,10 @@ def test_duplicate_create_returns_existing_record(client: TestClient) -> None:
         headers=_headers(ids["user_id"]),
     )
     assert first.status_code == 201
-    first_id = first.json()["id"]
+    first_body = first.json()
+    first_id = first_body["id"]
+    # The first create is not a duplicate.
+    assert first_body["is_duplicate"] is False
 
     # Second creation for the same job/resume returns the existing record.
     second = client.post(
@@ -430,7 +435,11 @@ def test_duplicate_create_returns_existing_record(client: TestClient) -> None:
         headers=_headers(ids["user_id"]),
     )
     assert second.status_code == 201
-    assert second.json()["id"] == first_id
+    second_body = second.json()
+    assert second_body["id"] == first_id
+    # The duplicate path surfaces ``is_duplicate=True`` so the frontend can
+    # skip auto-generation of readiness artifacts.
+    assert second_body["is_duplicate"] is True
 
 
 def test_duplicate_create_without_resume_returns_existing(client: TestClient) -> None:
@@ -441,6 +450,7 @@ def test_duplicate_create_without_resume_returns_existing(client: TestClient) ->
         headers=_headers(ids["user_id"]),
     )
     first_id = first.json()["id"]
+    assert first.json()["is_duplicate"] is False
 
     second = client.post(
         "/api/v1/applications",
@@ -448,6 +458,7 @@ def test_duplicate_create_without_resume_returns_existing(client: TestClient) ->
         headers=_headers(ids["user_id"]),
     )
     assert second.json()["id"] == first_id
+    assert second.json()["is_duplicate"] is True
 
 
 # ---------------------------------------------------------------------------

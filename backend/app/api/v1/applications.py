@@ -66,14 +66,17 @@ router = APIRouter(prefix="/applications", tags=["applications"])
 READINESS_ARTIFACT_TYPES = tuple(t.value for t in ReadinessArtifactType)
 
 
-def _to_out(record) -> ApplicationOut:
+def _to_out(record, *, is_duplicate: bool = False) -> ApplicationOut:
     """Project an ``ApplicationRecord`` into ``ApplicationOut``.
 
     The ``timeline`` column is a JSON list; Pydantic validates each entry into
     an ``ApplicationTimelineEventOut``. A missing/empty timeline degrades to an
-    empty list so older rows do not break reads.
+    empty list so older rows do not break reads. ``is_duplicate`` is set only
+    on the create response when a duplicate was returned instead of a new row.
     """
-    return ApplicationOut.model_validate(record)
+    out = ApplicationOut.model_validate(record)
+    out.is_duplicate = is_duplicate
+    return out
 
 
 @router.get("", response_model=ApplicationListOut)
@@ -107,13 +110,13 @@ def create_application(
     with status 201 so duplicate creation is idempotent from the client's
     perspective (PRD: "returns the existing record").
     """
-    record = application_service.create_application(
+    record, is_new = application_service.create_application(
         db,
         current_user,
         job_id=payload.job_id,
         resume_version_id=payload.resume_version_id,
     )
-    return _to_out(record)
+    return _to_out(record, is_duplicate=not is_new)
 
 
 @router.get("/{application_id}", response_model=ApplicationOut)

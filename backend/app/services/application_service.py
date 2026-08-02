@@ -96,12 +96,17 @@ def create_application(
     *,
     job_id: str,
     resume_version_id: str | None,
-) -> ApplicationRecord:
+) -> tuple[ApplicationRecord, bool]:
     """Create a new application record for an owned job/resume.
 
     Verifies job ownership (404), verifies resume version ownership when
     supplied (404), detects duplicates (returns the existing active record),
     and creates a ``planned`` record with a ``created`` timeline event.
+
+    Returns ``(record, is_new)`` — ``is_new`` is ``False`` when a duplicate
+    was found and the existing record is returned instead. The API layer uses
+    this flag to set ``ApplicationOut.is_duplicate`` so the frontend can skip
+    auto-generation on duplicates.
 
     No external platform side effects are performed (PRD: manual-first).
     """
@@ -127,7 +132,7 @@ def create_application(
             application_id=existing.id,
             job_id=job_id,
         )
-        return existing
+        return existing, False
 
     # 4. Create the record with a ``created`` timeline event.
     event = application_repo.build_event(
@@ -153,7 +158,7 @@ def create_application(
         application_id=record.id,
         job_id=job_id,
     )
-    return record
+    return record, True
 
 
 def update_application_status(

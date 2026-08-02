@@ -4,6 +4,7 @@ import axios, { AxiosError } from "axios";
 import type {
   HealthResponse,
   JobCreate,
+  JobUpdate,
   JobListOut,
   JobOut,
   AgentRunOut,
@@ -65,13 +66,37 @@ export async function createJob(payload: JobCreate): Promise<JobOut> {
   return data;
 }
 
-// --- JD paste parsing (parse-then-create, enqueue-and-poll) ---
+/**
+ * Partially update an owned job (company/title/location/salary/direction/
+ * platform/jd_raw). Used to correct a parsed draft or replace the
+ * `(解析中…)` placeholder after an async parse completes.
+ */
+export async function updateJob(
+  id: string,
+  payload: JobUpdate,
+): Promise<JobOut> {
+  // Strip ``undefined`` values so axios does not serialize omitted keys. The
+  // backend distinguishes "omitted" (no-op) from "explicit null" (clear) via
+  // ``model_fields_set``; sending ``undefined`` would otherwise be dropped by
+  // JSON.stringify and treated as omitted, which is what we want for keys the
+  // form did not populate. Explicit ``null`` is preserved to clear a column.
+  const body = Object.fromEntries(
+    Object.entries(payload).filter(([, v]) => v !== undefined),
+  );
+  const { data } = await apiClient.patch<JobOut>(`/jobs/${id}`, body);
+  return data;
+}
+
+// --- JD paste parsing (create-job-first, enqueue-and-poll) ---
 
 /**
  * Submit raw JD text for asynchronous parsing. The endpoint creates a
- * ``queued`` AgentRun, enqueues a worker job, and returns immediately with
- * HTTP 202. Poll ``getAgentRunDetail(run.id)`` until terminal status, then
- * hydrate fields from ``result.fields``.
+ * `JobPosting` row up front (company/title placeholder) plus a `queued`
+ * AgentRun, enqueues a worker job, and returns immediately with HTTP 202.
+ * The frontend can close the create modal right away and show async progress
+ * in the job list. Poll the job row (or the run detail) until the run reaches
+ * a terminal status; on success the worker has written the parsed draft into
+ * `job.jd_normalized` and overwritten the placeholder company/title.
  */
 export async function parseJobJd(
   rawJd: string,

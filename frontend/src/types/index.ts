@@ -46,7 +46,22 @@ export interface JobCreate {
   jd_normalized?: Record<string, unknown> | null;
 }
 
-// --- JD paste parsing (parse-then-create flow) ---
+/**
+ * Partial update payload for `PATCH /jobs/{job_id}`. All fields optional;
+ * only supplied (non-null) fields are applied. Used to correct a parsed draft
+ * or replace the `(解析中…)` placeholder after an async parse completes.
+ */
+export interface JobUpdate {
+  company?: string;
+  title?: string;
+  location?: string | null;
+  salary_range?: string | null;
+  direction?: string | null;
+  platform?: string;
+  jd_raw?: string;
+}
+
+// --- JD paste parsing (create-job-first async flow) ---
 
 /** A field the model could not confidently extract (mirrors backend UncertainField). */
 export interface JdParseUncertainField {
@@ -89,6 +104,9 @@ export interface JdParseRunSummary {
  */
 export interface JdParseSubmitResponse {
   run: JdParseRunSummary;
+  /** The job row created up front (create-job-first). Company/title start as
+   * `(解析中…)` placeholders until the worker writes back the parsed draft. */
+  job: JobOut;
   raw_jd: string;
   platform: string | null;
 }
@@ -546,6 +564,12 @@ export interface ApplicationOut {
   readiness_snapshot: Record<string, unknown> | null;
   created_at: string | null;
   updated_at: string | null;
+  /**
+   * True when the create endpoint returned an existing (duplicate) record
+   * instead of creating a new one. The frontend uses this to skip
+   * auto-generation of readiness artifacts on duplicates.
+   */
+  is_duplicate?: boolean;
 }
 
 export interface ApplicationListOut {

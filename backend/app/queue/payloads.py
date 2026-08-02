@@ -75,19 +75,29 @@ class JdPasteParsePayload(WorkflowPayload):
     """Payload for the JD paste parsing workflow.
 
     Carries the raw JD text because — unlike resume fact extraction, which can
-    re-read ``ResumeVersion.raw_text`` — a JD paste parse has no durable parent
-    row at enqueue time (the ``JobPosting`` is created *after* parsing
-    succeeds). The raw text lives only in the Redis queue entry, which arq
-    expires automatically; it is never persisted to PostgreSQL. The worker
-    handler passes it to the service orchestrator, which sanitizes all step
-    and run metadata so only ``raw_jd_len`` (not the text) is stored on
-    ``AgentRun`` / ``AgentStep`` rows.
+    re-read ``ResumeVersion.raw_text`` — the JD paste parse uses the transient
+    queue entry as its input channel. Although a ``JobPosting`` row is now
+    created upfront (with ``jd_raw`` persisted), the worker deliberately reads
+    ``raw_jd`` from the payload so the queue stays the execution boundary and
+    no extra DB read is needed before the model call. The raw text lives only
+    in the Redis queue entry, which arq expires automatically; it is never
+    duplicated into ``AgentRun`` / ``AgentStep`` metadata. The worker handler
+    passes it to the service orchestrator, which sanitizes all step and run
+    metadata so only ``raw_jd_len`` (not the text) is stored on those rows.
+
+    ``job_id`` references the ``JobPosting`` row created upfront by the parse
+    endpoint (create-job-first pattern). On success the worker writes the
+    parsed fields back to ``job.jd_normalized`` and overwrites the placeholder
+    company/title, so the frontend can close the modal immediately and show
+    async progress in the job list. ``None`` preserves backward compatibility
+    with the legacy parse-then-create path.
     """
 
     workflow_type: Literal["jd_paste_parsing"] = "jd_paste_parsing"
 
     raw_jd: str
     platform: str | None = None
+    job_id: str | None = None
 
 
 class ResumeFactExtractionPayload(WorkflowPayload):

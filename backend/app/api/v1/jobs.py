@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_db_session
 from app.db.models.models import JobPosting, UserProfile
 from app.db.repositories import agent_run_repo, generated_artifact_repo, job_analysis_repo, job_repo
-from app.schemas.api import JobCreate, JobListOut, JobOut, PaginatedMeta
+from app.schemas.api import JobCreate, JobListOut, JobOut, JobUpdate, PaginatedMeta
 from app.schemas.jd_analysis import (
     GeneratedArtifactOut,
     JdAnalysisModelOutput,
@@ -32,6 +32,14 @@ from app.schemas.jd_parse import JdParseRequest, JdParseRunSummary, JdParseSubmi
 from app.services.jd_analysis_service import WORKFLOW_TYPE, load_jd_analysis_context
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+#: Editable JobPosting columns accepted by ``PATCH /jobs/{job_id}``. Kept in
+#: sync with :class:`JobUpdate` and ``job_repo.update``'s editable set. Used by
+#: the PATCH endpoint to filter ``JobUpdate.model_fields_set`` so only
+#: client-supplied keys reach the repository.
+_EDITABLE_JOB_FIELDS = frozenset(
+    {"company", "title", "location", "salary_range", "direction", "platform", "jd_raw"}
+)
 
 
 @router.get("", response_model=JobListOut)
@@ -85,9 +93,51 @@ def get_job(
     return JobOut.model_validate(job)
 
 
+@router.patch("/{job_id}", response_model=JobOut)
+def update_job(
+    job_id: str,
+    payload: JobUpdate,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> JobOut:
+    """Edit editable fields of an owned job (company/title/location/salary/
+    direction/platform/jd_raw).
+
+    Used to correct a parsed draft or replace the ``(解析中…)`` placeholder
+    after an async parse. Only fields the client explicitly sent are applied:
+    an omitted field is left untouched, while an explicit ``null`` clears the
+    column (location/salary_range/direction are nullable). This distinction is
+    made via ``JobUpdate.model_fields_set`` so a partial JSON body like
+    ``{"location": null}`` clears the city without touching the others.
+    """
+    job = job_repo.get_by_id(db, job_id, current_user.id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    # Only pass through the keys the client actually sent. ``model_fields_set``
+    # is the set of fields present in the request body (including ones set to
+    # null), so an explicit null clears the column while an omitted key is a
+    # no-op. Without this, passing all model attributes would overwrite every
+    # field with the schema defaults (None) on every PATCH.
+    supplied = {
+        key: getattr(payload, key)
+        for key in payload.model_fields_set
+        if key in _EDITABLE_JOB_FIELDS
+    }
+    job_repo.update(db, job, **supplied)
+    db.commit()
+    db.refresh(job)
+    return JobOut.model_validate(job)
+
+
 # ---------------------------------------------------------------------------
-# JD paste parsing (parse-then-create flow)
+# JD paste parsing (create-job-first async flow)
 # ---------------------------------------------------------------------------
+
+
+#: Placeholder company/title shown in the job list while an async parse is in
+#: flight. The worker overwrites these with parsed values on success; the user
+#: can also edit them via ``PATCH /jobs/{job_id}`` once the run completes.
+_PARSE_INFLIGHT_PLACEHOLDER = "(解析中…)"
 
 
 @router.post("/parse", response_model=JdParseSubmitResponse, status_code=202)
@@ -96,40 +146,63 @@ async def parse_job_jd(
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
 ) -> JdParseSubmitResponse:
-    """Submit raw JD text for asynchronous parsing (enqueue-and-poll).
+    """Submit raw JD text for asynchronous parsing (create-job-first).
 
-    Creates a ``queued`` ``AgentRun`` (``workflow_type="jd_paste_parsing"``)
-    with sanitized request metadata, enqueues a ``JdPasteParsePayload`` to the
-    worker queue, and returns immediately with the run reference. The frontend
-    polls ``GET /agent-runs/{run_id}/detail`` until the run reaches a terminal
-    status, then hydrates the parsed fields from ``AgentRun.result.fields``.
+    Creates a ``JobPosting`` row up front (company/title set to a
+    ``"(解析中…)"`` placeholder, ``jd_raw`` persisted) so the job appears in the
+    list immediately and the frontend can close the create modal without
+    blocking. A ``queued`` ``AgentRun`` (``workflow_type="jd_paste_parsing"``)
+    is created and linked to the job, then a ``JdPasteParsePayload`` is
+    enqueued to the worker queue. The worker writes the parsed fields back to
+    ``job.jd_normalized`` and overwrites the placeholder company/title on
+    success, so the list refreshes naturally on the next poll.
 
     If Redis is unavailable the run is flipped to ``failed`` before returning
-    so the user is never left with a silent spinner. The raw JD text is never
-    persisted to PostgreSQL — it lives only in the transient queue entry.
+    so the user is never left with a silent spinner — the placeholder job
+    remains so the user can edit it manually. The raw JD text is persisted on
+    the job row (not on the AgentRun metadata) for later editing.
     """
     from app.queue.payloads import JdPasteParsePayload
     from app.queue.runtime import enqueue_workflow
     from app.services.jd_parse_service import WORKFLOW_TYPE
 
-    # Create the durable AgentRun in queued state *before* enqueue so
-    # PostgreSQL stays the source of truth (design.md queue contract).
+    # 1. Create the JobPosting up front with a placeholder so it shows in the
+    #    list immediately. The worker overwrites company/title/jd_normalized
+    #    on success; the user can also PATCH it afterwards.
+    platform = payload.platform or "manual"
+    job = job_repo.create(
+        db,
+        user_id=current_user.id,
+        company=_PARSE_INFLIGHT_PLACEHOLDER,
+        title=_PARSE_INFLIGHT_PLACEHOLDER,
+        jd_raw=payload.raw_jd,
+        platform=platform,
+    )
+
+    # 2. Create the durable AgentRun in queued state *before* enqueue so
+    #    PostgreSQL stays the source of truth (design.md queue contract). The
+    #    run is linked to the job so the frontend can discover it from the job
+    #    list/detail and poll for completion.
     run = agent_run_repo.create_run(
         db,
         user_id=current_user.id,
         workflow_type=WORKFLOW_TYPE,
         status="queued",
+        job_id=job.id,
         result={
             "user_id": current_user.id,
+            "job_id": job.id,
             "raw_jd_len": len(payload.raw_jd),
             "platform": payload.platform,
         },
     )
     db.commit()
+    db.refresh(job)
     db.refresh(run)
 
-    # Enqueue the parse job. If Redis is down, flip the run to failed so the
-    # frontend sees a terminal state instead of polling forever.
+    # 3. Enqueue the parse job. If Redis is down, flip the run to failed so
+    #    the frontend sees a terminal state instead of polling forever. The
+    #    placeholder job remains so the user can still edit it manually.
     idempotency_key = f"jd_paste:{run.id}"
     enqueue_payload = JdPasteParsePayload(
         workflow_type="jd_paste_parsing",
@@ -138,6 +211,7 @@ async def parse_job_jd(
         idempotency_key=idempotency_key,
         raw_jd=payload.raw_jd,
         platform=payload.platform,
+        job_id=job.id,
     )
     try:
         await enqueue_workflow(enqueue_payload, job_id=idempotency_key)
@@ -154,6 +228,7 @@ async def parse_job_jd(
 
     return JdParseSubmitResponse(
         run=JdParseRunSummary.model_validate(run),
+        job=JobOut.model_validate(job),
         raw_jd=payload.raw_jd,
         platform=payload.platform,
     )

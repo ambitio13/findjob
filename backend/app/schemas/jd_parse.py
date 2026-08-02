@@ -14,6 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
+from app.schemas.api import JobOut
 from app.schemas.jd_paste_facts import JdPasteFactsModelOutput
 
 
@@ -98,5 +99,6 @@ class JdParseSubmitResponse(BaseModel):
     """
 
     run: JdParseRunSummary
+    job: JobOut
     raw_jd: str
     platform: str | None = None

@@ -58,6 +58,38 @@ def get_by_id(db: Session, job_id: str, user_id: str) -> JobPosting | None:
     return job
 
 
+def update(db: Session, job: JobPosting, **fields: Any) -> JobPosting:
+    """Apply a partial update to ``job`` in place (not yet committed).
+
+    Only known editable columns are applied; unknown keys are ignored so a
+    stray client field cannot clobber ``user_id`` / ``id`` / timestamps. The
+    caller must have already resolved the owned ``job`` row (``get_by_id``)
+    before invoking this — ownership is not re-checked here.
+
+    Each value in ``fields`` is applied verbatim, including ``None``. Callers
+    must distinguish "field not supplied" from "field explicitly cleared to
+    ``None``" *before* calling this — once a key is in ``fields`` it is written.
+    The PATCH endpoint uses ``JobUpdate.model_fields_set`` to pass only the
+    keys the client actually sent, so an explicit ``null`` clears the column
+    while an omitted key is left untouched.
+    """
+    editable = {
+        "company",
+        "title",
+        "location",
+        "salary_range",
+        "direction",
+        "platform",
+        "jd_raw",
+        "jd_normalized",
+    }
+    for key, value in fields.items():
+        if key in editable:
+            setattr(job, key, value)
+    db.flush()
+    return job
+
+
 def list_for_user(
     db: Session,
     user_id: str,

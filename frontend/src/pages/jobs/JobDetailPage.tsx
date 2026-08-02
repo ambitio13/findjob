@@ -6,6 +6,7 @@ import {
   Card,
   Descriptions,
   Empty,
+  Input,
   List,
   message,
   Select,
@@ -25,6 +26,7 @@ import {
   listResumes,
   listResumeVersions,
   runJdAnalysis,
+  updateJob,
 } from "@/api/client";
 import {
   ACTIVE_AGENT_RUN_STATUSES,
@@ -32,6 +34,7 @@ import {
   type AgentRunStatus,
 } from "@/features/agent-runs/status";
 import { useAgentRunPolling } from "@/features/agent-runs/useAgentRunPolling";
+import { AgentRunStatusTag } from "@/features/agent-runs/AgentRunStatusTag";
 import {
   asyncRunFailureMessage,
   asyncRunSuccessMessage,
@@ -125,6 +128,18 @@ export function JobDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Inline editing state for the job detail card (PATCH /jobs/{id}).
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState<{
+    company: string;
+    title: string;
+    location: string;
+    salary_range: string;
+    direction: string;
+    platform: string;
+  }>({ company: "", title: "", location: "", salary_range: "", direction: "", platform: "" });
+  const [savingEdit, setSavingEdit] = useState(false);
+
   const [resumes, setResumes] = useState<ResumeOut[]>([]);
   const [resumeOptions, setResumeOptions] = useState<ResumeOption[]>([]);
   const [resumesLoading, setResumesLoading] = useState(false);
@@ -144,6 +159,55 @@ export function JobDetailPage() {
   // The run currently being polled (null when no active run).
   const [pollRunId, setPollRunId] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+
+  /** Begin inline editing — seed the form from the current job fields. */
+  const startEdit = () => {
+    if (!job) return;
+    setEditForm({
+      company: job.company ?? "",
+      title: job.title ?? "",
+      location: job.location ?? "",
+      salary_range: job.salary_range ?? "",
+      direction: job.direction ?? "",
+      platform: job.platform ?? "",
+    });
+    setEditing(true);
+  };
+
+  /** Save the inline edit form via PATCH /jobs/{id}. */
+  const handleSaveEdit = async () => {
+    if (!job) return;
+    setSavingEdit(true);
+    try {
+      // Build a partial payload containing only fields the user edited. We
+      // send ``null`` to clear location/salary_range/direction (nullable
+      // columns) and omit a field entirely when it should be left untouched.
+      // The backend uses ``model_fields_set`` to distinguish omitted keys
+      // (no-op) from explicit ``null`` (clear), so an empty string here is
+      // normalized to ``null`` for the nullable columns.
+      const patch: Record<string, string | null | undefined> = {};
+      patch.company = editForm.company;
+      patch.title = editForm.title;
+      patch.location = editForm.location.trim() === "" ? null : editForm.location;
+      patch.salary_range =
+        editForm.salary_range.trim() === "" ? null : editForm.salary_range;
+      patch.direction =
+        editForm.direction.trim() === "" ? null : editForm.direction;
+      if (editForm.platform) patch.platform = editForm.platform;
+      const updated = await updateJob(job.id, patch);
+      setJob(updated);
+      setEditing(false);
+      messageApi.success("职位信息已更新");
+    } catch (err) {
+      messageApi.error(apiErrorMessage(err));
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+  };
 
   // R1/R2: hydrate persisted state for this job from BOTH the analyses list
   // (successful runs) and the agent-runs list filtered by job + workflow
@@ -348,17 +412,27 @@ export function JobDetailPage() {
 
   // Create an application record for this job, optionally binding the
   // currently-selected resume version. After creation, navigate to the
-  // applications page so the user can start generating readiness materials.
+  // applications page and pass a ``freshCreate`` flag via router state so the
+  // readiness panel auto-generates artifacts *only* for genuinely new records
+  // (not duplicates, and not records re-loaded via GET on a later visit).
   const handleCreateApplication = async () => {
     if (!id) return;
     try {
       setCreatingApp(true);
-      await createApplication({
+      const created = await createApplication({
         job_id: id,
         resume_version_id: selectedVersionId ?? null,
       });
       messageApi.success("投递记录已创建");
-      navigate("/applications");
+      // Pass ``is_duplicate`` from the create response so the applications page
+      // knows whether to auto-generate. We never rely on a later GET, which
+      // resets ``is_duplicate`` to its default (false).
+      navigate("/applications", {
+        state: {
+          freshApplicationId: created.id,
+          freshIsDuplicate: created.is_duplicate ?? false,
+        },
+      });
     } catch (err) {
       messageApi.error(apiErrorMessage(err));
     } finally {
@@ -369,15 +443,75 @@ export function JobDetailPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {contextHolder}
-      <Card title="职位详情">
-        <Descriptions column={2}>
-          <Descriptions.Item label="平台">{job.platform}</Descriptions.Item>
-          <Descriptions.Item label="公司">{job.company}</Descriptions.Item>
-          <Descriptions.Item label="职位">{job.title}</Descriptions.Item>
-          <Descriptions.Item label="城市">{job.location ?? "-"}</Descriptions.Item>
-          <Descriptions.Item label="薪资">{job.salary_range ?? "-"}</Descriptions.Item>
-          <Descriptions.Item label="方向">{job.direction ?? "-"}</Descriptions.Item>
-        </Descriptions>
+      <Card
+        title="职位详情"
+        extra={
+          editing ? (
+            <Space>
+              <Button type="primary" loading={savingEdit} onClick={handleSaveEdit}>
+                保存
+              </Button>
+              <Button onClick={cancelEdit}>取消</Button>
+            </Space>
+          ) : (
+            <Button onClick={startEdit}>编辑</Button>
+          )
+        }
+      >
+        {editing ? (
+          <Space direction="vertical" size="small" style={{ width: "100%" }}>
+            <Input
+              addonBefore="公司"
+              value={editForm.company}
+              onChange={(e) => setEditForm({ ...editForm, company: e.target.value })}
+            />
+            <Input
+              addonBefore="职位"
+              value={editForm.title}
+              onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+            />
+            <Input
+              addonBefore="城市"
+              value={editForm.location}
+              onChange={(e) => setEditForm({ ...editForm, location: e.target.value })}
+            />
+            <Input
+              addonBefore="薪资"
+              value={editForm.salary_range}
+              onChange={(e) => setEditForm({ ...editForm, salary_range: e.target.value })}
+            />
+            <Input
+              addonBefore="方向"
+              value={editForm.direction}
+              onChange={(e) => setEditForm({ ...editForm, direction: e.target.value })}
+            />
+            <Input
+              addonBefore="平台"
+              value={editForm.platform}
+              onChange={(e) => setEditForm({ ...editForm, platform: e.target.value })}
+            />
+          </Space>
+        ) : (
+          <>
+            <Descriptions column={2}>
+              <Descriptions.Item label="平台">{job.platform}</Descriptions.Item>
+              <Descriptions.Item label="公司">{job.company}</Descriptions.Item>
+              <Descriptions.Item label="职位">{job.title}</Descriptions.Item>
+              <Descriptions.Item label="城市">{job.location ?? "-"}</Descriptions.Item>
+              <Descriptions.Item label="薪资">{job.salary_range ?? "-"}</Descriptions.Item>
+              <Descriptions.Item label="方向">{job.direction ?? "-"}</Descriptions.Item>
+            </Descriptions>
+            {(job.company === "(解析中…)" || job.title === "(解析中…)") && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginTop: 12 }}
+                message="职位正在解析中"
+                description="公司/职位显示为占位符，解析完成后会自动填充。如解析失败或结果不满意，可点击「编辑」手动修改。"
+              />
+            )}
+          </>
+        )}
         <Space style={{ marginTop: 12 }}>
           <Button
             type="primary"
@@ -529,13 +663,18 @@ function AnalysisSection({
         value={selected.run.id}
         onChange={onSelectRun}
         options={runViews.map((v, idx) => {
-          const isFailed = v.run.status === "failed" || !v.detail;
+          const isPending = ACTIVE_AGENT_RUN_STATUSES.has(
+            v.run.status as AgentRunStatus,
+          );
+          const isFailed = v.run.status === "failed";
           const label = v.detail?.structured
             ? RECOMMENDATION_LABEL[v.detail.structured.recommendation] ??
               v.detail.structured.recommendation
             : isFailed
               ? "运行失败"
-              : "运行中";
+              : isPending
+                ? "运行中"
+                : "无结果";
           return {
             label: `#${runViews.length - idx} · ${label} · ${formatTime(v.run.created_at)}`,
             value: v.run.id,
@@ -544,6 +683,22 @@ function AnalysisSection({
       />
       {selected.detail ? (
         <AnalysisResult detail={selected.detail} />
+      ) : ACTIVE_AGENT_RUN_STATUSES.has(
+          selected.run.status as AgentRunStatus,
+        ) ? (
+        <Alert
+          type="info"
+          showIcon
+          message="分析运行中…"
+          description={
+            <Space direction="vertical" size={0}>
+              <Text type="secondary">
+                运行 ID: {selected.run.id}，正在调用模型并持久化结果，请稍候。
+              </Text>
+              <AgentRunStatusTag status={selected.run.status} />
+            </Space>
+          }
+        />
       ) : (
         <Alert
           type="warning"

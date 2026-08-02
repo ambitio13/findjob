@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/database.md", "reason": "Repository rules: owned-lookup pattern for cross-user write protection, partial-update contract."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "PATCH partial-update semantics (omitted vs explicit null) and 202 enqueue-and-poll pattern."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Sanitized error strings on failed runs; ownership mismatch → fail run loudly."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "useAgentRunPolling hook + 202 enqueue pattern; multi-run polling for parallel artifact generation."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Router state to carry fresh-create signal across navigation (avoid GET resetting is_duplicate)."}
+{"file": ".trellis/spec/frontend/hooks.md", "reason": "useAgentRunPolling single-runId contract; ref guards for fire-once effects."}

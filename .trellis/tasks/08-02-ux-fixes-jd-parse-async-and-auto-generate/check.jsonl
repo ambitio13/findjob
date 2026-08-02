@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/quality.md", "reason": "Test coverage requirements: regression tests for ownership mismatch write-back + explicit-null clear."}
+{"file": ".trellis/spec/backend/database.md", "reason": "Repository ownership scoping: get_by_id must return None for cross-user; update applies verbatim including None."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Lint + type-check + build gate; no reliance on GET-default is_duplicate for auto-generation trigger."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Cross-layer data flow: create response is_duplicate → router state → autoGenerate prop, not re-GET."}
