@@ -631,3 +631,76 @@ Completed go/no-go automation readiness review. Decision: GO. All 6 go criteria 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: First Platform Pilot — Safety Contract Commit + Dev DB Alembic Repair
+
+**Date**: 2026-08-02
+**Task**: 08-02-first-platform-pilot-guided-submit (in_progress)
+**Branch**: `wanzhen`
+
+### Summary
+
+Committed the safety-contract slice of the BOSS guided-submit pilot as a clean
+baseline, then repaired the development database's alembic version drift that
+was blocking backend startup.
+
+The pilot task itself remains open: the real `RealBossAdapter` still returns
+safe `unknown` outcomes and has no Playwright navigation/fill/classification
+logic. That work is scoped in `real-boss-adapter-plan.md` (Phase 0-6) and is
+the only remaining blocker before the PRD acceptance item "dry-run navigation
++ fill end-to-end" can close.
+
+### Main Changes
+
+- Ran full quality gate before committing: backend ruff + pytest (469 passed),
+  frontend lint/type-check/build, task.py validate, git diff —check — all green.
+- Committed `ca6a699 feat: first platform pilot guided-submit safety contract`
+  (38 files, +6801/-16):
+  - H1 external action idempotency (migration 0005 + service guard).
+  - H2 JD analysis stale-source detection (mirrors readiness worker).
+  - Platform adapter boundary (base protocol + fake BOSS + env-gated real BOSS
+    returning safe `unknown`).
+  - Guided-submit prepare/submit/abort APIs behind approval + idempotency
+    guards; single application_id per run, no batch path.
+  - Seven platform failure categories via sanitized envelope + timeline.
+  - Frontend GuidedSubmitPanel + API client + types + sibling-panel refresh.
+  - 109 new test assertions.
+- Diagnosed dev DB (`job_search_agent`) alembic drift: `alembic_version` was
+  stuck at `0002_agent_run_job_id` while the actual schema already matched
+  0005 (tables/columns/indexes all present). Root cause: schema was created
+  out-of-band (likely `Base.metadata.create_all`) without advancing the
+  alembic version row, so `alembic upgrade head` re-ran 0003/0004 and hit
+  `DuplicateTable: relation "application_actions" already exists`.
+- Repaired by verifying schema parity then `alembic stamp 0005_external_idempotency`.
+  Backend now boots; `/api/v1/health` returns 200 with db: ok, redis: ok.
+- Minor residual: the named FK `fk_application_records_user_id_user_profiles`
+  from migration 0003 is absent in the dev DB; an auto-named
+  `application_records_user_id_fkey` (same target `user_profiles(id)`) exists
+  instead. Functionally equivalent; noted but not fixed this session.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ca6a699` | feat: first platform pilot guided-submit safety contract |
+
+### Testing
+
+- backend ruff: passed
+- backend pytest -q: 469 passed, 1 warning
+- frontend pnpm lint / type-check / build: passed
+- task.py validate 08-02-first-platform-pilot-guided-submit: passed
+- git diff --check: passed
+- post-repair backend boot + /api/v1/health: 200, db ok, redis ok
+
+### Status
+
+[OK] **Completed (safety contract slice committed; real adapter pending)**
+
+### Next Steps
+
+- Real BOSS adapter: follow `real-boss-adapter-plan.md` Phase 0 (session
+  handoff contract) → Phase 1 (Playwright runtime wrapper) when ready to
+  proceed with real platform navigation.
+- Optionally fix the dev DB named-FK drift via a dedicated corrective migration.
