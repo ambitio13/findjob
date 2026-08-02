@@ -34,6 +34,7 @@ import type {
   PlatformSubmissionPrepareRequest,
   PlatformSubmissionPrepareResponse,
   PlatformSubmissionSubmitResponse,
+  BridgeStatusResponse,
 } from "@/types";
 
 const baseURL = "/api/v1";
@@ -425,6 +426,20 @@ export async function abortPlatformSubmission(
 ): Promise<PlatformSubmissionAbortResponse> {
   const { data } = await apiClient.post<PlatformSubmissionAbortResponse>(
     `/applications/${applicationId}/platform-submissions/${runId}/abort`,
+  );
+  return data;
+}
+
+// --- Userscript bridge status ---
+//
+// The bridge endpoints are unauthenticated (the Tampermonkey userscript cannot
+// send X-User-Id). The frontend polls status to show whether a userscript is
+// connected before the user starts a guided submit.
+
+/** Check whether a Tampermonkey userscript is connected to the bridge. */
+export async function getBridgeStatus(): Promise<BridgeStatusResponse> {
+  const { data } = await apiClient.get<BridgeStatusResponse>(
+    "/userscript-bridge/status",
   );
   return data;
 }

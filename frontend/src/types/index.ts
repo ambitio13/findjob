@@ -722,6 +722,15 @@ export interface PlatformSubmissionAbortResponse {
   action: ApplicationActionOutFull;
 }
 
+// --- Userscript bridge status ---
+
+/** Response for ``GET /userscript-bridge/status``. */
+export interface BridgeStatusResponse {
+  connected: boolean;
+  last_heartbeat: string | null;
+  active_application_id: string | null;
+}
+
 // --- Application readiness: failure envelope, artifacts, payloads ---
 
 /** Mirrors backend ``ApplicationFailureCategory`` enum. */

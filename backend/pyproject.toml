@@ -30,6 +30,12 @@ dev = [
     "ruff>=0.5",
     "httpx>=0.27",
 ]
+# Real BOSS Web adapter runtime. Not required for default tests/dev — the fake
+# adapter is used when ``BOSS_ADAPTER_ENABLED`` is unset. Install with:
+#   pip install -e '.[boss]'
+boss = [
+    "playwright>=1.40",
+]
 
 [tool.setuptools]
 packages = [

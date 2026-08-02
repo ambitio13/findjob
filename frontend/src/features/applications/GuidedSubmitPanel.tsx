@@ -31,6 +31,7 @@ import {
   normalizeApplicationStatus,
   type ApplicationStatus,
 } from "./status";
+import { useBridgeStatus } from "./useBridgeStatus";
 import type {
   AgentRunDetailOut,
   ApplicationActionOutFull,
@@ -248,6 +249,13 @@ export function GuidedSubmitPanel({ application, onAfterChange }: Props) {
   const canFinalSubmit = actionStatus === "approved";
   const hasTerminalResult = action?.external_result_status != null;
 
+  // Userscript bridge status — shows whether a Tampermonkey userscript is
+  // connected. The prepare/submit flow will fail with ``unknown`` if the
+  // userscript is not running, so we surface this proactively.
+  const bridgeEnabled = canPrepare;
+  const { status: bridgeStatus } = useBridgeStatus(bridgeEnabled);
+  const bridgeConnected = bridgeStatus?.connected ?? false;
+
   return (
     <Card type="inner" title="平台引导投递（BOSS）" size="small">
       {contextHolder}
@@ -258,6 +266,22 @@ export function GuidedSubmitPanel({ application, onAfterChange }: Props) {
           message="系统仅准备投递草稿，未经审批不会投递"
           description="点击「准备投递草稿」后，系统以只填表单、不提交的方式生成草稿。你必须在外部动作审批区批准后，「确认投递」按钮才会启用。系统不会自动登录、不会保存登录态、不会绕过验证码。"
         />
+
+        {/* Userscript bridge status indicator */}
+        {canPrepare ? (
+          <Descriptions column={1} size="small">
+            <Descriptions.Item label="油猴桥接状态">
+              <Tag color={bridgeConnected ? "green" : "default"}>
+                {bridgeConnected ? "已连接" : "未连接"}
+              </Tag>
+              <Text type="secondary" style={{ marginLeft: 8 }}>
+                {bridgeConnected
+                  ? "检测到油猴脚本正在运行，可执行投递操作。"
+                  : "未检测到油猴脚本。请安装并启用 boss-userscript.user.js，然后在 BOSS 直聘页面打开目标职位/HR 会话页。"}
+              </Text>
+            </Descriptions.Item>
+          </Descriptions>
+        ) : null}
 
         {!canPrepare ? (
           <Text type="secondary">

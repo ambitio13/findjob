@@ -737,3 +737,73 @@ the only remaining blocker before the PRD acceptance item "dry-run navigation
 ### Next Steps
 
 - None - task complete
+
+## 2026-08-02 — RealBossAdapter 真实 Playwright 实现
+
+### Task
+`08-02-first-platform-pilot-guided-submit` — 关闭唯一 P1 阻断项：RealBossAdapter 缺真实 Playwright 导航/填充/提交逻辑。
+
+### Changes
+- `backend/app/core/config.py`: Settings 新增 `boss_adapter_enabled` + `boss_session_profile_dir`（Phase 0）。
+- `backend/app/platforms/boss/registry.py`: 改用 `get_settings().boss_adapter_enabled` 替代 `os.environ.get`。
+- `backend/app/platforms/boss/runtime.py` (新建): `BossBrowserRuntime` + `BossPage` 封装，bounded timeout（导航 30s / 填充 15s），确定性清理。
+- `backend/app/platforms/boss/selectors.py` (新建): 集中选择器注册表，优先语义定位器。
+- `backend/app/platforms/boss/classifiers.py` (新建): 保守 `classify_page`（7 类结果）+ `classify_submit_result`。
+- `backend/app/platforms/boss/sanitizer.py` (新建): `sanitize_url` (sha256 hash) / `sanitize_title` (截断+脱敏) / `sanitize_diagnostic` (剥离 token/profile 路径)。
+- `backend/app/platforms/boss/adapter.py`: 重写 `prepare_submission`（导航→分类→填充→验证提交控件可见但不点击→快照）+ `submit_prepared`（重开→重分类→重填→恰好点击一次→分类结果，submitted 仅在观察到成功标记时返回）。
+- `backend/pyproject.toml`: 新增 `[boss]` optional dependency (`playwright>=1.40`)。
+- `docs/manual-boss-pilot.md` (新建): 手动试点 runbook。
+- 测试: `test_boss_sanitizer.py` (14) + `test_boss_classifiers.py` (13) + `test_boss_real_adapter.py` (10)，全部用 fake Playwright 对象，覆盖 7 类失败 + stop-before-submit + exactly-one-click + no-secrets。
+
+### Testing
+- ruff: passed
+- backend pytest: 519 passed
+- frontend lint/type-check/build: passed
+- task.py validate: passed
+- git diff --check: passed
+
+### Status
+[OK] P1 阻断项已关闭。check.jsonl 记录为 passed。真实浏览器验证留给手动试点 runbook。
+
+## 2026-08-03 — RealBossAdapter CDP 模式 + BOSS 反自动化检测实测
+
+### Task
+`08-02-first-platform-pilot-guided-submit` — 让 RealBossAdapter 支持 CDP 连接真实 Chrome，手动验证 BOSS 反自动化检测机制。
+
+### Summary
+系统性实测确认了 BOSS 直聘的多层反自动化检测机制（5 种方式全部失败），找到唯一可行路径：CDP 连接真实 Chrome + 用户手动导航 + 适配器只读取/点击不 goto。据此修改 runtime.py CDP 模式永不调用 page.goto。全量 522 测试通过，实测报告记录在 docs/boss-anti-automation-findings.md。任务标记为 complete。
+
+### Changes
+- `backend/app/core/config.py`: 新增 `boss_cdp_endpoint` 进程配置字段。
+- `backend/app/platforms/boss/runtime.py`: `_OpenContext.__aenter__` 增加 CDP 分支（connect_over_cdp → contexts[0].pages[0]，永不调用 page.goto）；`_close_cdp` 只断开 CDP 客户端不关用户 Chrome。
+- `backend/app/platforms/boss/adapter.py`: prepare_submission / submit_prepared 读取 boss_cdp_endpoint 并传入 BossBrowserRuntime。
+- `backend/app/tests/test_boss_real_adapter.py`: 新增 FakeCdpBrowser + 3 个 CDP 测试（连接不关 context、submit 不关 context、复用已有页面）。
+- `docs/manual-boss-pilot.md`: 更新步骤 1 为 CDP + 手动导航方式，记录 BOSS 反自动化检测 4 点机制，安全不变量新增 CDP 永不 goto。
+- `docs/boss-anti-automation-findings.md` (新建): 完整的 BOSS 反自动化检测实测报告，含 7 个实验场景、检测机制总结、可行方案、后续优化方向。
+- `check.jsonl`: 记录 CDP 实测结果 + 改动清单 + manual_verification 字段。
+- `task.json`: status → complete, completedAt → 2026-08-03。
+
+### Manual Verification
+7 个实验场景：
+1. Playwright 自带 Chromium → about:blank
+2. channel="chrome" → 首次 OK，第二次 about:blank
+3. CDP + page.goto → about:blank
+4. CDP + Runtime.evaluate → 页面 ~0.5s 后关闭
+5. add_init_script 反检测 → 无效
+6. CDP 原生 Page.navigate → 偶尔绕过但不可靠
+7. Chrome 启动参数 URL（对照）→ 正常（CDP 连接尚未建立）
+
+结论：BOSS 检测不依赖 navigator.webdriver，而是基于 CDP 协议层行为特征（导航命令 + evaluate 调用），检测是累积式的。
+
+### Testing
+- ruff: passed
+- backend pytest: 522 passed, 1 warning
+- task.py validate: passed
+- git diff --check: passed
+
+### Status
+[OK] 任务完成。RealBossAdapter 支持 CDP + persistent 两种模式，BOSS 反自动化检测实测报告已记录，所有安全不变量保留。
+
+### Next Steps
+- 后续可探索 CDP DOM API 替代 Runtime.evaluate 以减少被检测概率
+- 真实投递试点需用户手动导航到目标页面后运行适配器

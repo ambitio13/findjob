@@ -221,21 +221,37 @@ async def test_fake_adapter_submit_records_call_for_audit() -> None:
 
 
 def test_registry_returns_fake_adapter_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import get_settings
+
     monkeypatch.delenv("BOSS_ADAPTER_ENABLED", raising=False)
-    adapter = get_adapter()
+    get_settings.cache_clear()
+    try:
+        adapter = get_adapter()
+    finally:
+        get_settings.cache_clear()
     assert isinstance(adapter, FakeBossAdapter)
 
 
 def test_registry_forwards_scenario_to_fake_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import get_settings
+
     monkeypatch.delenv("BOSS_ADAPTER_ENABLED", raising=False)
-    adapter = get_adapter(scenario="captcha_required")
+    get_settings.cache_clear()
+    try:
+        adapter = get_adapter(scenario="captcha_required")
+    finally:
+        get_settings.cache_clear()
     assert isinstance(adapter, FakeBossAdapter)
     assert adapter.scenario == "captcha_required"
 
 
 def test_registry_real_adapter_only_behind_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     """Setting the flag selects the real adapter path, never the fake adapter."""
+    from app.core.config import get_settings
+
     monkeypatch.setenv("BOSS_ADAPTER_ENABLED", "1")
+    monkeypatch.delenv("BOSS_USERSCRIPT_BRIDGE_ENABLED", raising=False)
+    get_settings.cache_clear()
     try:
         adapter = get_adapter()
     except RuntimeError as exc:
@@ -245,3 +261,54 @@ def test_registry_real_adapter_only_behind_flag(monkeypatch: pytest.MonkeyPatch)
     else:
         assert not isinstance(adapter, FakeBossAdapter)
         assert adapter.platform == "boss"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_registry_userscript_adapter_takes_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When both userscript and real flags are set, userscript wins.
+
+    Priority: userscript > real > fake. The userscript path must never import
+    Playwright (it sidesteps CDP entirely).
+    """
+    from app.core.config import get_settings
+    from app.platforms.boss.userscript_adapter import UserscriptBossAdapter
+
+    monkeypatch.setenv("BOSS_USERSCRIPT_BRIDGE_ENABLED", "1")
+    monkeypatch.setenv("BOSS_ADAPTER_ENABLED", "1")
+    get_settings.cache_clear()
+    try:
+        adapter = get_adapter()
+    finally:
+        get_settings.cache_clear()
+    assert isinstance(adapter, UserscriptBossAdapter)
+    assert adapter.platform == "boss"
+
+
+def test_registry_userscript_adapter_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Setting only the userscript flag selects the userscript adapter."""
+    from app.core.config import get_settings
+    from app.platforms.boss.userscript_adapter import UserscriptBossAdapter
+
+    monkeypatch.setenv("BOSS_USERSCRIPT_BRIDGE_ENABLED", "1")
+    monkeypatch.delenv("BOSS_ADAPTER_ENABLED", raising=False)
+    get_settings.cache_clear()
+    try:
+        adapter = get_adapter()
+    finally:
+        get_settings.cache_clear()
+    assert isinstance(adapter, UserscriptBossAdapter)
+
+
+def test_registry_fake_when_neither_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With neither flag set the fake adapter is returned (default for tests/dev)."""
+    from app.core.config import get_settings
+
+    monkeypatch.delenv("BOSS_USERSCRIPT_BRIDGE_ENABLED", raising=False)
+    monkeypatch.delenv("BOSS_ADAPTER_ENABLED", raising=False)
+    get_settings.cache_clear()
+    try:
+        adapter = get_adapter()
+    finally:
+        get_settings.cache_clear()
+    assert isinstance(adapter, FakeBossAdapter)

@@ -59,6 +59,30 @@ class Settings(BaseSettings):
     model_api_key: str = ""
     model_default_model: str = "deepseek-chat"
 
+    # --- BOSS platform adapter (env-gated pilot) ---
+    # The real Playwright-backed BOSS adapter is enabled only when this flag is
+    # truthy. When unset (default), the fake adapter is used for deterministic
+    # tests and local dev. ``boss_session_profile_dir`` points to a local
+    # Playwright persistent-context profile directory containing the user's
+    # existing BOSS Web session. It is **process config** — never a request
+    # payload, queue payload, or database value — so session references never
+    # reach the durable layer (design.md §Phase 0).
+    boss_adapter_enabled: bool = False
+    boss_session_profile_dir: str = ""
+    # CDP endpoint for connecting to a real, already-logged-in Chrome instance
+    # (e.g. ``http://127.0.0.1:9222``). When set, the runtime uses
+    # ``connect_over_cdp`` instead of ``launch_persistent_context``. This avoids
+    # BOSS anti-automation detection that blocks Playwright-launched browsers.
+    # Like ``boss_session_profile_dir``, this is **process config** — never a
+    # request payload, queue payload, or database value.
+    boss_cdp_endpoint: str = ""
+    # When truthy, the userscript bridge adapter is used instead of the
+    # Playwright/CDP adapter. The userscript runs in the page's own JS context
+    # (via Tampermonkey), sidestepping BOSS CDP-level automation detection.
+    # Like the other BOSS config values, this is **process config** — never a
+    # request payload, queue payload, or database value.
+    boss_userscript_bridge_enabled: bool = False
+
     @property
     def effective_provider(self) -> Literal["deepseek", "openai", "fake"]:
         if self.model_provider != "auto":

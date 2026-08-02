@@ -1,0 +1,97 @@
+"""Pydantic schemas for the userscript bridge HTTP endpoints.
+
+These models define the wire format between the Tampermonkey userscript and the
+backend bridge endpoints. Security invariants:
+
+- **No auth header.** The userscript cannot send ``X-User-Id``. Security is
+  enforced at the instruction/result layer.
+- **Instructions carry only operations + selectors + fill values.** No
+  credentials, cookies, or tokens.
+- **Results carry only sanitized values.** ``url`` is a sha256 hash, ``text`` is
+  a truncated title, ``error`` is diagnostic-stripped.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+
+class BridgeStatusResponse(BaseModel):
+    """Response for ``GET /userscript-bridge/status``."""
+
+    connected: bool = Field(description="Whether a userscript heartbeat is recent.")
+    last_heartbeat: datetime | None = None
+    active_application_id: str | None = Field(
+        default=None,
+        description="The application currently being processed, if any.",
+    )
+
+
+class InstructionOut(BaseModel):
+    """One instruction sent to the userscript via ``GET /next-instruction``."""
+
+    instruction_id: str = Field(min_length=1)
+    op: str = Field(
+        description=(
+            "Operation: fill, click, check_visible, count, "
+            "read_title, read_url, read_content."
+        )
+    )
+    selector_kind: str | None = Field(
+        default=None, description="role, label, placeholder, or css."
+    )
+    selector_value: str | None = None
+    selector_name: str | None = Field(
+        default=None, description="Accessible name for role selectors."
+    )
+    fill_value: str | None = Field(
+        default=None, description="Value to type, only for the fill op."
+    )
+
+
+class ResultIn(BaseModel):
+    """Result posted back by the userscript via ``POST /result``."""
+
+    instruction_id: str = Field(min_length=1)
+    success: bool = True
+    visible: bool | None = None
+    count: int | None = None
+    text: str | None = Field(
+        default=None,
+        description="Sanitized text (title/content), already stripped by the userscript.",
+    )
+    url: str | None = Field(
+        default=None,
+        description="sha256 hash of the page URL, computed by the userscript.",
+    )
+    error: str | None = Field(
+        default=None, description="Short diagnostic-stripped error message."
+    )
+
+
+class HeartbeatIn(BaseModel):
+    """Heartbeat posted by the userscript via ``POST /heartbeat``."""
+
+    page_url_hash: str | None = Field(
+        default=None, description="sha256 hash of the current page URL."
+    )
+    page_title: str | None = Field(
+        default=None, description="Sanitized page title (truncated by the userscript)."
+    )
+
+
+class AckResponse(BaseModel):
+    """Simple acknowledgement response."""
+
+    ok: bool = True
+
+
+__all__ = [
+    "AckResponse",
+    "BridgeStatusResponse",
+    "HeartbeatIn",
+    "InstructionOut",
+    "ResultIn",
+]

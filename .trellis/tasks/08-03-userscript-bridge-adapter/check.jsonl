@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend quality gate: ruff, type-check, tests must pass."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify adapter and bridge failures map to structured error categories."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Verify bridge endpoints follow FastAPI boundary rules."}
+{"file": ".trellis/spec/big-question/platform-integration-strategy.md", "reason": "Verify adapter rules and safety invariants are preserved."}

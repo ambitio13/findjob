@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/big-question/platform-integration-strategy.md", "reason": "Adapter rules, preferred order, and platform integration boundaries apply directly to the userscript bridge adapter."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "New HTTP bridge endpoints must follow FastAPI boundary rules and async workflow shape."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "Bridge channel has no user auth header; security enforced via sanitized instructions and in-memory queue."}
+{"file": ".trellis/spec/backend/performance.md", "reason": "In-memory instruction queue, long-poll, heartbeat timeout, and concurrency limits follow performance rules."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Bridge and adapter failures must map to structured error categories."}
+{"file": ".trellis/spec/backend/type-safety.md", "reason": "Pydantic schemas and Protocol-typed adapter boundary must follow typing rules."}
