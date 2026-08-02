@@ -30,6 +30,13 @@ from app.schemas.application import (
     ApplicationFailureCategory,
     ApplicationFailureNextAction,
 )
+from app.schemas.application_action import ApplicationActionOut
+from app.schemas.platform_submission import (
+    PlatformSubmissionAbortResponse,
+    PlatformSubmissionPrepareRequest,
+    PlatformSubmissionPrepareResponse,
+    PlatformSubmissionSubmitResponse,
+)
 from app.schemas.readiness import (
     ReadinessArtifactListOut,
     ReadinessArtifactOut,
@@ -38,6 +45,15 @@ from app.schemas.readiness import (
     RunReadinessSubmitResponse,
 )
 from app.services import application_service
+from app.services.platform_submission_service import (
+    WORKFLOW_TYPE as PLATFORM_PREPARE_WORKFLOW_TYPE,
+)
+from app.services.platform_submission_service import (
+    PlatformSubmitBlockedError,
+    abort_platform_submit,
+    load_prepare_context,
+    run_platform_guided_submit_submit,
+)
 from app.services.readiness_service import (
     WORKFLOW_TYPE,
     load_readiness_context,
@@ -318,4 +334,229 @@ async def generate_readiness_artifact(
         run=RunReadinessRunSummary.model_validate(run),
         application_id=application_id,
         artifact_type=artifact_type,
+    )
+
+
+@router.post(
+    "/{application_id}/platform-submissions/prepare",
+    response_model=PlatformSubmissionPrepareResponse,
+    status_code=202,
+)
+async def prepare_platform_submission(
+    application_id: str,
+    body: PlatformSubmissionPrepareRequest,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> PlatformSubmissionPrepareResponse:
+    """Submit the platform guided-submit *prepare* workflow (enqueue-and-poll).
+
+    Validates application ownership + status (must be ``materials_ready`` or
+    ``approval_required``) + resume-version usability up front (404/422 bubble
+    from the context loader before any run is persisted), then creates a
+    ``queued`` ``AgentRun`` (``workflow_type="platform_guided_submit_prepare"``)
+    with sanitized request metadata, enqueues a
+    :class:`~app.queue.payloads.PlatformGuidedSubmitPreparePayload` to the worker
+    queue, and returns immediately with the run reference. The frontend polls
+    ``GET /agent-runs/{run_id}/detail`` until the run reaches a terminal status,
+    then hydrates the prepared action from the persisted ``ApplicationAction``.
+
+    The worker runs the BOSS adapter in dry-run/fill-only mode and never
+    performs the final submit. No raw JD, resume text, cookies, tokens, or
+    session data crosses the queue boundary — only durable resource IDs and the
+    ``source_hash`` captured at enqueue time.
+
+    Duplicate active-run guard: while an active (``queued``/``running``) prepare
+    run exists for this application, the endpoint returns HTTP 409 instead of
+    enqueuing a second prepare.
+
+    If Redis is unavailable the run is flipped to ``failed`` before returning so
+    the user is never left with a silent spinner.
+    """
+    from app.queue.payloads import PlatformGuidedSubmitPreparePayload
+    from app.queue.runtime import enqueue_workflow
+
+    # 1. Validate application/job/resume ownership + status + data quality
+    #    (404/422). This runs BEFORE any run is created so a bad request never
+    #    leaves a half-started run behind.
+    record, job, version, source_hash = load_prepare_context(
+        db, current_user, application_id
+    )
+
+    # 2. Duplicate active-run guard: reject if a queued/running prepare run
+    #    already exists for this application. We deliberately allow a re-prepare
+    #    after a run reaches a terminal state.
+    runs, _ = agent_run_repo.list_runs_for_user(
+        db,
+        current_user.id,
+        workflow_type=PLATFORM_PREPARE_WORKFLOW_TYPE,
+        job_id=record.job_id,
+        page=1,
+        page_size=50,
+    )
+    for r in runs:
+        if r.status not in {"queued", "running"}:
+            continue
+        r_result = r.result or {}
+        if r_result.get("application_id") == application_id:
+            raise HTTPException(
+                status_code=409,
+                detail="platform submission prepare already in progress for this application",
+            )
+
+    # 3. Create the durable AgentRun in queued state *before* enqueue so
+    #    PostgreSQL stays the source of truth. The result metadata is sanitized:
+    #    only IDs + the target resource + source hash, no raw text.
+    run = agent_run_repo.create_run(
+        db,
+        user_id=current_user.id,
+        workflow_type=PLATFORM_PREPARE_WORKFLOW_TYPE,
+        status="queued",
+        job_id=record.job_id,
+        result={
+            "user_id": current_user.id,
+            "application_id": application_id,
+            "job_id": record.job_id,
+            "resume_version_id": version.id,
+            "source_hash": source_hash,
+            "target_platform": "boss",
+            "target_resource": body.target_resource,
+            "selected_artifact_ids": list(body.selected_artifact_ids),
+            "mode": "dry_run",
+        },
+    )
+    db.commit()
+    db.refresh(run)
+
+    # 4. Enqueue the platform guided-submit prepare job. If Redis is down, flip
+    #    the run to failed so the frontend sees a terminal state instead of
+    #    polling forever.
+    idempotency_key = f"platform_guided_submit_prepare:{run.id}"
+    enqueue_payload = PlatformGuidedSubmitPreparePayload(
+        workflow_type=PLATFORM_PREPARE_WORKFLOW_TYPE,
+        user_id=current_user.id,
+        agent_run_id=run.id,
+        idempotency_key=idempotency_key,
+        application_id=application_id,
+        job_id=record.job_id,
+        resume_version_id=version.id,
+        source_hash=source_hash,
+        selected_artifact_ids=list(body.selected_artifact_ids),
+        outgoing_text=body.outgoing_text,
+        resume_file_reference=body.resume_file_reference,
+        target_resource=body.target_resource,
+    )
+    try:
+        await enqueue_workflow(enqueue_payload, job_id=idempotency_key)
+    except Exception:
+        persist_application_failure(
+            db,
+            run=run,
+            application_id=application_id,
+            artifact_type="platform_submit",
+            error="queue enqueue failed",
+            category=ApplicationFailureCategory.queue,
+            code="queue_enqueue_failed",
+            message="queue enqueue failed",
+            retryable=True,
+            next_action=ApplicationFailureNextAction.retry,
+        )
+        db.commit()
+        db.refresh(run)
+
+    return PlatformSubmissionPrepareResponse(
+        run=RunReadinessRunSummary.model_validate(run),
+        application_id=application_id,
+        target_platform="boss",
+        mode="dry_run",
+    )
+
+
+@router.post(
+    "/{application_id}/platform-submissions/{run_id}/submit",
+    response_model=PlatformSubmissionSubmitResponse,
+)
+async def submit_platform_submission(
+    application_id: str,
+    run_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> PlatformSubmissionSubmitResponse:
+    """Final platform submit behind the approval + idempotency guards.
+
+    Runs synchronously inside the request (not a queue worker) because the
+    adapter final submit is short-lived and the user is waiting for the result.
+    The endpoint:
+
+    1. Loads + verifies ownership + that the run is the succeeded prepare run
+       for this application (404/409).
+    2. Recomputes the current payload hash + source hash and calls
+       ``assert_action_approved`` — the hard approval boundary.
+    3. Checks the external idempotency key; if a terminal result already exists
+       it is returned without touching the platform (design.md §H1).
+    4. Calls ``adapter.submit_prepared`` — the only external side effect.
+    5. Persists the sanitized terminal result (``submitted`` /
+       ``duplicate_detected`` / ``unknown`` / ``platform_failure``).
+
+    If the approval guard blocks execution (action not approved, payload hash
+    mismatch, or source hash mismatch) the endpoint returns HTTP 409 so the
+    frontend can prompt the user to re-approve. No cookies, tokens, credentials,
+    raw JD, raw resume, or page HTML are persisted.
+    """
+    try:
+        _, run, action = await run_platform_guided_submit_submit(
+            db,
+            current_user=current_user,
+            application_id=application_id,
+            run_id=run_id,
+        )
+    except PlatformSubmitBlockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": exc.reason,
+                "message": exc.message,
+                "action_id": exc.action_id,
+            },
+        ) from exc
+
+    return PlatformSubmissionSubmitResponse(
+        run=RunReadinessRunSummary.model_validate(run),
+        application_id=application_id,
+        action=ApplicationActionOut.model_validate(action),
+    )
+
+
+@router.post(
+    "/{application_id}/platform-submissions/{run_id}/abort",
+    response_model=PlatformSubmissionAbortResponse,
+)
+async def abort_platform_submission(
+    application_id: str,
+    run_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> PlatformSubmissionAbortResponse:
+    """Abort an in-flight platform final submit (side-effect-free cancellation).
+
+    Aborting revokes the prepared ``ApplicationAction`` so it can no longer
+    authorize execution and appends a ``platform_submit_blocked`` timeline event
+    noting the user-initiated abort. No platform side effect is performed.
+
+    If the adapter already produced a terminal result (``submitted`` /
+    ``duplicate_detected`` / ``unknown`` / ``platform_failure``) the abort is
+    refused with HTTP 409 — the result stands and must be reconciled manually.
+    If the external submit is in-flight (``external_started_at`` set, no
+    terminal result) the abort is also refused with 409 because the browser
+    action cannot be safely cancelled.
+    """
+    _, run, action = abort_platform_submit(
+        db,
+        current_user=current_user,
+        application_id=application_id,
+        run_id=run_id,
+    )
+    return PlatformSubmissionAbortResponse(
+        run=RunReadinessRunSummary.model_validate(run),
+        application_id=application_id,
+        action=ApplicationActionOut.model_validate(action),
     )

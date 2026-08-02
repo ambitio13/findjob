@@ -52,6 +52,10 @@ pilot relies on jd_analysis freshness.
 ### Out of Scope
 
 - Autonomous bulk submission across multiple applications.
+- Recommended-jobs discovery loop: scanning BOSS recommended jobs, extracting
+  JD, matching, clicking "立即沟通", generating/sending openers, and continuing
+  to the next job. This is recorded as a future phase in
+  `future-recommended-jobs-loop.md`.
 - Auto-login / credential storage.
 - HR messaging automation (second pilot iteration).
 - Multi-platform support (one platform only).
@@ -113,3 +117,7 @@ infrastructure.
   for the checkpoint, timeline for audit.
 - Browser automation library choice (Playwright/Selenium/etc.) is a design.md
   decision, not a PRD decision.
+- After this single-application guided-submit pilot is proven, the next larger
+  loop is documented in `future-recommended-jobs-loop.md`: recommended jobs →
+  JD capture → match decision → contact/opener action → result recording →
+  continue.

@@ -29,6 +29,10 @@ import type {
   ApplicationActionCreate,
   ApplicationActionListOut,
   ApplicationActionOut,
+  PlatformSubmissionAbortResponse,
+  PlatformSubmissionPrepareRequest,
+  PlatformSubmissionPrepareResponse,
+  PlatformSubmissionSubmitResponse,
 } from "@/types";
 
 const baseURL = "/api/v1";
@@ -353,6 +357,49 @@ export async function listApplicationActions(
 ): Promise<ApplicationActionListOut> {
   const { data } = await apiClient.get<ApplicationActionListOut>(
     `/applications/${applicationId}/actions`,
+  );
+  return data;
+}
+
+// --- Platform guided-submit workflow ---
+//
+// The guided-submit flow is a two-phase, approval-gated workflow. Phase 1
+// (prepare) runs the platform adapter in dry-run/fill-only mode via an agent
+// run the frontend polls to completion. Phase 2 (submit) runs synchronously
+// behind the approval + idempotency guards. The frontend never sees raw
+// cookies, tokens, credentials, or page HTML — only the sanitized filled
+// preview and approval state.
+
+/** Start a platform guided-submit prepare run (enqueue-and-poll). */
+export async function preparePlatformSubmission(
+  applicationId: string,
+  payload: PlatformSubmissionPrepareRequest,
+): Promise<PlatformSubmissionPrepareResponse> {
+  const { data } = await apiClient.post<PlatformSubmissionPrepareResponse>(
+    `/applications/${applicationId}/platform-submissions/prepare`,
+    payload,
+  );
+  return data;
+}
+
+/** Execute the final platform submit behind the approval + idempotency guards. */
+export async function submitPlatformSubmission(
+  applicationId: string,
+  runId: string,
+): Promise<PlatformSubmissionSubmitResponse> {
+  const { data } = await apiClient.post<PlatformSubmissionSubmitResponse>(
+    `/applications/${applicationId}/platform-submissions/${runId}/submit`,
+  );
+  return data;
+}
+
+/** Abort an in-flight platform final submit (side-effect-free cancellation). */
+export async function abortPlatformSubmission(
+  applicationId: string,
+  runId: string,
+): Promise<PlatformSubmissionAbortResponse> {
+  const { data } = await apiClient.post<PlatformSubmissionAbortResponse>(
+    `/applications/${applicationId}/platform-submissions/${runId}/abort`,
   );
   return data;
 }

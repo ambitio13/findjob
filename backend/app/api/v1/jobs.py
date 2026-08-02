@@ -290,6 +290,19 @@ async def run_job_analysis(
 
     # 5. Enqueue the analysis job. If Redis is down, flip the run to failed so
     #    the frontend sees a terminal state instead of polling forever.
+    #
+    #    Capture the readiness-style source hash at enqueue time (design.md
+    #    §H2). The worker recomputes it before model execution; on mismatch the
+    #    run fails with ``code = "stale_source"`` so an analysis never proceeds
+    #    against stale job/resume/profile data.
+    from app.services.jd_analysis_service import compute_enqueue_source_hash
+
+    enqueue_source_hash = compute_enqueue_source_hash(
+        db=db,
+        current_user=current_user,
+        job_id=job_id,
+        resume_version_id=payload.resume_version_id,
+    )
     idempotency_key = f"jd_analysis:{run.id}"
     enqueue_payload = ResumeAwareJdAnalysisPayload(
         workflow_type=WORKFLOW_TYPE,
@@ -298,6 +311,7 @@ async def run_job_analysis(
         idempotency_key=idempotency_key,
         job_id=job_id,
         resume_version_id=payload.resume_version_id,
+        source_hash=enqueue_source_hash,
     )
     try:
         await enqueue_workflow(enqueue_payload, job_id=idempotency_key)

@@ -38,6 +38,7 @@ def create(
     source_snapshot: dict[str, Any],
     approval: dict[str, Any] | None = None,
     stale_reason: str | None = None,
+    external_idempotency_key: str | None = None,
 ) -> ApplicationAction:
     """Insert an ``ApplicationAction`` row and return it (not yet committed)."""
     action = ApplicationAction(
@@ -50,6 +51,7 @@ def create(
         source_snapshot=source_snapshot,
         approval=approval,
         stale_reason=stale_reason,
+        external_idempotency_key=external_idempotency_key,
     )
     db.add(action)
     db.flush()
@@ -141,6 +143,11 @@ def update(
     payload_preview: dict[str, Any] | None = None,
     payload_hash: str | None = None,
     source_snapshot: dict[str, Any] | None = None,
+    external_idempotency_key: str | None = None,
+    external_started_at: datetime | None = None,
+    external_completed_at: datetime | None = None,
+    external_result_status: str | None = None,
+    external_result: dict[str, Any] | None = None,
 ) -> ApplicationAction:
     """Apply updates to ``action``, flush, and return it.
 
@@ -152,6 +159,9 @@ def update(
     (set to ``NULL``) pass the :data:`CLEAR` sentinel; a bare ``None`` leaves
     the existing value untouched. This lets ``revoke_action`` explicitly clear
     the approval record so a stale approval can never be silently reused.
+
+    The external-* fields are write-once-then-update audit fields owned by the
+    platform submission service; ``None`` leaves them untouched.
     """
     if status is not None:
         action.status = status
@@ -165,6 +175,16 @@ def update(
         action.payload_hash = payload_hash
     if source_snapshot is not None:
         action.source_snapshot = source_snapshot
+    if external_idempotency_key is not None:
+        action.external_idempotency_key = external_idempotency_key
+    if external_started_at is not None:
+        action.external_started_at = external_started_at
+    if external_completed_at is not None:
+        action.external_completed_at = external_completed_at
+    if external_result_status is not None:
+        action.external_result_status = external_result_status
+    if external_result is not None:
+        action.external_result = external_result
     db.flush()
     return action
 
@@ -186,3 +206,56 @@ def build_approval_record(
         "approved_at": approved_at.isoformat(),
         "approved_payload_hash": approved_payload_hash,
     }
+
+
+def get_terminal_for_idempotency_key(
+    db: Session,
+    *,
+    external_idempotency_key: str,
+    user_id: str,
+) -> ApplicationAction | None:
+    """Return the terminal action for an idempotency key, or ``None``.
+
+    A terminal action is one whose external side effect already produced a
+    durable result (``submitted`` / ``duplicate`` / ``unknown`` / ``failed``).
+    The platform submission service calls this before any platform call so a
+    retry or re-run returns the existing result instead of touching the
+    platform a second time (design.md §H1).
+    """
+    return (
+        db.execute(
+            select(ApplicationAction).where(
+                (ApplicationAction.external_idempotency_key == external_idempotency_key)
+                & (ApplicationAction.user_id == user_id)
+                & (ApplicationAction.external_result_status.is_not(None))
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+def get_running_for_idempotency_key(
+    db: Session,
+    *,
+    external_idempotency_key: str,
+    user_id: str,
+) -> ApplicationAction | None:
+    """Return an in-flight action for an idempotency key, or ``None``.
+
+    An in-flight action has the idempotency key set and a recorded start time
+    but no terminal result yet. The submit guard blocks a duplicate run when
+    this returns a row (design.md §H1).
+    """
+    return (
+        db.execute(
+            select(ApplicationAction).where(
+                (ApplicationAction.external_idempotency_key == external_idempotency_key)
+                & (ApplicationAction.user_id == user_id)
+                & (ApplicationAction.external_result_status.is_(None))
+                & (ApplicationAction.external_started_at.is_not(None))
+            )
+        )
+        .scalars()
+        .first()
+    )

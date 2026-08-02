@@ -72,6 +72,8 @@ interface Props {
   resumeVersionId: string | null;
   /** Job id bound to the application (for source snapshot). */
   jobId: string;
+  /** Called after create/approve/revoke so sibling panels can refresh. */
+  onActionChange?: () => void;
 }
 
 /**
@@ -88,6 +90,7 @@ export function ApplicationActionsPanel({
   sourceHash,
   resumeVersionId,
   jobId,
+  onActionChange,
 }: Props) {
   const [actions, setActions] = useState<ApplicationActionOut[]>([]);
   const [loading, setLoading] = useState(false);
@@ -125,6 +128,7 @@ export function ApplicationActionsPanel({
         prev.map((a) => (a.id === actionId ? updated : a)),
       );
       messageApi.success("已批准");
+      onActionChange?.();
     } catch (err) {
       messageApi.error(apiErrorMessage(err));
     } finally {
@@ -140,6 +144,7 @@ export function ApplicationActionsPanel({
         prev.map((a) => (a.id === actionId ? updated : a)),
       );
       messageApi.success("已撤销");
+      onActionChange?.();
     } catch (err) {
       messageApi.error(apiErrorMessage(err));
     } finally {
@@ -199,6 +204,7 @@ export function ApplicationActionsPanel({
           setSelectedActionId(created.id);
           setPreviewOpen(false);
           messageApi.success("动作预览已创建");
+          onActionChange?.();
         }}
       />
     </Card>

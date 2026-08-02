@@ -228,6 +228,23 @@ class ApplicationAction(Base, TimestampMixin):
     source_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     approval: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # External idempotency key for retryable side effects. Shape:
+    # ``{application_id}:{action_type}:{payload_hash}``. Stored before any
+    # platform call; ``external_idempotency_key`` uniqueness on terminal
+    # actions prevents duplicate platform submits (design.md §H1).
+    external_idempotency_key: Mapped[str | None] = mapped_column(
+        String(160), nullable=True, index=True
+    )
+    external_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    external_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # ``submitted | duplicate | unknown | failed``. Sanitized result metadata
+    # only — never raw cookies/tokens/page HTML (design.md §H1).
+    external_result_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    external_result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     application: Mapped[ApplicationRecord] = relationship(back_populates="actions")
 

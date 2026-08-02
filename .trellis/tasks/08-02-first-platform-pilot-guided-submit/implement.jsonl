@@ -1,1 +1,14 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "New platform submission endpoints must follow existing FastAPI response, status, and error contract conventions."}
+{"file": ".trellis/spec/backend/database.md", "reason": "H1 requires durable idempotency storage and likely an Alembic migration."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "All platform failures must be mapped to sanitized ApplicationFailureEnvelope data."}
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend implementation and regression tests must pass project quality gates."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Frontend must use centralized API client functions for guided-submit endpoints."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Guided-submit panel should follow existing component composition and UI conventions."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Frontend lint/type-check/build expectations and UI regression risks."}
+{"file": ".trellis/spec/shared/dependencies.md", "reason": "Real BOSS adapter adds Playwright as a new backend dependency and must follow dependency policy."}
+{"file": ".trellis/tasks/08-02-first-platform-pilot-guided-submit/real-boss-adapter-plan.md", "reason": "Remaining blocker plan for implementing real Playwright navigation/fill/classification safely."}
+{"file": ".trellis/tasks/08-02-first-platform-pilot-guided-submit/future-recommended-jobs-loop.md", "reason": "Deferred next-phase loop: recommended jobs -> JD matching -> contact/opener -> continue, explicitly out of current pilot scope."}
+{"file": ".trellis/spec/big-question/platform-integration-strategy.md", "reason": "Platform adapter isolation, side-effect rules, and anti-bulk-automation constraints."}
+{"file": ".trellis/spec/big-question/agent-safety-sandbox.md", "reason": "Browser/platform automation must remain bounded and user-approved."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Task touches storage, service, API, queue worker, and UI contracts."}
+{"file": ".trellis/tasks/archive/2026-08/08-01-automation-readiness-review/review.md", "reason": "Source decision record defining GO outcome, H1/H2 gates, and platform failure matrix."}

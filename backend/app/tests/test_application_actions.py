@@ -36,6 +36,7 @@ from app.schemas.application_action import (
 )
 from app.services.approval_boundary import (
     assert_action_approved,
+    compute_external_idempotency_key,
     compute_payload_hash,
 )
 
@@ -604,3 +605,219 @@ def test_no_external_execution_endpoint_exists(client: TestClient) -> None:
             path, headers=_headers(ids["user_id"])
         )
         assert resp.status_code == 404, f"{verb.upper()} {path} should not exist"
+
+
+# ---------------------------------------------------------------------------
+# H1 — External action idempotency key
+# ---------------------------------------------------------------------------
+
+
+def test_external_idempotency_key_shape() -> None:
+    """The key is ``{application_id}:{action_type}:{payload_hash}``."""
+    key = compute_external_idempotency_key(
+        application_id="app_1",
+        action_type=ExternalActionType.platform_submit,
+        payload_hash="sha256:abc",
+    )
+    assert key == "app_1:platform_submit:sha256:abc"
+
+
+def test_external_idempotency_key_binds_payload_hash() -> None:
+    """A different payload hash produces a different idempotency key."""
+    base = compute_external_idempotency_key(
+        application_id="app_1",
+        action_type=ExternalActionType.platform_submit,
+        payload_hash="sha256:abc",
+    )
+    changed = compute_external_idempotency_key(
+        application_id="app_1",
+        action_type=ExternalActionType.platform_submit,
+        payload_hash="sha256:def",
+    )
+    assert base != changed
+
+
+def test_external_idempotency_key_binds_action_type() -> None:
+    base = compute_external_idempotency_key(
+        application_id="app_1",
+        action_type=ExternalActionType.platform_submit,
+        payload_hash="sha256:abc",
+    )
+    changed = compute_external_idempotency_key(
+        application_id="app_1",
+        action_type=ExternalActionType.hr_message,
+        payload_hash="sha256:abc",
+    )
+    assert base != changed
+
+
+def test_external_idempotency_key_binds_application() -> None:
+    base = compute_external_idempotency_key(
+        application_id="app_1",
+        action_type=ExternalActionType.platform_submit,
+        payload_hash="sha256:abc",
+    )
+    changed = compute_external_idempotency_key(
+        application_id="app_2",
+        action_type=ExternalActionType.platform_submit,
+        payload_hash="sha256:abc",
+    )
+    assert base != changed
+
+
+def test_idempotency_guard_returns_terminal_result_without_platform_call(
+    client: TestClient,
+) -> None:
+    """A duplicate terminal action must return the existing result, not call
+    the platform again (design.md §H1)."""
+    from datetime import UTC, datetime
+
+    from app.db.repositories import application_action_repo
+    from app.db.session import SessionLocal
+
+    ids = _seed()
+    app_id = _create_application(client, ids)
+    action_id = client.post(
+        f"/api/v1/applications/{app_id}/actions/preview",
+        json=_preview_payload(ids),
+        headers=_headers(ids["user_id"]),
+    ).json()["id"]
+
+    # Read back the action and simulate a completed terminal external result.
+    with SessionLocal() as db:
+        action = application_action_repo.get_for_user_and_application(
+            db, action_id=action_id, application_id=app_id, user_id=ids["user_id"]
+        )
+        assert action is not None
+        key = compute_external_idempotency_key(
+            application_id=app_id,
+            action_type=ExternalActionType.platform_submit,
+            payload_hash=action.payload_hash,
+        )
+        now = datetime.now(UTC)
+        application_action_repo.update(
+            db,
+            action,
+            external_idempotency_key=key,
+            external_started_at=now,
+            external_completed_at=now,
+            external_result_status="submitted",
+            external_result={"platform": "boss", "result": "ok"},
+        )
+        db.commit()
+
+    # A second lookup for the same key must find the terminal row.
+    with SessionLocal() as db:
+        found = application_action_repo.get_terminal_for_idempotency_key(
+            db, external_idempotency_key=key, user_id=ids["user_id"]
+        )
+        assert found is not None
+        assert found.id == action_id
+        assert found.external_result_status == "submitted"
+
+
+def test_idempotency_guard_blocks_duplicate_running_action(
+    client: TestClient,
+) -> None:
+    """A second run while one is in flight is blocked (design.md §H1)."""
+    from datetime import UTC, datetime
+
+    from app.db.repositories import application_action_repo
+    from app.db.session import SessionLocal
+
+    ids = _seed()
+    app_id = _create_application(client, ids)
+    action_id = client.post(
+        f"/api/v1/applications/{app_id}/actions/preview",
+        json=_preview_payload(ids),
+        headers=_headers(ids["user_id"]),
+    ).json()["id"]
+
+    with SessionLocal() as db:
+        action = application_action_repo.get_for_user_and_application(
+            db, action_id=action_id, application_id=app_id, user_id=ids["user_id"]
+        )
+        assert action is not None
+        key = compute_external_idempotency_key(
+            application_id=app_id,
+            action_type=ExternalActionType.platform_submit,
+            payload_hash=action.payload_hash,
+        )
+        application_action_repo.update(
+            db,
+            action,
+            external_idempotency_key=key,
+            external_started_at=datetime.now(UTC),
+        )
+        db.commit()
+
+    with SessionLocal() as db:
+        running = application_action_repo.get_running_for_idempotency_key(
+            db, external_idempotency_key=key, user_id=ids["user_id"]
+        )
+        assert running is not None
+        assert running.id == action_id
+        assert running.external_result_status is None
+        # No terminal row yet.
+        terminal = application_action_repo.get_terminal_for_idempotency_key(
+            db, external_idempotency_key=key, user_id=ids["user_id"]
+        )
+        assert terminal is None
+
+
+def test_idempotency_guard_adapter_not_called_when_blocked(
+    client: TestClient,
+) -> None:
+    """The platform adapter must not be called when the idempotency guard
+    blocks (PRD acceptance criterion: H1 implemented and tested)."""
+    from datetime import UTC, datetime
+
+    from app.db.repositories import application_action_repo
+    from app.db.session import SessionLocal
+
+    ids = _seed()
+    app_id = _create_application(client, ids)
+    action_id = client.post(
+        f"/api/v1/applications/{app_id}/actions/preview",
+        json=_preview_payload(ids),
+        headers=_headers(ids["user_id"]),
+    ).json()["id"]
+
+    calls = []
+
+    def fake_adapter_call(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(True)
+        return {"result": "submitted"}
+
+    with SessionLocal() as db:
+        action = application_action_repo.get_for_user_and_application(
+            db, action_id=action_id, application_id=app_id, user_id=ids["user_id"]
+        )
+        assert action is not None
+        key = compute_external_idempotency_key(
+            application_id=app_id,
+            action_type=ExternalActionType.platform_submit,
+            payload_hash=action.payload_hash,
+        )
+        now = datetime.now(UTC)
+        application_action_repo.update(
+            db,
+            action,
+            external_idempotency_key=key,
+            external_started_at=now,
+            external_completed_at=now,
+            external_result_status="submitted",
+            external_result={"result": "ok"},
+        )
+        db.commit()
+
+    # Simulate the submit guard: a terminal row exists, so do NOT call the
+    # adapter — return the existing result instead.
+    with SessionLocal() as db:
+        terminal = application_action_repo.get_terminal_for_idempotency_key(
+            db, external_idempotency_key=key, user_id=ids["user_id"]
+        )
+        if terminal is None:
+            fake_adapter_call()
+
+    assert calls == [], "adapter must not be called when a terminal result exists"

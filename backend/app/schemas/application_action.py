@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -127,6 +128,35 @@ class ApplicationActionCreate(BaseModel):
     source_snapshot: ApplicationActionSourceSnapshot
 
 
+class ExternalActionResultStatus(StrEnum):
+    """Terminal status of an executed external side effect.
+
+    Mirrors ``design.md §H1``: ``submitted`` is a confirmed success,
+    ``duplicate`` means the platform already had this action (tied to the
+    external idempotency key), ``unknown`` means the final state could not be
+    classified and requires manual reconciliation, and ``failed`` means the
+    platform rejected the action with a sanitized failure envelope.
+    """
+
+    submitted = "submitted"
+    duplicate = "duplicate"
+    unknown = "unknown"
+    failed = "failed"
+
+
+class ExternalActionResult(BaseModel):
+    """Sanitized result metadata of an executed external side effect.
+
+    ``result`` is safe metadata only — never raw cookies, tokens, page HTML,
+    raw resume, or raw JD (design.md §H1, agent-safety-sandbox spec).
+    """
+
+    result_status: ExternalActionResultStatus
+    started_at: datetime
+    completed_at: datetime
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
 class ApplicationActionOut(BaseSchema):
     """Outbound view of a planned external action with approval state."""
 
@@ -140,6 +170,11 @@ class ApplicationActionOut(BaseSchema):
     source_snapshot: ApplicationActionSourceSnapshot
     approval: ApprovalRecord | None = None
     stale_reason: str | None = None
+    external_idempotency_key: str | None = None
+    external_started_at: datetime | None = None
+    external_completed_at: datetime | None = None
+    external_result_status: ExternalActionResultStatus | None = None
+    external_result: ExternalActionResult | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -199,6 +234,8 @@ __all__ = [
     "ApplicationActionSourceSnapshot",
     "ApprovalBlockedError",
     "ApprovalRecord",
+    "ExternalActionResult",
+    "ExternalActionResultStatus",
     "ExternalActionStatus",
     "ExternalActionType",
 ]

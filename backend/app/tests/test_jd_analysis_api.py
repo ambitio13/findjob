@@ -949,3 +949,215 @@ def test_list_analyses_404_for_cross_user_job(client: TestClient) -> None:
     )
     assert resp.status_code == 404
     assert resp.json()["detail"] == "job not found"
+
+
+# ---------------------------------------------------------------------------
+# Worker layer: H2 stale-source detection (design.md §H2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_source_fails_run_without_model_call_or_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the source hash changed between enqueue and worker execution the
+    run fails with ``code = "stale_source"`` *before* the model is called, and
+    no ``JobAnalysis`` / ``GeneratedArtifact`` is persisted.
+    """
+    # A gateway that would raise if the worker reached the model call. The
+    # stale-source guard must short-circuit before this point.
+    monkeypatch.setattr(
+        "app.models_gateway.factory.get_model_gateway",
+        lambda: _RaisingStubGateway(),
+    )
+    ids = _seed("ja_stale")
+    run_id = _create_queued_analysis_run(
+        "ja_stale",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+
+    # Capture the enqueue-time source hash from the freshly-seeded rows WITHOUT
+    # mutating them. Then mutate the job's updated_at so the worker's
+    # recomputed hash differs. The source hash covers job_id / job_updated_at /
+    # resume_version_id / resume_version_no / profile_updated_at / prompt
+    # versions (design.md §H2), so changing job_updated_at is sufficient to
+    # produce a stale mismatch.
+    from app.db.models.models import ResumeVersion as _RV
+    from app.db.models.models import UserProfile as _UP
+    from app.services.application_state import build_source_snapshot
+
+    with SessionLocal() as db:
+        job = db.get(JobPosting, ids["job_id"])
+        version = db.get(_RV, ids["resume_version_id"])
+        user = db.get(_UP, "ja_stale")
+        assert job is not None and version is not None and user is not None
+        snapshot = build_source_snapshot(
+            job_id=job.id,
+            job_updated_at=job.updated_at,
+            resume_version_id=version.id,
+            resume_version_no=version.version_no,
+            profile_updated_at=user.updated_at,
+            prompt_versions={"jd_analysis": "jd-analysis-v2"},
+        )
+        stale_hash = snapshot.source_hash
+
+        # Mutate job.updated_at directly to a different timestamp so the
+        # worker recomputes a different hash. We bypass onupdate by using a
+        # raw UPDATE so the column reflects exactly the value we set.
+        from datetime import timedelta
+        drifted = job.updated_at + timedelta(hours=1)
+        db.execute(
+            JobPosting.__table__.update()
+            .where(JobPosting.__table__.c.id == job.id)
+            .values(updated_at=drifted)
+        )
+        db.commit()
+
+    payload = ResumeAwareJdAnalysisPayload(
+        workflow_type="resume_aware_jd_analysis",
+        user_id="ja_stale",
+        agent_run_id=run_id,
+        idempotency_key=f"jd_analysis:{run_id}",
+        job_id=ids["job_id"],
+        resume_version_id=ids["resume_version_id"],
+        source_hash=stale_hash,
+    )
+
+    result = await resume_aware_jd_analysis({}, payload)
+    assert result == run_id
+
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error == "stale source detected"
+
+        # The stale-source step is the only persisted step and it is failed.
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
+        assert len(steps) == 1
+        assert steps[0].name == "stale_source_check"
+        assert steps[0].status == "failed"
+        assert steps[0].result["enqueue_source_hash"] == stale_hash
+        assert steps[0].result["current_source_hash"] != stale_hash
+
+        # latest_error carries the sanitized failure envelope with the stale
+        # source code and a retry next-action.
+        assert run.result is not None
+        assert "failure" in run.result
+        failure = run.result["failure"]
+        assert failure["code"] == "stale_source"
+        assert failure["category"] == "data"
+        assert failure["retryable"] is True
+        assert failure["next_action"] == "retry"
+        assert failure["agent_run_id"] == run_id
+        assert failure["source_ids"]["job_id"] == ids["job_id"]
+        assert failure["source_ids"]["resume_version_id"] == ids["resume_version_id"]
+
+        # No analysis or artifact may be persisted on the stale path.
+        analyses = (
+            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run_id))
+            .scalars()
+            .all()
+        )
+        assert analyses == []
+        artifacts = (
+            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run_id))
+            .scalars()
+            .all()
+        )
+        assert artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_fresh_source_proceeds_to_model_call_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the enqueue-time source hash still matches at worker execution the
+    run proceeds normally to the model call and succeeds (no false stale
+    rejection). The fake-model gateway returns a valid analysis.
+    """
+    from app.models_gateway.factory import get_model_gateway
+
+    ids = _seed("ja_fresh")
+    run_id = _create_queued_analysis_run(
+        "ja_fresh",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+
+    from app.db.models.models import UserProfile as _UP
+    from app.services.jd_analysis_service import compute_enqueue_source_hash
+
+    with SessionLocal() as db:
+        user = db.get(_UP, "ja_fresh")
+        assert user is not None
+        fresh_hash = compute_enqueue_source_hash(
+            db=db,
+            current_user=user,
+            job_id=ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+        )
+
+    payload = ResumeAwareJdAnalysisPayload(
+        workflow_type="resume_aware_jd_analysis",
+        user_id="ja_fresh",
+        agent_run_id=run_id,
+        idempotency_key=f"jd_analysis:{run_id}",
+        job_id=ids["job_id"],
+        resume_version_id=ids["resume_version_id"],
+        source_hash=fresh_hash,
+    )
+
+    # Use the real fake gateway (MODEL_PROVIDER=fake) so the analysis succeeds.
+    _ = get_model_gateway  # ensure import path is valid
+    result = await resume_aware_jd_analysis({}, payload)
+    assert result == run_id
+
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "succeeded"
+        # No stale-source step on the fresh path.
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
+        assert all(s.name != "stale_source_check" for s in steps)
+        # The analysis + artifact were created.
+        analysis = (
+            db.execute(select(JobAnalysis).where(JobAnalysis.agent_run_id == run_id))
+            .scalars()
+            .first()
+        )
+        assert analysis is not None
+        artifact = (
+            db.execute(select(GeneratedArtifact).where(GeneratedArtifact.agent_run_id == run_id))
+            .scalars()
+            .first()
+        )
+        assert artifact is not None
+
+
+@pytest.mark.asyncio
+async def test_no_source_hash_skips_stale_check_and_succeeds() -> None:
+    """When ``source_hash`` is ``None`` (back-compat / older payloads) the
+    worker must skip the stale check and proceed normally. This protects
+    in-flight payloads enqueued before the H2 field was added.
+    """
+    ids = _seed("ja_no_hash")
+    run_id = _create_queued_analysis_run(
+        "ja_no_hash",
+        ids["job_id"],
+        ids["resume_version_id"],
+    )
+    # payload.source_hash defaults to None.
+    payload = _make_payload(run_id, "ja_no_hash", ids["job_id"], ids["resume_version_id"])
+    assert payload.source_hash is None
+
+    result = await resume_aware_jd_analysis({}, payload)
+    assert result == run_id
+
+    with SessionLocal() as db:
+        run = db.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "succeeded"
+        steps = db.execute(select(AgentStep).where(AgentStep.run_id == run_id)).scalars().all()
+        assert all(s.name != "stale_source_check" for s in steps)

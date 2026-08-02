@@ -35,6 +35,8 @@ from app.schemas.application_action import (
     ApplicationActionPreview,
     ApplicationActionSourceSnapshot,
     ApprovalRecord,
+    ExternalActionResult,
+    ExternalActionResultStatus,
     ExternalActionStatus,
     ExternalActionType,
 )
@@ -373,6 +375,8 @@ __all__ += [
     "ApplicationActionPreview",
     "ApplicationActionSourceSnapshot",
     "ApprovalRecord",
+    "ExternalActionResult",
+    "ExternalActionResultStatus",
     "ExternalActionStatus",
     "ExternalActionType",
 ]

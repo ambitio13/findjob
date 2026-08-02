@@ -58,6 +58,11 @@ from app.db.repositories import (
 )
 from app.db.repositories.agent_run_repo import AgentRun
 from app.models_gateway.base import ModelGateway
+from app.schemas.application import (
+    ApplicationFailureCategory,
+    ApplicationFailureNextAction,
+)
+from app.services.application_state import build_failure_envelope, build_source_snapshot
 
 _log = get_logger("app.services.jd_analysis_service")
 
@@ -79,6 +84,33 @@ _STEP_COMPLETE_RUN = "complete_run"
 
 #: The artifact_type written for every successful analysis.
 _ARTIFACT_TYPE = "jd_analysis"
+
+#: Step name recorded when the worker detects a stale source (design.md §H2).
+_STEP_STALE_SOURCE = "stale_source_check"
+
+
+def _compute_source_hash(
+    *,
+    job: JobPosting,
+    version: ResumeVersion,
+    profile: UserProfile,
+) -> str:
+    """Compute the current source hash for the JD analysis sources.
+
+    Mirrors ``readiness_service._compute_source_hash`` so both the analysis and
+    readiness artifacts share the same freshness contract (design.md §H2).
+    The hash covers job/resume/profile metadata — never raw text — and the
+    JD analysis prompt version so a prompt change also invalidates stale runs.
+    """
+    snapshot = build_source_snapshot(
+        job_id=job.id,
+        job_updated_at=job.updated_at,
+        resume_version_id=version.id,
+        resume_version_no=version.version_no,
+        profile_updated_at=profile.updated_at,
+        prompt_versions={"jd_analysis": PROMPT_VERSION},
+    )
+    return snapshot.source_hash
 
 
 def _job_to_dict(job: JobPosting) -> dict[str, Any]:
@@ -200,6 +232,32 @@ def load_jd_analysis_context(
         job=_job_to_dict(job),
         resume=_resume_to_dict(resume, version),
     )
+
+
+def compute_enqueue_source_hash(
+    *,
+    db: Session,
+    current_user: UserProfile,
+    job_id: str,
+    resume_version_id: str,
+) -> str:
+    """Compute the source hash to capture at JD analysis enqueue time.
+
+    Re-loads the same job / resume version / profile rows used for analysis so
+    the hash reflects exactly the sources the worker will re-load later
+    (design.md §H2). Mirrors the readiness worker's enqueue-side capture so
+    both flows share one freshness contract.
+    """
+    job = db.get(JobPosting, job_id)
+    if job is None or job.user_id != current_user.id:
+        _log.info("jd_analysis.job_not_found", user_id=current_user.id, job_id=job_id)
+        raise HTTPException(status_code=404, detail="job not found")
+
+    version = db.get(ResumeVersion, resume_version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="resume version not found")
+
+    return _compute_source_hash(job=job, version=version, profile=current_user)
 
 
 # ---------------------------------------------------------------------------
@@ -606,6 +664,7 @@ async def run_resume_aware_jd_analysis_worker(
     user_id: str,
     agent_run_id: str,
     gateway: ModelGateway,
+    source_hash: str | None = None,
 ) -> None:
     """Queue worker entry point — executes analysis in the worker process.
 
@@ -622,6 +681,13 @@ async def run_resume_aware_jd_analysis_worker(
     The ``gateway`` is constructed inside the worker via
     :func:`app.models_gateway.factory.get_model_gateway` so no request-scoped
     dependency is passed across the queue boundary.
+
+    ``source_hash`` is the readiness-style source hash captured at enqueue
+    time (design.md §H2). When provided, the worker recomputes the current
+    hash before model execution; on mismatch it fails the run with
+    ``code = "stale_source"`` and persists a sanitized failure envelope —
+    mirroring the readiness worker. JD analysis is job-run scoped, not
+    application scoped, so no ``ApplicationRecord`` timeline event is written.
     """
     from app.db.session import SessionLocal
 
@@ -719,15 +785,7 @@ async def run_resume_aware_jd_analysis_worker(
             db.commit()
             return
 
-        # Flip queued → running on entry (no-op if already running from a retry).
-        if run.started_at is None:
-            run.started_at = datetime.now(UTC)
-        agent_run_repo.update_status(db, run, status="running")
-        db.commit()
-
-        # Reconstruct a minimal UserProfile for the context loader. The loader
-        # only reads id + constraints; it does not persist, so a read-only
-        # projection is safe.
+        # Re-load the user profile.
         profile = db.get(UserProfile, user_id)
         if profile is None:
             _log.warning(
@@ -744,6 +802,74 @@ async def run_resume_aware_jd_analysis_worker(
             )
             db.commit()
             return
+
+        # H2 — Stale-source detection (design.md §H2). Recompute the current
+        # source hash and compare it to the one captured at enqueue. On
+        # mismatch the artifact would be based on stale data, so fail the run
+        # with ``code = "stale_source"`` before calling the model and do not
+        # persist a ``JobAnalysis`` / ``GeneratedArtifact``. Mirrors the
+        # readiness worker (``readiness_service.py:907-979``).
+        if source_hash is not None:
+            current_source_hash = _compute_source_hash(
+                job=job, version=version, profile=profile
+            )
+            if current_source_hash != source_hash:
+                _log.warning(
+                    "jd_analysis.worker.stale_source",
+                    job_id=job_id,
+                    agent_run_id=agent_run_id,
+                    enqueue_hash=source_hash,
+                    current_hash=current_source_hash,
+                )
+                agent_run_repo.add_step(
+                    db,
+                    run_id=run.id,
+                    step_no=1,
+                    name=_STEP_STALE_SOURCE,
+                    status="failed",
+                    error="stale source detected",
+                    result={
+                        "job_id": job_id,
+                        "resume_version_id": resume_version_id,
+                        "enqueue_source_hash": source_hash,
+                        "current_source_hash": current_source_hash,
+                    },
+                )
+                agent_run_repo.update_status(
+                    db,
+                    run,
+                    status="failed",
+                    finished_at=datetime.now(UTC),
+                    error="stale source detected",
+                )
+                envelope = build_failure_envelope(
+                    category=ApplicationFailureCategory.data,
+                    code="stale_source",
+                    message="source data changed since analysis was requested",
+                    retryable=True,
+                    next_action=ApplicationFailureNextAction.retry,
+                    agent_run_id=run.id,
+                    source_ids={
+                        "job_id": job_id,
+                        "resume_version_id": resume_version_id,
+                    },
+                )
+                # JD analysis is job-run scoped (no ApplicationRecord), so the
+                # sanitized failure envelope is persisted on AgentRun.result
+                # alongside the existing sanitized metadata — mirroring how the
+                # readiness worker writes it to ApplicationRecord.latest_error.
+                run.result = {
+                    **(run.result or {}),
+                    "failure": envelope.model_dump(mode="json"),
+                }
+                db.commit()
+                return
+
+        # Flip queued → running on entry (no-op if already running from a retry).
+        if run.started_at is None:
+            run.started_at = datetime.now(UTC)
+        agent_run_repo.update_status(db, run, status="running")
+        db.commit()
 
         context = JdAnalysisContext(
             user_id=user_id,

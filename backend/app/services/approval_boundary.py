@@ -31,6 +31,7 @@ from app.schemas.application_action import (
     ApplicationActionPreview,
     ApprovalBlockedError,
     ExternalActionStatus,
+    ExternalActionType,
 )
 
 _log = get_logger("app.services.approval_boundary")
@@ -48,6 +49,24 @@ _HASH_FIELDS: tuple[str, ...] = (
 )
 
 _NONE_SENTINEL = "\x00none\x00"
+
+
+def compute_external_idempotency_key(
+    *,
+    application_id: str,
+    action_type: ExternalActionType,
+    payload_hash: str,
+) -> str:
+    """Return the durable external-action idempotency key.
+
+    Shape: ``{application_id}:{action_type}:{payload_hash}`` (design.md §H1).
+    The key binds the platform submit to one exact application, one exact
+    action type, and one exact approved payload. The platform submission
+    service must persist this key on the action before any platform call and
+    check it again before final submit so a retry or re-run after a network
+    blip cannot produce a duplicate platform submit.
+    """
+    return f"{application_id}:{action_type.value}:{payload_hash}"
 
 
 def _stable_json(value: Any) -> str:

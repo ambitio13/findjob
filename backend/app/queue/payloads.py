@@ -31,6 +31,7 @@ WorkflowType = Literal[
     "resume_fact_extraction",
     "resume_aware_jd_analysis",
     "readiness_generation",
+    "platform_guided_submit_prepare",
 ]
 
 
@@ -120,17 +121,24 @@ class ResumeAwareJdAnalysisPayload(WorkflowPayload):
     :class:`ResumeFactExtractionPayload`). This keeps a leaked queue entry
     from exposing user content.
 
-    The ``AgentRun`` (``workflow_type="resume_aware_jd_analysis"``) is created
-    in the ``queued`` state by the API before enqueue and linked to the job
-    via ``AgentRun.job_id``; the worker flips it to ``running`` →
+    The ``AgentRun`` (``workflow_type="resume_aware_jd_analysis"``) is created in
+    the ``queued`` state by the API before enqueue and linked to the job via
+    ``AgentRun.job_id``; the worker flips it to ``running`` →
     ``succeeded``/``failed``, persisting ``JobAnalysis`` +
     ``GeneratedArtifact`` only on success.
+
+    ``source_hash`` is captured at enqueue time so the worker can detect stale
+    sources (the job/resume/profile changed between enqueue and execution) and
+    fail the run with ``code = "stale_source"`` before calling the model —
+    mirroring the readiness worker (design.md §H2). It is optional for
+    backward compatibility with payloads enqueued before this field existed.
     """
 
     workflow_type: Literal["resume_aware_jd_analysis"] = "resume_aware_jd_analysis"
 
     job_id: str
     resume_version_id: str
+    source_hash: str | None = None
 
 
 class ReadinessGenerationPayload(WorkflowPayload):
@@ -158,3 +166,40 @@ class ReadinessGenerationPayload(WorkflowPayload):
     resume_version_id: str
     artifact_type: str
     source_hash: str
+
+
+class PlatformGuidedSubmitPreparePayload(WorkflowPayload):
+    """Payload for the platform guided-submit *prepare* workflow.
+
+    References the durable ``ApplicationRecord`` + ``JobPosting`` +
+    ``ResumeVersion`` rows by ID — the worker re-reads them from its own DB
+    session, so no raw JD or resume content crosses the queue boundary.
+
+    The payload carries the ``source_hash`` captured at enqueue time so the
+    worker can detect stale sources between enqueue and execution and refuse to
+    prepare against a changed job/resume/profile (mirroring the readiness
+    worker). ``selected_artifact_ids`` and ``outgoing_text`` are the readiness
+    artifact IDs and outgoing HR-message text the prepare flow will fill into
+    the platform form in dry-run mode.
+
+    The ``AgentRun`` (``workflow_type="platform_guided_submit_prepare"``) is
+    created in the ``queued`` state by the API before enqueue; the worker
+    flips it to ``running`` → ``succeeded``/``failed``, persisting a sanitized
+    :class:`FilledSubmissionSnapshot` and creating/updating a ``platform_submit``
+    :class:`ApplicationAction` on success.
+    """
+
+    workflow_type: Literal["platform_guided_submit_prepare"] = (
+        "platform_guided_submit_prepare"
+    )
+
+    application_id: str
+    job_id: str
+    resume_version_id: str
+    source_hash: str
+    selected_artifact_ids: list[str] = Field(default_factory=list)
+    outgoing_text: str | None = None
+    resume_file_reference: str | None = None
+    target_resource: str = Field(
+        description="Platform resource the form lives on (job posting URL or HR conversation id)."
+    )

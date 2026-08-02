@@ -51,6 +51,8 @@ packages = [
     "app.agents.prompts.templates",
     "app.integrations",
     "app.integrations.llm_providers",
+    "app.platforms",
+    "app.platforms.boss",
     "app.tests",
 ]
 

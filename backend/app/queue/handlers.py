@@ -29,6 +29,7 @@ from app.db.repositories import agent_run_repo
 from app.db.session import SessionLocal
 from app.queue.payloads import (
     JdPasteParsePayload,
+    PlatformGuidedSubmitPreparePayload,
     ReadinessGenerationPayload,
     ResumeAwareJdAnalysisPayload,
     ResumeFactExtractionPayload,
@@ -318,6 +319,7 @@ async def resume_aware_jd_analysis(
             user_id=payload.user_id,
             agent_run_id=payload.agent_run_id,
             gateway=gateway,
+            source_hash=payload.source_hash,
         )
         _log.info(
             "queue.resume_aware_jd_analysis_completed",
@@ -415,4 +417,86 @@ async def readiness_generation(
             error=str(exc),
         )
         fail_run(payload.agent_run_id, error="readiness generation failed")
+        return "failed"
+
+
+async def platform_guided_submit_prepare(
+    ctx: dict[str, Any],
+    payload: PlatformGuidedSubmitPreparePayload | dict[str, Any],
+) -> str:
+    """Platform guided-submit *prepare* worker handler — dry-run form fill.
+
+    Receives only durable resource IDs (``application_id``, ``job_id``,
+    ``resume_version_id``) plus the ``source_hash`` captured at enqueue time —
+    no raw JD, resume text, or browser session crosses the queue boundary. The
+    worker re-loads the queued ``AgentRun`` by ID, re-checks user ownership, and
+    delegates to
+    :func:`app.services.platform_submission_service.run_platform_guided_submit_prepare_worker`
+    for the fixed-step orchestration (context load → entry guards → adapter
+    dry-run fill → sanitized snapshot persistence → ``platform_submit``
+    ``ApplicationAction`` + application status → ``approval_required``).
+
+    The platform adapter is constructed inside the worker via the registry so no
+    request-scoped dependency is passed across the queue boundary. The adapter is
+    run in fill-only/dry-run mode and must never perform the final submit.
+
+    On any uncaught exception the shared :func:`fail_run` guard flips the run to
+    ``failed`` with a sanitized error so it never stays stuck on ``running``.
+    """
+    _ = ctx
+    if isinstance(payload, dict):
+        payload = PlatformGuidedSubmitPreparePayload.model_validate(payload)
+
+    from app.services.platform_submission_service import (
+        run_platform_guided_submit_prepare_worker,
+    )
+
+    try:
+        with SessionLocal() as db:
+            run = agent_run_repo.get_run(db, payload.agent_run_id)
+            if run is None:
+                _log.warning(
+                    "queue.platform_prepare_missing_run",
+                    agent_run_id=payload.agent_run_id,
+                )
+                return "missing_run"
+
+            # Re-check ownership: a cross-user payload must not execute.
+            if run.user_id != payload.user_id:
+                _log.warning(
+                    "queue.platform_prepare_owner_mismatch",
+                    agent_run_id=payload.agent_run_id,
+                    payload_user=payload.user_id,
+                    run_user=run.user_id,
+                )
+                fail_run(payload.agent_run_id, error="ownership mismatch")
+                return "ownership_mismatch"
+
+        # The worker runner opens its own session; the ownership check above is
+        # a fast-fail guard so a cross-user payload never reaches the service.
+        await run_platform_guided_submit_prepare_worker(
+            application_id=payload.application_id,
+            job_id=payload.job_id,
+            resume_version_id=payload.resume_version_id,
+            user_id=payload.user_id,
+            source_hash=payload.source_hash,
+            agent_run_id=payload.agent_run_id,
+            selected_artifact_ids=payload.selected_artifact_ids,
+            outgoing_text=payload.outgoing_text,
+            resume_file_reference=payload.resume_file_reference,
+            target_resource=payload.target_resource,
+        )
+        _log.info(
+            "queue.platform_prepare_completed",
+            agent_run_id=payload.agent_run_id,
+        )
+        return payload.agent_run_id
+    except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
+        _log.warning(
+            "queue.platform_prepare_error",
+            agent_run_id=payload.agent_run_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        fail_run(payload.agent_run_id, error="platform guided submit prepare failed")
         return "failed"

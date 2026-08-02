@@ -24,6 +24,7 @@ from arq.worker import Function
 from app.core.config import get_settings
 from app.queue.handlers import (
     jd_paste_parsing,
+    platform_guided_submit_prepare,
     readiness_generation,
     resume_aware_jd_analysis,
     resume_fact_extraction,
@@ -78,6 +79,14 @@ def _functions() -> list[Function]:
         Function(
             name="readiness_generation",
             coroutine=readiness_generation,
+            timeout_s=_settings.queue_job_timeout,
+            keep_result_s=3600,
+            keep_result_forever=False,
+            max_tries=_settings.queue_max_retries + 1,
+        ),
+        Function(
+            name="platform_guided_submit_prepare",
+            coroutine=platform_guided_submit_prepare,
             timeout_s=_settings.queue_job_timeout,
             keep_result_s=3600,
             keep_result_forever=False,

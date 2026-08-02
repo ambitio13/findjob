@@ -28,6 +28,7 @@ import {
 import { ApplicationActionsPanel } from "@/features/applications/ApplicationActionsPanel";
 import { ArtifactChecklist } from "@/features/applications/ArtifactChecklist";
 import { FailurePanel } from "@/features/applications/FailurePanel";
+import { GuidedSubmitPanel } from "@/features/applications/GuidedSubmitPanel";
 import { ReadinessSummary } from "@/features/applications/ReadinessSummary";
 import { SourceSnapshotPanel } from "@/features/applications/SourceSnapshotPanel";
 import {
@@ -392,12 +393,16 @@ function ApplicationDetail({ applicationId }: { applicationId: string }) {
         ) : null}
       </Card>
 
-      {/* 7. Approval preview slot (existing component) */}
+      {/* 7. Guided platform-submit panel (prepare → approve → submit). */}
+      <GuidedSubmitPanel application={app} onAfterChange={load} />
+
+      {/* 8. Approval preview slot (existing component) */}
       <ApplicationActionsPanel
         applicationId={app.id}
         sourceHash={sourceHash}
         resumeVersionId={app.resume_version_id}
         jobId={app.job_id}
+        onActionChange={load}
         key={app.id}
       />
 

@@ -603,6 +603,11 @@ export interface ApplicationActionOut {
   source_snapshot: ApplicationActionSourceSnapshot;
   approval: ApprovalRecord | null;
   stale_reason: string | null;
+  external_idempotency_key: string | null;
+  external_started_at: string | null;
+  external_completed_at: string | null;
+  external_result_status: ExternalActionResultStatus | null;
+  external_result: ExternalActionResult | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -626,6 +631,71 @@ export interface ApplicationActionCreate {
   outgoing_text: string | null;
   resume_file_reference: string | null;
   source_snapshot: ApplicationActionSourceSnapshotInput;
+}
+
+/**
+ * Terminal status of an executed external side effect (mirrors backend
+ * ``ExternalActionResultStatus`` enum). Used by the guided-submit panel to
+ * render the post-submit state of a platform action.
+ */
+export type ExternalActionResultStatus =
+  | "submitted"
+  | "duplicate"
+  | "unknown"
+  | "failed";
+
+/**
+ * Sanitized result metadata of an executed external side effect. The ``result``
+ * dict carries only safe metadata — never raw cookies, tokens, page HTML, raw
+ * resume, or raw JD (mirrors ``ExternalActionResult``).
+ */
+export interface ExternalActionResult {
+  result_status: ExternalActionResultStatus;
+  started_at: string;
+  completed_at: string;
+  result: Record<string, unknown>;
+}
+
+/** Back-compat alias for call sites that emphasize external execution fields. */
+export type ApplicationActionOutFull = ApplicationActionOut;
+
+// --- Platform guided-submit workflow ---
+
+/** Classified outcome of a final submit attempt (mirrors ``SubmitOutcome``). */
+export type SubmitOutcome =
+  | "submitted"
+  | "duplicate_detected"
+  | "unknown"
+  | "platform_failure";
+
+/** Request payload for the platform guided-submit prepare endpoint. */
+export interface PlatformSubmissionPrepareRequest {
+  target_resource: string;
+  selected_artifact_ids: string[];
+  outgoing_text: string | null;
+  resume_file_reference: string | null;
+}
+
+/** Immediate (enqueue-and-poll) response for the prepare endpoint. */
+export interface PlatformSubmissionPrepareResponse {
+  run: RunReadinessRunSummary;
+  application_id: string;
+  target_platform: string;
+  mode: string;
+}
+
+/** Final-submit response carrying the action after the adapter ran. */
+export interface PlatformSubmissionSubmitResponse {
+  run: RunReadinessRunSummary;
+  application_id: string;
+  action: ApplicationActionOutFull;
+}
+
+/** Abort response carrying the revoked action. */
+export interface PlatformSubmissionAbortResponse {
+  run: RunReadinessRunSummary;
+  application_id: string;
+  action: ApplicationActionOutFull;
 }
 
 // --- Application readiness: failure envelope, artifacts, payloads ---
