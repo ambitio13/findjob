@@ -729,6 +729,9 @@ export interface BridgeStatusResponse {
   connected: boolean;
   last_heartbeat: string | null;
   active_application_id: string | null;
+  page_id: string | null;
+  page_url_hash: string | null;
+  page_title: string | null;
 }
 
 // --- Application readiness: failure envelope, artifacts, payloads ---

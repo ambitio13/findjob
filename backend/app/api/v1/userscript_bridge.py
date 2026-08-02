@@ -46,10 +46,14 @@ router = APIRouter(prefix="/userscript-bridge", tags=["userscript-bridge"])
 def get_status() -> BridgeStatusResponse:
     """Return the current bridge connection status."""
     ch = get_channel()
+    page = ch.active_page
     return BridgeStatusResponse(
         connected=ch.is_connected(),
         last_heartbeat=ch.last_heartbeat,
         active_application_id=ch.active_application_id,
+        page_id=page.page_id if page else None,
+        page_url_hash=page.page_url_hash if page else None,
+        page_title=page.page_title if page else None,
     )
 
 
@@ -76,6 +80,8 @@ async def get_next_instruction(response: Response) -> Response | InstructionOut:
         selector_value=instruction.selector_value,
         selector_name=instruction.selector_name,
         fill_value=instruction.fill_value,
+        page_id=instruction.page_id,
+        expected_url_hash=instruction.expected_url_hash,
     )
 
 
@@ -86,9 +92,12 @@ def post_result(body: ResultIn) -> AckResponse:
     The userscript sends sanitized values only. We apply defense-in-depth
     sanitization here as well (hash URL, strip title, strip error) so even if
     the userscript sends raw values, nothing raw crosses into the channel.
+
+    The ``page_id`` is checked against the pending instruction's ``page_id``.
+    A mismatch means a different tab tried to answer — the result is rejected.
     """
     ch = get_channel()
-    ch.put_result(
+    accepted = ch.put_result(
         InstructionResult(
             instruction_id=body.instruction_id,
             success=body.success,
@@ -97,8 +106,15 @@ def post_result(body: ResultIn) -> AckResponse:
             text=sanitize_result_text(body.text),
             url=sanitize_result_url(body.url),
             error=sanitize_result_error(body.error),
+            page_id=body.page_id,
         )
     )
+    if not accepted:
+        _log.warning(
+            "boss.bridge.result_rejected",
+            instruction_id=body.instruction_id,
+            page_id=body.page_id,
+        )
     return AckResponse(ok=True)
 
 
@@ -106,14 +122,21 @@ def post_result(body: ResultIn) -> AckResponse:
 def post_heartbeat(body: HeartbeatIn) -> AckResponse:
     """Record a heartbeat from the userscript.
 
-    The heartbeat keeps the connection alive. ``page_url_hash`` and
-    ``page_title`` are accepted for observability but are **not persisted** —
-    they are only used to update the channel's last-heartbeat timestamp.
+    The heartbeat keeps the connection alive and updates the active page
+    metadata (``page_id``, ``page_url_hash``, ``page_title``). These are used
+    to populate the status endpoint and to bind instructions to the correct
+    tab. The page metadata is **not persisted** — it lives only in the
+    process-local channel.
     """
     ch = get_channel()
-    ch.heartbeat()
+    ch.heartbeat(
+        page_id=body.page_id,
+        page_url_hash=body.page_url_hash,
+        page_title=sanitize_result_text(body.page_title),
+    )
     _log.debug(
         "boss.bridge.heartbeat_received",
+        page_id=body.page_id,
         page_url_hash=body.page_url_hash,
     )
     return AckResponse(ok=True)

@@ -280,6 +280,16 @@ export function GuidedSubmitPanel({ application, onAfterChange }: Props) {
                   : "未检测到油猴脚本。请安装并启用 boss-userscript.user.js，然后在 BOSS 直聘页面打开目标职位/HR 会话页。"}
               </Text>
             </Descriptions.Item>
+            {bridgeConnected && bridgeStatus?.page_title ? (
+              <Descriptions.Item label="当前页面">
+                <Text type="secondary">
+                  {bridgeStatus.page_title}
+                  {bridgeStatus.page_url_hash
+                    ? ` (${bridgeStatus.page_url_hash})`
+                    : ""}
+                </Text>
+              </Descriptions.Item>
+            ) : null}
           </Descriptions>
         ) : null}
 

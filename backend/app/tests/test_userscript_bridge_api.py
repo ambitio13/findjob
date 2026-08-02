@@ -41,6 +41,9 @@ def test_status_initially_disconnected() -> None:
     assert body["connected"] is False
     assert body["last_heartbeat"] is None
     assert body["active_application_id"] is None
+    assert body["page_id"] is None
+    assert body["page_url_hash"] is None
+    assert body["page_title"] is None
 
 
 def test_status_connected_after_heartbeat() -> None:
@@ -52,6 +55,27 @@ def test_status_connected_after_heartbeat() -> None:
     body = resp.json()
     assert body["connected"] is True
     assert body["last_heartbeat"] is not None
+
+
+def test_status_shows_page_metadata_after_heartbeat() -> None:
+    """Heartbeat with page_id populates the status endpoint with page fields."""
+    _reset()
+    with _client() as client:
+        client.post(
+            "/api/v1/userscript-bridge/heartbeat",
+            json={
+                "page_id": "tab-abc",
+                "page_url_hash": "sha256:deadbeef",
+                "page_title": "BOSS Job Detail",
+            },
+        )
+        resp = client.get("/api/v1/userscript-bridge/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["connected"] is True
+    assert body["page_id"] == "tab-abc"
+    assert body["page_url_hash"] == "sha256:deadbeef"
+    assert body["page_title"] == "BOSS Job Detail"
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +92,26 @@ def test_heartbeat_returns_ack() -> None:
         )
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+
+
+def test_heartbeat_with_page_id_stores_metadata() -> None:
+    """Heartbeat with page_id stores the page metadata in the channel."""
+    _reset()
+    with _client() as client:
+        resp = client.post(
+            "/api/v1/userscript-bridge/heartbeat",
+            json={
+                "page_id": "tab-1",
+                "page_url_hash": "sha256:abc",
+                "page_title": "BOSS Chat",
+            },
+        )
+    assert resp.status_code == 200
+    ch = get_channel()
+    assert ch.active_page is not None
+    assert ch.active_page.page_id == "tab-1"
+    assert ch.active_page.page_url_hash == "sha256:abc"
+    assert ch.active_page.page_title == "BOSS Chat"
 
 
 def test_heartbeat_empty_body_ok() -> None:
@@ -117,6 +161,29 @@ def test_next_instruction_returns_instruction_when_queued() -> None:
     assert body["selector_kind"] == "placeholder"
     assert body["selector_value"] == "请输入你要发送的内容"
     assert body["fill_value"] == "你好"
+    # page_id and expected_url_hash fields are present (None when not bound).
+    assert "page_id" in body
+    assert "expected_url_hash" in body
+
+
+def test_next_instruction_returns_page_binding_fields() -> None:
+    """When an instruction carries page_id, it is returned in the response."""
+    _reset()
+    ch = get_channel()
+    instruction = make_instruction(
+        "count",
+        selector_kind="css",
+        selector_value=".x",
+        page_id="tab-1",
+        expected_url_hash="sha256:abc",
+    )
+    asyncio.run(ch._queue.put(instruction))
+    with _client() as client:
+        resp = client.get("/api/v1/userscript-bridge/next-instruction")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["page_id"] == "tab-1"
+    assert body["expected_url_hash"] == "sha256:abc"
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +217,30 @@ def test_post_result_stores_and_returns_ack() -> None:
     assert result is not None
     assert result.count == 3
     assert result.success is True
+
+
+def test_post_result_with_page_id_stored() -> None:
+    """Result with page_id is stored and carries the page_id."""
+    _reset()
+    ch = get_channel()
+    instruction = make_instruction("count", selector_kind="css", selector_value=".x")
+    asyncio.run(ch._queue.put(instruction))
+
+    with _client() as client:
+        client.get("/api/v1/userscript-bridge/next-instruction")
+        resp = client.post(
+            "/api/v1/userscript-bridge/result",
+            json={
+                "instruction_id": instruction.instruction_id,
+                "success": True,
+                "count": 1,
+                "page_id": "tab-1",
+            },
+        )
+    assert resp.status_code == 200
+    result = ch._results.get(instruction.instruction_id)
+    assert result is not None
+    assert result.page_id == "tab-1"
 
 
 def test_post_result_sanitizes_url() -> None:
@@ -244,3 +335,58 @@ def test_full_round_trip() -> None:
     result = ch._results.get(instruction.instruction_id)
     assert result is not None
     assert result.visible is True
+
+
+def test_full_round_trip_with_page_binding() -> None:
+    """Full round-trip with page_id: heartbeat → status → queue → take → result.
+
+    Verifies that page binding flows through the entire HTTP stack: the
+    userscript sends page_id in the heartbeat, the status endpoint reports it,
+    next-instruction returns the bound page_id/expected_url_hash, and the
+    result carries the matching page_id.
+    """
+    _reset()
+    ch = get_channel()
+    instruction = make_instruction(
+        "count",
+        selector_kind="css",
+        selector_value=".msg",
+        page_id="tab-xyz",
+        expected_url_hash="sha256:feedface",
+    )
+
+    with _client() as client:
+        # 1. Heartbeat with page metadata.
+        client.post(
+            "/api/v1/userscript-bridge/heartbeat",
+            json={"page_id": "tab-xyz", "page_url_hash": "sha256:feedface"},
+        )
+
+        # 2. Status shows page metadata.
+        status = client.get("/api/v1/userscript-bridge/status").json()
+        assert status["page_id"] == "tab-xyz"
+        assert status["page_url_hash"] == "sha256:feedface"
+
+        # 3. Queue instruction directly (simulating the adapter).
+        asyncio.run(ch._queue.put(instruction))
+
+        # 4. Userscript takes it — page binding fields are present.
+        taken = client.get("/api/v1/userscript-bridge/next-instruction").json()
+        assert taken["page_id"] == "tab-xyz"
+        assert taken["expected_url_hash"] == "sha256:feedface"
+
+        # 5. Userscript posts result with matching page_id.
+        resp = client.post(
+            "/api/v1/userscript-bridge/result",
+            json={
+                "instruction_id": instruction.instruction_id,
+                "success": True,
+                "count": 1,
+                "page_id": "tab-xyz",
+            },
+        )
+        assert resp.status_code == 200
+
+    result = ch._results.get(instruction.instruction_id)
+    assert result is not None
+    assert result.page_id == "tab-xyz"

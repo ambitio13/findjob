@@ -70,6 +70,10 @@ class Instruction:
     only set for ops that resolve a DOM locator (``fill``, ``click``,
     ``check_visible``, ``count``). Read ops (``read_title``, ``read_url``,
     ``read_content``) need no selector.
+
+    ``page_id`` and ``expected_url_hash`` bind the instruction to a specific
+    browser tab and page. The userscript must refuse to execute if either does
+    not match its current state.
     """
 
     instruction_id: str
@@ -78,6 +82,8 @@ class Instruction:
     selector_value: str | None = None
     selector_name: str | None = None
     fill_value: str | None = None
+    page_id: str | None = None
+    expected_url_hash: str | None = None
 
 
 @dataclass
@@ -87,6 +93,11 @@ class InstructionResult:
     All fields are sanitized before construction by the API layer. ``url`` is a
     sha256 hash (never the raw URL). ``text`` is a truncated, secret-stripped
     title. ``error`` is a diagnostic-stripped short string.
+
+    ``page_id`` identifies which browser tab produced the result. The channel
+    rejects results whose ``page_id`` does not match the instruction's
+    ``page_id``, preventing a wrong tab from consuming another tab's
+    instruction.
     """
 
     instruction_id: str
@@ -96,6 +107,21 @@ class InstructionResult:
     text: str | None = None
     url: str | None = None
     error: str | None = None
+    page_id: str | None = None
+
+
+@dataclass
+class PageMeta:
+    """Metadata about the currently active browser tab.
+
+    Stored from the heartbeat and used to populate the status endpoint and to
+    validate instruction/result page binding. All fields are sanitized — no
+    raw URL is ever stored.
+    """
+
+    page_id: str
+    page_url_hash: str | None = None
+    page_title: str | None = None
 
 
 @dataclass
@@ -110,14 +136,38 @@ class UserscriptChannel:
     _results: dict[str, InstructionResult] = field(default_factory=dict)
     _last_heartbeat: datetime | None = None
     _active_application_id: str | None = None
+    _active_page: PageMeta | None = None
+    _pending_instruction: Instruction | None = None
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     # --- Heartbeat / connection status ----------------------------------
 
-    def heartbeat(self) -> None:
-        """Record a heartbeat from the userscript."""
+    def heartbeat(
+        self,
+        *,
+        page_id: str | None = None,
+        page_url_hash: str | None = None,
+        page_title: str | None = None,
+    ) -> None:
+        """Record a heartbeat from the userscript.
+
+        When ``page_id`` is provided, the active page metadata is updated. This
+        lets the status endpoint report which tab is connected and lets the
+        adapter bind instructions to that tab. If ``page_id`` is ``None`` (old
+        userscript version), the previous page metadata is retained so the
+        channel stays backward-compatible.
+        """
         self._last_heartbeat = datetime.now(UTC)
-        _log.debug("boss.bridge.heartbeat")
+        if page_id is not None:
+            self._active_page = PageMeta(
+                page_id=page_id,
+                page_url_hash=page_url_hash,
+                page_title=page_title,
+            )
+        _log.debug(
+            "boss.bridge.heartbeat",
+            page_id=page_id,
+        )
 
     def is_connected(self) -> bool:
         """Return ``True`` if a heartbeat arrived within the timeout window."""
@@ -133,6 +183,11 @@ class UserscriptChannel:
     @property
     def active_application_id(self) -> str | None:
         return self._active_application_id
+
+    @property
+    def active_page(self) -> PageMeta | None:
+        """Metadata about the currently connected browser tab."""
+        return self._active_page
 
     # --- Active application management ----------------------------------
 
@@ -157,10 +212,12 @@ class UserscriptChannel:
             self._active_application_id = application_id
 
     def clear(self) -> None:
-        """Clear the instruction queue and result store.
+        """Clear the instruction queue, result store, and active application.
 
         Called after each prepare/submit operation completes (success or
-        failure) so no stale instructions or results linger.
+        failure) so no stale instructions or results linger. The active page
+        metadata is **not** cleared here — it is refreshed by heartbeats and
+        only cleared when the connection goes stale.
         """
         while not self._queue.empty():
             try:
@@ -169,6 +226,18 @@ class UserscriptChannel:
                 break
         self._results.clear()
         self._active_application_id = None
+        self._pending_instruction = None
+
+    def clear_stale_page(self) -> None:
+        """Clear the active page metadata.
+
+        Called when the heartbeat has gone stale (disconnected) so that the
+        status endpoint no longer reports a page that may have been closed or
+        navigated away. This is the safety mechanism that prevents a stale
+        page binding from authorizing instructions to a reconnected-but-different
+        tab.
+        """
+        self._active_page = None
 
     # --- Instruction / result exchange ----------------------------------
 
@@ -177,14 +246,35 @@ class UserscriptChannel:
 
         This is the adapter's primary entry point: send one instruction, block
         until the userscript posts back a result (or the result timeout fires).
+
+        If the instruction does not carry a ``page_id``, it is auto-populated
+        from the active page metadata so the userscript knows which tab should
+        execute it. Results whose ``page_id`` does not match the instruction's
+        ``page_id`` are rejected — a wrong tab cannot satisfy another tab's
+        instruction.
         """
+        # Auto-bind page_id from the active page if not explicitly set.
+        if instruction.page_id is None and self._active_page is not None:
+            instruction = Instruction(
+                instruction_id=instruction.instruction_id,
+                op=instruction.op,
+                selector_kind=instruction.selector_kind,
+                selector_value=instruction.selector_value,
+                selector_name=instruction.selector_name,
+                fill_value=instruction.fill_value,
+                page_id=self._active_page.page_id,
+                expected_url_hash=instruction.expected_url_hash
+                or self._active_page.page_url_hash,
+            )
+
         await self._queue.put(instruction)
         _log.debug(
             "boss.bridge.instruction_sent",
             instruction_id=instruction.instruction_id,
             op=instruction.op,
+            page_id=instruction.page_id,
         )
-        return await self._take_result(instruction.instruction_id)
+        return await self._take_result(instruction)
 
     async def take_instruction(self) -> Instruction | None:
         """Long-poll for the next instruction.
@@ -199,27 +289,62 @@ class UserscriptChannel:
         except TimeoutError:
             return None
 
-    def put_result(self, result: InstructionResult) -> None:
-        """Post back a result for a completed instruction."""
+    def put_result(self, result: InstructionResult) -> bool:
+        """Post back a result for a completed instruction.
+
+        Returns ``True`` if the result was accepted, ``False`` if it was
+        rejected due to a page binding mismatch. A result is rejected when:
+
+        - The instruction that was dispatched carried a ``page_id``.
+        - The result's ``page_id`` does not match that instruction's
+          ``page_id``.
+
+        This prevents a non-target BOSS tab from consuming another tab's
+        instruction and posting back a result.
+        """
+        instruction = self._pending_instruction
+        if (
+            instruction is not None
+            and instruction.page_id is not None
+            and result.page_id is not None
+            and result.page_id != instruction.page_id
+        ):
+            _log.warning(
+                "boss.bridge.result_page_mismatch",
+                instruction_id=result.instruction_id,
+                expected_page_id=instruction.page_id,
+                result_page_id=result.page_id,
+            )
+            return False
+
         self._results[result.instruction_id] = result
         _log.debug(
             "boss.bridge.result_received",
             instruction_id=result.instruction_id,
             success=result.success,
+            page_id=result.page_id,
         )
+        return True
 
-    async def _take_result(self, instruction_id: str) -> InstructionResult:
-        """Wait for a result to appear, with a bounded timeout."""
+    async def _take_result(self, instruction: Instruction) -> InstructionResult:
+        """Wait for a result to appear, with a bounded timeout.
+
+        Results whose ``page_id`` does not match the instruction's ``page_id``
+        are rejected by :meth:`put_result` and never appear in the store, so
+        this method naturally times out if a wrong tab tries to answer.
+        """
+        self._pending_instruction = instruction
         deadline = datetime.now(UTC) + timedelta(seconds=RESULT_TIMEOUT_S)
         while datetime.now(UTC) < deadline:
-            if instruction_id in self._results:
-                return self._results.pop(instruction_id)
+            if instruction.instruction_id in self._results:
+                return self._results.pop(instruction.instruction_id)
             await asyncio.sleep(0.05)
         # Timeout: the userscript did not respond in time.
         return InstructionResult(
-            instruction_id=instruction_id,
+            instruction_id=instruction.instruction_id,
             success=False,
             error=sanitize_diagnostic("result_timeout") or "result_timeout",
+            page_id=instruction.page_id,
         )
 
 
@@ -230,6 +355,8 @@ def make_instruction(
     selector_value: str | None = None,
     selector_name: str | None = None,
     fill_value: str | None = None,
+    page_id: str | None = None,
+    expected_url_hash: str | None = None,
 ) -> Instruction:
     """Construct an :class:`Instruction` with a generated id."""
     return Instruction(
@@ -239,6 +366,8 @@ def make_instruction(
         selector_value=selector_value,
         selector_name=selector_name,
         fill_value=fill_value,
+        page_id=page_id,
+        expected_url_hash=expected_url_hash,
     )
 
 
@@ -289,6 +418,7 @@ __all__ = [
     "INSTRUCTION_POLL_TIMEOUT_S",
     "Instruction",
     "InstructionResult",
+    "PageMeta",
     "RESULT_TIMEOUT_S",
     "UserscriptChannel",
     "get_channel",

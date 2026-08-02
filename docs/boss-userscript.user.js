@@ -60,6 +60,31 @@
   const POLL_BACKOFF_MS = 1000; // pause between poll cycles on error
   const RESULT_POST_TIMEOUT_MS = 10000;
 
+  // --- Stable per-tab page_id ----------------------------------------------
+  //
+  // Each tab needs a stable identifier so the backend can bind instructions to
+  // this specific tab. We use sessionStorage so the id survives reloads of the
+  // same tab but is not shared across tabs (unlike localStorage). If
+  // sessionStorage is unavailable (rare), we fall back to a random id.
+  const PAGE_ID_KEY = "boss_bridge_page_id";
+  function getPageId() {
+    try {
+      let id = sessionStorage.getItem(PAGE_ID_KEY);
+      if (!id) {
+        id =
+          "page_" +
+          Date.now().toString(36) +
+          "_" +
+          Math.random().toString(36).slice(2, 10);
+        sessionStorage.setItem(PAGE_ID_KEY, id);
+      }
+      return id;
+    } catch (_e) {
+      return "page_" + Math.random().toString(36).slice(2, 12);
+    }
+  }
+  const PAGE_ID = getPageId();
+
   // --- SHA-256 helper (for URL hashing) ------------------------------------
   //
   // The raw page URL can carry tracking tokens / referral codes. We hash it
@@ -189,7 +214,28 @@
       text: null,
       url: null,
       error: null,
+      page_id: PAGE_ID,
     };
+
+    // --- Page binding check ----------------------------------------------
+    //
+    // The backend sends page_id and expected_url_hash with each instruction.
+    // We refuse to execute if either does not match our current state. This
+    // prevents a non-target tab from consuming instructions meant for another
+    // tab (e.g. when multiple BOSS tabs are open).
+    if (ins.page_id && ins.page_id !== PAGE_ID) {
+      result.success = false;
+      result.error = sanitizeError("page_id_mismatch");
+      return result;
+    }
+    if (ins.expected_url_hash) {
+      const currentHash = await sha256Short(window.location.href);
+      if (currentHash !== ins.expected_url_hash) {
+        result.success = false;
+        result.error = sanitizeError("url_hash_mismatch");
+        return result;
+      }
+    }
 
     try {
       if (ins.op === "read_title") {
@@ -336,6 +382,7 @@
       await gmFetch(BRIDGE + "/heartbeat", {
         method: "POST",
         body: {
+          page_id: PAGE_ID,
           page_url_hash: pageUrlHash,
           page_title: sanitizeText(document.title),
         },
@@ -400,7 +447,7 @@
 
   // --- Bootstrap -----------------------------------------------------------
 
-  console.log("[boss-bridge] userscript loaded on", window.location.href);
+  console.log("[boss-bridge] userscript loaded on", window.location.href, "page_id=", PAGE_ID);
 
   // Heartbeat: send immediately, then every 5s.
   void sendHeartbeat();
