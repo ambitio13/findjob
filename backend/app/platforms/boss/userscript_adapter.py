@@ -218,6 +218,37 @@ class UserscriptBossPage:
             return result.text[:max_len]
         return ""
 
+    # --- JD read (read_jd) ----------------------------------------------
+
+    async def read_current_jd(
+        self,
+        *,
+        max_text_chars: int = 8000,
+        selector_profile: str = "boss_recommended_job_v1",
+    ) -> dict | None:
+        """Read the JD from the current BOSS page via the ``read_jd`` op.
+
+        This is the **only** raw page text exception (see ``api-contracts.md``
+        §Userscript Read Capability Exception). The userscript extracts scoped
+        JD fields (title, company, salary, description, etc.) — never raw HTML.
+        The backend sanitizes each field via ``sanitize_jd_result`` before
+        storing.
+
+        Returns the sanitized JD dict, or ``None`` if the read failed. The
+        caller is responsible for checking minimum required fields (title +
+        description) and flagging ``jd_too_sparse`` if they are missing.
+        """
+        result = await self._send(
+            make_instruction(
+                "read_jd",
+                max_text_chars=max_text_chars,
+                selector_profile=selector_profile,
+            )
+        )
+        if not result.success:
+            return None
+        return result.jd
+
     # --- Internal --------------------------------------------------------
 
     async def _send(self, instruction: Instruction) -> InstructionResult:

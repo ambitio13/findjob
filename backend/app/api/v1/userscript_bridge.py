@@ -22,6 +22,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Response, status
 
 from app.core.logging import get_logger
+from app.platforms.boss.sanitizer import sanitize_jd_result
 from app.platforms.boss.userscript_channel import (
     InstructionResult,
     get_channel,
@@ -82,6 +83,8 @@ async def get_next_instruction(response: Response) -> Response | InstructionOut:
         fill_value=instruction.fill_value,
         page_id=instruction.page_id,
         expected_url_hash=instruction.expected_url_hash,
+        max_text_chars=instruction.max_text_chars,
+        selector_profile=instruction.selector_profile,
     )
 
 
@@ -97,6 +100,10 @@ def post_result(body: ResultIn) -> AckResponse:
     A mismatch means a different tab tried to answer — the result is rejected.
     """
     ch = get_channel()
+    # Sanitize the JD dict (read_jd results) via defense-in-depth. Each text
+    # field is HTML-stripped, secret-stripped, and length-capped. The raw JD
+    # dict from the userscript is never stored — only the sanitized version.
+    sanitized_jd = sanitize_jd_result(body.jd.model_dump() if body.jd else None)
     accepted = ch.put_result(
         InstructionResult(
             instruction_id=body.instruction_id,
@@ -107,6 +114,7 @@ def post_result(body: ResultIn) -> AckResponse:
             url=sanitize_result_url(body.url),
             error=sanitize_result_error(body.error),
             page_id=body.page_id,
+            jd=sanitized_jd,
         )
     )
     if not accepted:

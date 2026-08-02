@@ -9,6 +9,10 @@ backend bridge endpoints. Security invariants:
   credentials, cookies, or tokens.
 - **Results carry only sanitized values.** ``url`` is a sha256 hash, ``text`` is
   a truncated title, ``error`` is diagnostic-stripped.
+- **JD results (``read_jd``) are the only raw page text exception.** The ``jd``
+  dict carries structured text fields (title, company, description, etc.) —
+  never raw HTML. The backend sanitizes each field via ``sanitize_jd_result``
+  before storing.
 """
 
 from __future__ import annotations
@@ -48,7 +52,7 @@ class InstructionOut(BaseModel):
     op: str = Field(
         description=(
             "Operation: fill, click, check_visible, count, "
-            "read_title, read_url, read_content."
+            "read_title, read_url, read_content, read_jd."
         )
     )
     selector_kind: str | None = Field(
@@ -76,6 +80,43 @@ class InstructionOut(BaseModel):
             "does not match."
         ),
     )
+    max_text_chars: int | None = Field(
+        default=None,
+        description=(
+            "Maximum total text chars for read_jd results. The userscript "
+            "truncates JD fields to fit within this budget."
+        ),
+    )
+    selector_profile: str | None = Field(
+        default=None,
+        description=(
+            "Extraction profile for read_jd. Tells the userscript which DOM "
+            "structure to extract from (e.g. boss_recommended_job_v1)."
+        ),
+    )
+
+
+class JDResultIn(BaseModel):
+    """Structured JD data returned by the ``read_jd`` op.
+
+    All text fields are optional; the backend checks minimum required fields
+    (title + description) after sanitization and flags ``jd_too_sparse`` if
+    they are missing.
+
+    ``page_url_hash`` is a sha256 hash computed by the userscript — never a
+    raw URL. ``source_kind`` identifies the extraction profile used.
+    """
+
+    title: str | None = None
+    company: str | None = None
+    location: str | None = None
+    salary: str | None = None
+    experience: str | None = None
+    education: str | None = None
+    skills: list[str] | None = None
+    description: str | None = None
+    source_kind: str | None = None
+    page_url_hash: str | None = None
 
 
 class ResultIn(BaseModel):
@@ -101,6 +142,13 @@ class ResultIn(BaseModel):
         description=(
             "The page_id of the tab that produced this result. Must match "
             "the instruction's page_id or the result is rejected."
+        ),
+    )
+    jd: JDResultIn | None = Field(
+        default=None,
+        description=(
+            "Structured JD data, only for read_jd results. Text fields only "
+            "— never raw HTML. Sanitized by the backend before storage."
         ),
     )
 
@@ -131,5 +179,6 @@ __all__ = [
     "BridgeStatusResponse",
     "HeartbeatIn",
     "InstructionOut",
+    "JDResultIn",
     "ResultIn",
 ]

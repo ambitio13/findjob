@@ -8,6 +8,7 @@ from app.api.v1 import (
     agent_runs,
     applications,
     approval_actions,
+    boss_recommended_jobs,
     health,
     jobs,
     resumes,
@@ -24,3 +25,4 @@ api_router.include_router(applications.router)
 api_router.include_router(approval_actions.router)
 api_router.include_router(agent_runs.router)
 api_router.include_router(userscript_bridge.router)
+api_router.include_router(boss_recommended_jobs.router)

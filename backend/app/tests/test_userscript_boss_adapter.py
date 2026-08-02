@@ -42,7 +42,7 @@ from app.platforms.boss.selectors import (
     SUBMIT_DUPLICATE_MARKER,
     SUCCESS_MARKER,
 )
-from app.platforms.boss.userscript_adapter import UserscriptBossAdapter
+from app.platforms.boss.userscript_adapter import UserscriptBossAdapter, UserscriptBossPage
 from app.platforms.boss.userscript_channel import (
     Instruction,
     InstructionResult,
@@ -105,6 +105,7 @@ class FakeUserscriptChannel(UserscriptChannel):
                 text=result.text,
                 url=result.url,
                 error=result.error,
+                jd=result.jd,
             )
         # Default: success with no data.
         return InstructionResult(instruction_id=instruction.instruction_id, success=True)
@@ -190,6 +191,98 @@ def _text_result(text: str) -> InstructionResult:
 
 def _url_result(url_hash: str = _TARGET_URL_HASH) -> InstructionResult:
     return InstructionResult(instruction_id="_", success=True, url=url_hash)
+
+
+def _jd_result(
+    jd: dict | None = None,
+    *,
+    success: bool = True,
+    error: str | None = None,
+) -> InstructionResult:
+    """Build a read_jd result with a canned JD dict."""
+    if jd is None:
+        jd = {
+            "title": "高级前端工程师",
+            "company": "某科技公司",
+            "location": "北京",
+            "salary": "25-40K·14薪",
+            "experience": "3-5年",
+            "education": "本科",
+            "skills": ["React", "TypeScript", "Node.js"],
+            "description": "负责前端架构设计和核心功能开发。",
+            "source_kind": "boss_recommended_job",
+            "page_url_hash": _TARGET_URL_HASH,
+        }
+    return InstructionResult(
+        instruction_id="_",
+        success=success,
+        jd=jd,
+        error=error,
+    )
+
+
+# ---------------------------------------------------------------------------
+# read_jd: JD read via the userscript bridge
+# ---------------------------------------------------------------------------
+
+
+async def test_read_current_jd_returns_sanitized_dict() -> None:
+    """read_current_jd sends a read_jd instruction and returns the JD dict."""
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_jd", None): _jd_result(),
+        }
+    )
+    page = UserscriptBossPage(ch)
+    jd = await page.read_current_jd()
+    assert jd is not None
+    assert jd["title"] == "高级前端工程师"
+    assert jd["company"] == "某科技公司"
+    assert jd["skills"] == ["React", "TypeScript", "Node.js"]
+    assert jd["source_kind"] == "boss_recommended_job"
+    # The instruction carried the selector_profile and max_text_chars.
+    ins = ch.instructions_sent[0]
+    assert ins.op == "read_jd"
+    assert ins.selector_profile == "boss_recommended_job_v1"
+    assert ins.max_text_chars == 8000
+
+
+async def test_read_current_jd_returns_none_on_failure() -> None:
+    """If the read_jd instruction fails, read_current_jd returns None."""
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_jd", None): _jd_result(success=False, error="extraction_failed"),
+        }
+    )
+    page = UserscriptBossPage(ch)
+    jd = await page.read_current_jd()
+    assert jd is None
+
+
+async def test_read_current_jd_returns_none_when_jd_is_none() -> None:
+    """If the result has success=True but jd=None, return None."""
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_jd", None): InstructionResult(instruction_id="_", success=True),
+        }
+    )
+    page = UserscriptBossPage(ch)
+    jd = await page.read_current_jd()
+    assert jd is None
+
+
+async def test_read_current_jd_custom_params_forwarded() -> None:
+    """Custom max_text_chars and selector_profile are forwarded to the instruction."""
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_jd", None): _jd_result(),
+        }
+    )
+    page = UserscriptBossPage(ch)
+    await page.read_current_jd(max_text_chars=4000, selector_profile="custom_v2")
+    ins = ch.instructions_sent[0]
+    assert ins.max_text_chars == 4000
+    assert ins.selector_profile == "custom_v2"
 
 
 # ---------------------------------------------------------------------------

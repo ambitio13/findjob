@@ -80,6 +80,7 @@ def update(db: Session, job: JobPosting, **fields: Any) -> JobPosting:
         "salary_range",
         "direction",
         "platform",
+        "external_id",
         "jd_raw",
         "jd_normalized",
     }
@@ -88,6 +89,38 @@ def update(db: Session, job: JobPosting, **fields: Any) -> JobPosting:
             setattr(job, key, value)
     db.flush()
     return job
+
+
+def find_by_platform_and_external_id(
+    db: Session,
+    *,
+    user_id: str,
+    platform: str,
+    external_id: str,
+) -> JobPosting | None:
+    """Return the owned ``JobPosting`` matching ``platform`` + ``external_id``,
+    or ``None``.
+
+    Used by the BOSS recommended-job flow to dedup jobs read from the browser:
+    ``external_id`` stores the sanitized ``page_url_hash`` so re-reading the same
+    BOSS page returns the existing job instead of creating a duplicate.
+
+    Scopes to ``user_id`` so cross-user access returns ``None`` (mapped to 404
+    by the caller) instead of leaking existence.
+    """
+    return (
+        db.execute(
+            select(JobPosting)
+            .where(
+                JobPosting.user_id == user_id,
+                JobPosting.platform == platform,
+                JobPosting.external_id == external_id,
+            )
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
 
 
 def list_for_user(

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BOSS 投递桥接 (投简历 Agent)
 // @namespace    https://github.com/coldnight/tou_jianli_agent
-// @version      0.1.0
+// @version      0.2.0
 // @description  Tampermonkey userscript that executes backend-issued instructions on the BOSS直聘 page. No CDP signature, no hard-coded selectors — the backend sends everything.
 // @author       tou_jianli_agent
 // @match        https://www.zhipin.com/*
@@ -24,7 +24,7 @@
  *   1. Polls `GET /userscript-bridge/next-instruction` (long-poll, 5s).
  *   2. Resolves the selector in the page's own JS context (no CDP).
  *   3. Executes the op (fill / click / check_visible / count / read_title /
- *      read_url / read_content).
+ *      read_url / read_content / read_jd).
  *   4. Posts back a SANITIZED result (sha256(url), truncated title, stripped
  *      error — never raw cookies/tokens/HTML).
  *   5. Sends a heartbeat every 5s so the backend knows the connection is live.
@@ -139,6 +139,131 @@
     return cleaned || null;
   }
 
+  // --- JD field sanitization for read_jd -----------------------------------
+  //
+  // JD fields are the ONLY raw page text exception. We strip HTML tags,
+  // decode common entities, strip secrets, and cap each field's length.
+  // The backend sanitizes again (defense-in-depth), but we do not send
+  // raw HTML or secrets over the wire.
+  function stripHtml(raw) {
+    if (!raw) return "";
+    return String(raw)
+      .replace(/<[^>]+>/g, "") // strip HTML tags
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function sanitizeJdField(raw, maxLen) {
+    if (!raw) return null;
+    let cleaned = stripHtml(raw);
+    if (!cleaned) return null;
+    for (const [pat, repl] of SECRET_PATTERNS) {
+      cleaned = cleaned.replace(pat, repl);
+    }
+    cleaned = cleaned.slice(0, maxLen || 8000);
+    return cleaned || null;
+  }
+
+  // Extract a JD from the BOSS recommended-job page using the
+  // boss_recommended_job_v1 profile. This reads scoped DOM fields — never
+  // innerHTML or a page dump. The selector profile is versioned so we can
+  // adapt to BOSS DOM changes without touching the backend.
+  function extractBossRecommendedJobV1(maxTextChars) {
+    var budget = maxTextChars || 8000;
+    var jd = {
+      title: null,
+      company: null,
+      location: null,
+      salary: null,
+      experience: null,
+      education: null,
+      skills: [],
+      description: null,
+      source_kind: "boss_recommended_job",
+      page_url_hash: null,
+    };
+
+    // Title: the job title heading on the job detail/recommended card.
+    var titleEl =
+      document.querySelector(".job-name") ||
+      document.querySelector(".job-title") ||
+      document.querySelector("h1.name") ||
+      document.querySelector('[class*="job-name"]');
+    jd.title = sanitizeJdField(titleEl ? titleEl.innerText : null, 200);
+
+    // Company name.
+    var companyEl =
+      document.querySelector(".company-name") ||
+      document.querySelector(".boss-name") ||
+      document.querySelector('[class*="company-name"]');
+    jd.company = sanitizeJdField(companyEl ? companyEl.innerText : null, 200);
+
+    // Salary range.
+    var salaryEl =
+      document.querySelector(".salary") ||
+      document.querySelector('[class*="salary"]');
+    jd.salary = sanitizeJdField(salaryEl ? salaryEl.innerText : null, 100);
+
+    // Location, experience, education — typically in a .job-info / .tag-list
+    // section with <li> elements.
+    var infoItems = document.querySelectorAll(
+      ".job-info li, .tag-list li, .info-primary li, .job-detail .info li",
+    );
+    var infoTexts = [];
+    infoItems.forEach(function (li) {
+      var t = stripHtml(li.innerText);
+      if (t) infoTexts.push(t);
+    });
+    // Heuristic: match known patterns for location/experience/education.
+    for (var i = 0; i < infoTexts.length && i < 6; i++) {
+      var t = infoTexts[i];
+      if (
+        !jd.location &&
+        /[\u4e00-\u9fa5·-]/.test(t) &&
+        t.length <= 20 &&
+        !/经验|学历|本科|硕士|博士|大专|高中|初中/.test(t)
+      ) {
+        jd.location = sanitizeJdField(t, 100);
+      }
+      if (!jd.experience && /经验|年/.test(t)) {
+        jd.experience = sanitizeJdField(t, 50);
+      }
+      if (!jd.education && /学历|本科|硕士|博士|大专|高中|初中|不限/.test(t)) {
+        jd.education = sanitizeJdField(t, 50);
+      }
+    }
+
+    // Skills: tag elements in the job requirements section.
+    var skillEls = document.querySelectorAll(
+      ".job-tags .tag, .skills .tag, .job-detail .tag-list .tag, .job-sec .tags span",
+    );
+    var skills = [];
+    skillEls.forEach(function (el) {
+      var s = sanitizeJdField(el.innerText, 60);
+      if (s && skills.length < 30) skills.push(s);
+    });
+    jd.skills = skills;
+
+    // Description: the main job description text. We read .job-sec-detail or
+    // .job-detail .text as innerText (browser already strips HTML from
+    // innerText). We cap at the remaining text budget after other fields.
+    var descEl =
+      document.querySelector(".job-sec-text") ||
+      document.querySelector(".job-detail .text") ||
+      document.querySelector(".job-sec-detail") ||
+      document.querySelector('[class*="job-detail"]');
+    if (descEl) {
+      var descText = stripHtml(descEl.innerText);
+      jd.description = sanitizeJdField(descText, budget);
+    }
+
+    return jd;
+  }
+
   // --- Selector resolution --------------------------------------------------
   //
   // The backend sends selector_kind + selector_value (+ selector_name for
@@ -250,6 +375,21 @@
         // Truncated text content of the main area — for diagnostics only.
         const main = document.body ? document.body.innerText : "";
         result.text = sanitizeText(main.slice(0, 200));
+        return result;
+      }
+      if (ins.op === "read_jd") {
+        // The ONLY raw page text exception. Extracts scoped JD fields
+        // (title, company, salary, description, etc.) — never innerHTML.
+        // The selector_profile determines which extraction logic to use.
+        const profile = ins.selector_profile || "boss_recommended_job_v1";
+        if (profile !== "boss_recommended_job_v1") {
+          result.success = false;
+          result.error = sanitizeError("unknown_selector_profile:" + profile);
+          return result;
+        }
+        const jd = extractBossRecommendedJobV1(ins.max_text_chars || 8000);
+        jd.page_url_hash = await sha256Short(window.location.href);
+        result.jd = jd;
         return result;
       }
 

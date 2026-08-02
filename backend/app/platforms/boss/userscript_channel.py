@@ -59,6 +59,7 @@ OpKind = Literal[
     "read_title",
     "read_url",
     "read_content",
+    "read_jd",
 ]
 
 
@@ -69,11 +70,15 @@ class Instruction:
     ``fill_value`` is only set for the ``fill`` op. ``selector_*`` fields are
     only set for ops that resolve a DOM locator (``fill``, ``click``,
     ``check_visible``, ``count``). Read ops (``read_title``, ``read_url``,
-    ``read_content``) need no selector.
+    ``read_content``, ``read_jd``) need no selector.
 
     ``page_id`` and ``expected_url_hash`` bind the instruction to a specific
     browser tab and page. The userscript must refuse to execute if either does
     not match its current state.
+
+    ``max_text_chars`` limits the total text returned by ``read_jd`` (default
+    8000). ``selector_profile`` tells the userscript which extraction profile
+    to use (e.g. ``boss_recommended_job_v1``).
     """
 
     instruction_id: str
@@ -84,6 +89,8 @@ class Instruction:
     fill_value: str | None = None
     page_id: str | None = None
     expected_url_hash: str | None = None
+    max_text_chars: int | None = None
+    selector_profile: str | None = None
 
 
 @dataclass
@@ -93,6 +100,10 @@ class InstructionResult:
     All fields are sanitized before construction by the API layer. ``url`` is a
     sha256 hash (never the raw URL). ``text`` is a truncated, secret-stripped
     title. ``error`` is a diagnostic-stripped short string.
+
+    ``jd`` is the structured JD dict returned by the ``read_jd`` op. It is
+    sanitized by the API layer via :func:`sanitize_jd_result` before being
+    stored. It carries only text fields — never raw HTML.
 
     ``page_id`` identifies which browser tab produced the result. The channel
     rejects results whose ``page_id`` does not match the instruction's
@@ -108,6 +119,7 @@ class InstructionResult:
     url: str | None = None
     error: str | None = None
     page_id: str | None = None
+    jd: dict | None = None
 
 
 @dataclass
@@ -265,6 +277,8 @@ class UserscriptChannel:
                 page_id=self._active_page.page_id,
                 expected_url_hash=instruction.expected_url_hash
                 or self._active_page.page_url_hash,
+                max_text_chars=instruction.max_text_chars,
+                selector_profile=instruction.selector_profile,
             )
 
         await self._queue.put(instruction)
@@ -357,6 +371,8 @@ def make_instruction(
     fill_value: str | None = None,
     page_id: str | None = None,
     expected_url_hash: str | None = None,
+    max_text_chars: int | None = None,
+    selector_profile: str | None = None,
 ) -> Instruction:
     """Construct an :class:`Instruction` with a generated id."""
     return Instruction(
@@ -368,6 +384,8 @@ def make_instruction(
         fill_value=fill_value,
         page_id=page_id,
         expected_url_hash=expected_url_hash,
+        max_text_chars=max_text_chars,
+        selector_profile=selector_profile,
     )
 
 
