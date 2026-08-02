@@ -704,3 +704,36 @@ the only remaining blocker before the PRD acceptance item "dry-run navigation
   handoff contract) → Phase 1 (Playwright runtime wrapper) when ready to
   proceed with real platform navigation.
 - Optionally fix the dev DB named-FK drift via a dedicated corrective migration.
+
+
+## Session 17: UX Fixes: JD 粘贴异步化 + JD 分析状态显示 + 投递自动生成材料
+
+**Date**: 2026-08-02
+**Task**: UX Fixes: JD 粘贴异步化 + JD 分析状态显示 + 投递自动生成材料
+**Branch**: `wanzhen`
+
+### Summary
+
+修复 4 个阻断点并提交：worker 回写 JobPosting 校验 ownership+run.job_id 一致性（PermissionError→fail_run 脱敏）；auto-generate 改由 create 成功链路 router state 显式触发，老记录不再误触发；job_repo.update 按值直写 + PATCH 用 model_fields_set 区分未传 vs 显式 null，支持空串清空可空字段。476 backend tests + frontend lint/type-check/build clean，Trellis validate ✓。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0b8a969` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

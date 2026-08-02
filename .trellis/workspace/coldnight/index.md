@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-08-02
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~633 | Active |
+| `journal-1.md` | ~739 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-08-02 | UX Fixes: JD 粘贴异步化 + JD 分析状态显示 + 投递自动生成材料 | `0b8a969` | `wanzhen` |
 | 16 | 2026-08-02 | Automation Readiness Review (GO) | `322aeaf` | `wanzhen` |
 | 15 | 2026-08-01 | Readiness Panel UX — 完成就绪面板前端 | `9b1d65e` | `wanzhen` |
 | 14 | 2026-08-01 | Approval boundary for external actions | `fcd2818` | `wanzhen` |
