@@ -42,6 +42,11 @@ _JD_PASTE_MARKER = "jd paste parsing assistant"
 # without inspecting provider-specific metadata.
 _READINESS_MARKER = "career readiness assistant"
 
+# Marker present in the boss match decision system prompt built by
+# ``build_boss_match_messages``. Routes the fake gateway to the boss-match
+# branch without inspecting provider-specific metadata.
+_BOSS_MATCH_MARKER = "boss recommended job match decision assistant"
+
 
 class FakeModelGateway(ModelGateway):
     provider_name = "fake"
@@ -119,6 +124,27 @@ class FakeModelGateway(ModelGateway):
                 raw={"readiness_generation": True, "artifact_type": artifact_type},
             )
 
+        if _is_boss_match_prompt(request.messages):
+            scenario = _detect_boss_match_scenario(request.messages)
+            fake_output = _BOSS_MATCH_FAKE_OUTPUTS.get(
+                scenario, _BOSS_MATCH_FAKE_OUTPUTS["communicate"]
+            )
+            content = json.dumps(fake_output, ensure_ascii=False)
+            usage = ChatUsage(
+                prompt_tokens=len(content) + sum(len(m.content) for m in request.messages),
+                completion_tokens=len(content),
+                total_tokens=len(content) * 2,
+            )
+            return ChatResponse(
+                content=content,
+                model=request.model or "fake-model",
+                provider=self.provider_name,
+                request_id=request.request_id,
+                latency_ms=1,
+                usage=usage,
+                raw={"boss_match_decision": True, "scenario": scenario},
+            )
+
         joined = " | ".join(m.content for m in request.messages)
         content = f"[fake-model] echo: {joined[:200]}"
         usage = ChatUsage(
@@ -178,6 +204,30 @@ def _is_readiness_prompt(messages: list) -> bool:
     mirroring ``_is_jd_analysis_prompt``.
     """
     return any(_READINESS_MARKER in m.content for m in messages)
+
+
+def _is_boss_match_prompt(messages: list) -> bool:
+    """True when the message set looks like a boss match decision prompt.
+
+    Detection relies on the marker the boss match system message injects,
+    mirroring ``_is_jd_analysis_prompt``.
+    """
+    return any(_BOSS_MATCH_MARKER in m.content for m in messages)
+
+
+def _detect_boss_match_scenario(messages: list) -> str:
+    """Return the match-decision scenario requested in a boss match prompt.
+
+    The user message may include a ``## SCENARIO: {scenario}`` hint so tests
+    can exercise the skip and needs_review branches. When absent, the default
+    ``"communicate"`` scenario is returned so the fake gateway always produces
+    a schema-valid output.
+    """
+    for msg in messages:
+        for scenario in ("communicate", "skip", "needs_review"):
+            if f"## SCENARIO: {scenario}" in msg.content:
+                return scenario
+    return "communicate"
 
 
 def _detect_readiness_artifact_type(messages: list) -> str:
@@ -304,6 +354,50 @@ _READINESS_FAKE_OUTPUTS = {
         "answer_points": ["重点描述FastAPI项目经验", "结合QPS提升3倍的案例"],
         "portfolio_talking_points": ["核心服务重构项目", "API性能优化"],
         "questions_to_ask_interviewer": ["团队的CI/CD流程是怎样的", "技术栈未来规划"],
+    },
+}
+
+
+# Deterministic, schema-valid boss match decision payloads. One per scenario,
+# each matching ``MatchDecisionModelOutput`` so the executor and tests can run
+# fully offline. Tests can also patch ``_BOSS_MATCH_FAKE_OUTPUTS`` directly to
+# inject edge-case outputs (e.g. invalid JSON, low-score communicate).
+_BOSS_MATCH_FAKE_OUTPUTS = {
+    "communicate": {
+        "decision": "communicate",
+        "score": 0.82,
+        "reasons": [
+            "Resume shows strong Python backend experience matching JD requirements",
+            "Salary range and location align with user preferences",
+        ],
+        "risks": ["Kafka experience is not mentioned in the resume"],
+        "missing_requirements": [],
+        "opening_message": (
+            "您好，我是一名有5年Python后端开发经验的工程师，"
+            "对贵司的后端工程师职位非常感兴趣，希望能进一步沟通。"
+        ),
+    },
+    "skip": {
+        "decision": "skip",
+        "score": 0.25,
+        "reasons": [
+            "JD requires 8+ years of experience but resume shows 5 years",
+            "Location does not match user's preferred cities",
+        ],
+        "risks": ["Experience gap too large to bridge in short term"],
+        "missing_requirements": ["8+ years experience", "Kubernetes production experience"],
+        "opening_message": None,
+    },
+    "needs_review": {
+        "decision": "needs_review",
+        "score": 0.55,
+        "reasons": [
+            "Core skills match but salary range is below user expectation",
+            "Company stage is uncertain",
+        ],
+        "risks": ["Salary may not meet minimum expectation", "Company stability unclear"],
+        "missing_requirements": ["Salary clarification needed"],
+        "opening_message": None,
     },
 }
 
