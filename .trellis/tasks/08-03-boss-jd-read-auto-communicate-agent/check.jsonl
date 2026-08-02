@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/08-03-boss-jd-read-auto-communicate-agent/prd.md", "reason": "Verify scope, why-not-pure-userscript decision, safety requirements, and acceptance criteria before implementation."}
+{"file": ".trellis/tasks/08-03-boss-jd-read-auto-communicate-agent/design.md", "reason": "Verify data flow, contracts, page binding, state machine, and failure matrix."}
+{"file": ".trellis/tasks/08-03-boss-jd-read-auto-communicate-agent/implement.md", "reason": "Verify child-task sequencing, validation commands, dependencies, and rollout gate."}
+{"file": ".trellis/spec/big-question/platform-integration-strategy.md", "reason": "Verify global platform rules now allow only scoped JD reading and keep userscript as executor, not decision agent."}
+{"file": ".trellis/spec/big-question/agent-safety-sandbox.md", "reason": "Verify safety spec covers browser side effects, page/session binding, no auto retry after unknown, and human handoff."}

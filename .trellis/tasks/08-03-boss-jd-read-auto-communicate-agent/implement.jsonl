@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/big-question/platform-integration-strategy.md", "reason": "Defines the platform integration order, BOSS CDP findings, userscript bridge boundary, and the new scoped read_jd exception."}
+{"file": ".trellis/spec/big-question/agent-safety-sandbox.md", "reason": "Defines global safety layers, approval gates, idempotency, action audit, page binding, and hard-stop behavior for external browser side effects."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Defines FastAPI and bridge endpoint contract style, including unauthenticated userscript bridge constraints and read_jd handling."}
+{"file": ".trellis/tasks/08-03-userscript-bridge-adapter/design.md", "reason": "Existing userscript bridge design that this task extends with page binding, read_jd, and communication actions."}
+{"file": "docs/manual-boss-pilot.md", "reason": "Manual BOSS pilot runbook and current safety invariants for real browser testing."}
