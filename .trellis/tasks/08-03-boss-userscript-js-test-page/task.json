@@ -3,7 +3,7 @@
   "name": "boss-userscript-js-test-page",
   "title": "JS 测试页（J1-J12）",
   "description": "P1-4: 创建 docs/boss-userscript-tests.html，验证 querySelectorAllWithTextFilter",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

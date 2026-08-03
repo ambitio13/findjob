@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BOSS Userscript — querySelectorAllWithTextFilter 测试 (J1-J12)</title>
+  <style>
+    :root {
+      --pass: #16a34a;
+      --pass-bg: #dcfce7;
+      --fail: #dc2626;
+      --fail-bg: #fee2e2;
+      --info: #475569;
+      --border: #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px 20px 60px;
+      color: #1e293b;
+      line-height: 1.6;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 4px; }
+    h2 { font-size: 1.1rem; margin: 28px 0 8px; color: #334155; }
+    .subtitle { color: var(--info); font-size: 0.9rem; margin-bottom: 20px; }
+    #summary {
+      font-size: 1.15rem;
+      font-weight: 600;
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      display: inline-block;
+    }
+    #summary.all-pass { background: var(--pass-bg); color: var(--pass); }
+    #summary.has-fail { background: var(--fail-bg); color: var(--fail); }
+    .test-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      background: #fff;
+    }
+    .test-card.pass { border-left: 4px solid var(--pass); }
+    .test-card.fail { border-left: 4px solid var(--fail); }
+    .test-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .badge {
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 2px 10px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge.pass { background: var(--pass-bg); color: var(--pass); }
+    .badge.fail { background: var(--fail-bg); color: var(--fail); }
+    .test-title { font-weight: 600; }
+    .test-desc { font-size: 0.85rem; color: var(--info); margin-bottom: 8px; }
+    .test-row {
+      font-family: "SF Mono", "Fira Code", Consolas, monospace;
+      font-size: 0.82rem;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+    .test-row .label { color: var(--info); min-width: 70px; }
+    .test-row .val { color: #0f172a; word-break: break-all; }
+    .mismatch { color: var(--fail); font-weight: 600; }
+    .match { color: var(--pass); font-weight: 600; }
+    .source-link { font-size: 0.85rem; color: var(--info); margin-top: 28px; }
+    .hidden-dom { display: none; }
+    code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <h1>BOSS Userscript — querySelectorAllWithTextFilter 测试</h1>
+  <p class="subtitle">
+    J1-J12 · 零依赖 · 浏览器打开即运行 ·
+    源码来自 <code>docs/boss-userscript.user.js</code>
+  </p>
+  <div id="summary">运行中…</div>
+
+  <!--
+    ============================================================
+    被测函数：querySelectorAllWithTextFilter
+    从 docs/boss-userscript.user.js 第 280-326 行原样复制。
+    修改此处必须同步修改 userscript，否则测试无意义。
+    ============================================================
+  -->
+  <script>
+    "use strict";
+
+    // Regex to extract ``:has-text('...')`` or ``:has-text("...")`` from CSS.
+    // Captures the text content inside the quotes.
+    var HAS_TEXT_RE = /:has-text\(\s*(['"])([^'"]+)\1\s*\)/g;
+
+    // Resolve a CSS selector string that may contain Playwright-only
+    // ``:has-text('...')`` pseudo-selectors.
+    //
+    // The selector string is a comma-separated list of alternatives. For each
+    // alternative:
+    //   1. Extract all ``:has-text('...')`` segments, capturing the text.
+    //   2. Strip them to get valid CSS.
+    //   3. Run ``querySelectorAll`` on the cleaned CSS.
+    //   4. If the alternative had ``:has-text`` filters, keep only elements whose
+    //      ``textContent`` includes *every* extracted text (AND semantics).
+    //
+    // Alternatives with no ``:has-text`` pass through unchanged. This mirrors
+    // the existing ``role`` kind text-filtering pattern.
+    function querySelectorAllWithTextFilter(rawCss) {
+      var alternatives = String(rawCss).split(",");
+      var matched = [];
+      for (var i = 0; i < alternatives.length; i++) {
+        var alt = alternatives[i].trim();
+        if (!alt) continue;
+        var texts = [];
+        var cleanCss = alt.replace(HAS_TEXT_RE, function (_match, _quote, text) {
+          texts.push(text);
+          return "";
+        });
+        var els;
+        try {
+          els = document.querySelectorAll(cleanCss);
+        } catch (_e) {
+          // If the cleaned CSS is still invalid (e.g. it became empty after
+          // stripping), skip this alternative rather than throwing.
+          continue;
+        }
+        Array.from(els).forEach(function (el) {
+          var ok = true;
+          for (var t = 0; t < texts.length; t++) {
+            if (!(el.textContent || "").includes(texts[t])) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) matched.push(el);
+        });
+      }
+      return matched;
+    }
+
+    // 暴露到 window 供测试调用
+    window.querySelectorAllWithTextFilter = querySelectorAllWithTextFilter;
+
+    // ---- 真实选择器常量（与 backend/app/platforms/boss/selectors.py 同步）----
+    window.COMMUNICATION_SUCCESS_MARKER =
+      ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), " +
+      ".chat-content .message-item:not(.pending)";
+    window.COMMUNICATION_DUPLICATE_MARKER =
+      ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通')";
+    window.PLATFORM_ERROR_MARKER =
+      ".error-tip, .error-content, .upload-error";
+    // B1 修复前的旧 error 选择器（用于 J9 回归演示）
+    window.LEGACY_ERROR_MARKER =
+      ".error-message, .toast-error, .dialog-error";
+  </script>
+
+  <!--
+    ============================================================
+    共享测试 DOM 容器。
+    每个测试用例在独立 <section> 中构造 DOM，用 querySelectorAllWithTextFilter
+    在该 section 内查询（通过传入 section 作为 container 的 querySelectorAll）。
+    但原函数写死 document.querySelectorAll，因此每个测试动态创建 DOM 后查询，
+    结束后移除，避免相互污染。
+    ============================================================
+  -->
+
+  <h2>测试结果</h2>
+  <div id="results"></div>
+
+  <p class="source-link">
+    函数源码：<code>docs/boss-userscript.user.js</code> 第 280-326 行 ·
+    用例设计：<code>docs/boss-communicate-testing-plan.md</code> 第 2.2 节 ·
+    选择器常量：<code>backend/app/platforms/boss/selectors.py</code>
+  </p>
+
+  <script>
+    "use strict";
+    (function () {
+      var results = document.getElementById("results");
+      var passCount = 0;
+      var total = 0;
+
+      // ---- 后端分类逻辑（与 userscript_adapter.py _classify_communication_markers 同步）----
+      // priority: duplicate → success → error → unknown
+      function classifyMarkers(markerCounts) {
+        if (markerCounts.duplicate_count > 0) return "duplicate_detected";
+        if (markerCounts.success_count > 0) return "succeeded";
+        if (markerCounts.error_count > 0) return "platform_failure";
+        return "unknown";
+      }
+
+      /**
+       * 在一个隔离的 DOM 容器中运行测试。
+       * @param {string} name        - 测试名 (如 "J1")
+       * @param {string} title       - 测试标题
+       * @param {string} desc        - 测试描述
+       * @param {function} setup     - (container) => void，构造 DOM
+       * @param {function} run       - () => {expected, actual, detail?}，返回期望值和实际值
+       */
+      function addTest(name, title, desc, setup, run) {
+        total++;
+        var card = document.createElement("div");
+        card.className = "test-card";
+        card.id = "test-" + name;
+
+        var head = document.createElement("div");
+        head.className = "test-head";
+        var badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = "…";
+        var titleEl = document.createElement("span");
+        titleEl.className = "test-title";
+        titleEl.textContent = name + " · " + title;
+        head.appendChild(badge);
+        head.appendChild(titleEl);
+        card.appendChild(head);
+
+        var descEl = document.createElement("div");
+        descEl.className = "test-desc";
+        descEl.textContent = desc;
+        card.appendChild(descEl);
+
+        // 创建隔离容器，构造 DOM
+        var container = document.createElement("div");
+        container.className = "hidden-dom";
+        document.body.appendChild(container);
+
+        var passed = false;
+        var expected, actual, detail;
+        try {
+          setup(container);
+          var res = run();
+          expected = res.expected;
+          actual = res.actual;
+          detail = res.detail;
+          passed = JSON.stringify(expected) === JSON.stringify(actual);
+        } catch (e) {
+          actual = "EXCEPTION: " + (e && e.message ? e.message : String(e));
+          expected = "(no exception)";
+          passed = false;
+        }
+
+        // 清理 DOM
+        document.body.removeChild(container);
+
+        if (passed) {
+          passCount++;
+          badge.classList.add("pass");
+          badge.textContent = "PASS";
+          card.classList.add("pass");
+        } else {
+          badge.classList.add("fail");
+          badge.textContent = "FAIL";
+          card.classList.add("fail");
+        }
+
+        if (detail) {
+          var dRow = document.createElement("div");
+          dRow.className = "test-row";
+          dRow.innerHTML =
+            '<span class="label">detail</span><span class="val"></span>';
+          dRow.querySelector(".val").textContent = detail;
+          card.appendChild(dRow);
+        }
+
+        var expRow = document.createElement("div");
+        expRow.className = "test-row";
+        expRow.innerHTML =
+          '<span class="label">expected</span><span class="val ' +
+          (passed ? "match" : "mismatch") + '"></span>';
+        expRow.querySelector(".val").textContent = JSON.stringify(expected);
+        card.appendChild(expRow);
+
+        var actRow = document.createElement("div");
+        actRow.className = "test-row";
+        actRow.innerHTML =
+          '<span class="label">actual</span><span class="val ' +
+          (passed ? "match" : "mismatch") + '"></span>';
+        actRow.querySelector(".val").textContent = JSON.stringify(actual);
+        card.appendChild(actRow);
+
+        results.appendChild(card);
+      }
+
+      // ============================================================
+      // J1: 单个 :has-text() 匹配
+      // ============================================================
+      addTest(
+        "J1", "单个 :has-text() 匹配",
+        "选择器 .btn:has-text('继续沟通')，DOM 含 <button class=\"btn\">继续沟通</button>，应返回 1 个元素",
+        function (c) {
+          var b = document.createElement("button");
+          b.className = "btn";
+          b.textContent = "继续沟通";
+          c.appendChild(b);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter(".btn:has-text('继续沟通')");
+          return { expected: 1, actual: els.length };
+        }
+      );
+
+      // ============================================================
+      // J2: :has-text() 不匹配
+      // ============================================================
+      addTest(
+        "J2", ":has-text() 不匹配",
+        "选择器 .btn:has-text('继续沟通')，DOM 按钮文本是「投递简历」，应返回 0 个元素",
+        function (c) {
+          var b = document.createElement("button");
+          b.className = "btn";
+          b.textContent = "投递简历";
+          c.appendChild(b);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter(".btn:has-text('继续沟通')");
+          return { expected: 0, actual: els.length };
+        }
+      );
+
+      // ============================================================
+      // J3: 逗号分隔混合列表
+      // ============================================================
+      addTest(
+        "J3", "逗号分隔混合列表",
+        "选择器 .btn:has-text('已发送'), .status，DOM 各有一个，应返回 2 个元素",
+        function (c) {
+          var b = document.createElement("button");
+          b.className = "btn";
+          b.textContent = "已发送";
+          c.appendChild(b);
+          var s = document.createElement("span");
+          s.className = "status";
+          s.textContent = "在线";
+          c.appendChild(s);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter(
+            ".btn:has-text('已发送'), .status"
+          );
+          return { expected: 2, actual: els.length };
+        }
+      );
+
+      // ============================================================
+      // J4: 无 :has-text() 纯 CSS 透传
+      // ============================================================
+      addTest(
+        "J4", "无 :has-text() 纯 CSS 透传",
+        "选择器 .error-tip, .upload-error，DOM 各有一个，应返回 2 个元素",
+        function (c) {
+          var e = document.createElement("div");
+          e.className = "error-tip";
+          e.textContent = "上传失败";
+          c.appendChild(e);
+          var u = document.createElement("div");
+          u.className = "upload-error";
+          u.textContent = "简历未上传";
+          c.appendChild(u);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter(".error-tip, .upload-error");
+          return { expected: 2, actual: els.length };
+        }
+      );
+
+      // ============================================================
+      // J5: 清理后 CSS 为空
+      // ============================================================
+      addTest(
+        "J5", "清理后 CSS 为空（不抛异常）",
+        "选择器 :has-text('x')（无 CSS 前缀），应返回空数组且不抛异常",
+        function (c) {
+          var d = document.createElement("div");
+          d.textContent = "x";
+          c.appendChild(d);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter(":has-text('x')");
+          // cleanCss 为空字符串 → querySelectorAll("") 在某些浏览器抛异常
+          // 函数应 catch 并 continue，返回 []
+          return { expected: 0, actual: els.length };
+        }
+      );
+
+      // ============================================================
+      // J6: 多个 :has-text() AND 语义
+      // ============================================================
+      addTest(
+        "J6", "多个 :has-text() AND 语义",
+        "选择器 .btn:has-text('a'):has-text('b')，DOM 含「ab」和「a」两个按钮，仅匹配含「ab」的元素",
+        function (c) {
+          var b1 = document.createElement("button");
+          b1.className = "btn";
+          b1.textContent = "ab";
+          c.appendChild(b1);
+          var b2 = document.createElement("button");
+          b2.className = "btn";
+          b2.textContent = "a";
+          c.appendChild(b2);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter(
+            ".btn:has-text('a'):has-text('b')"
+          );
+          return { expected: 1, actual: els.length };
+        }
+      );
+
+      // ============================================================
+      // J7: 真实 SUCCESS_MARKER
+      // ============================================================
+      addTest(
+        "J7", "真实 COMMUNICATION_SUCCESS_MARKER 匹配",
+        "完整 SUCCESS_MARKER 选择器 + 模拟 BOSS 聊天 DOM，应成功匹配",
+        function (c) {
+          // .chat-message:has-text('已发送')
+          var msg = document.createElement("div");
+          msg.className = "chat-message";
+          msg.textContent = "已发送";
+          c.appendChild(msg);
+          // .message-status:has-text('已发送') — 也匹配，但应去重计为 1（不同元素）
+          var st = document.createElement("div");
+          st.className = "message-status";
+          st.textContent = "已发送";
+          c.appendChild(st);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter(
+            window.COMMUNICATION_SUCCESS_MARKER
+          );
+          // 两个不同的元素都匹配（chat-message 和 message-status），返回 2
+          return { expected: 2, actual: els.length };
+        }
+      );
+
+      // ============================================================
+      // J8: 真实 DUPLICATE_MARKER
+      // ============================================================
+      addTest(
+        "J8", "真实 COMMUNICATION_DUPLICATE_MARKER 匹配",
+        "完整 DUPLICATE_MARKER 选择器 + 模拟「继续沟通」按钮，应成功匹配",
+        function (c) {
+          var b = document.createElement("button");
+          b.className = "btn-start";
+          b.textContent = "继续沟通";
+          c.appendChild(b);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter(
+            window.COMMUNICATION_DUPLICATE_MARKER
+          );
+          return { expected: 1, actual: els.length };
+        }
+      );
+
+      // ============================================================
+      // J9: B1 bug 验证 — 旧选择器 vs 新选择器不一致
+      // ============================================================
+      addTest(
+        "J9", "B1 bug 验证：旧 .error-message vs 新 .error-tip 不一致",
+        "同一 DOM 含 .error-tip 元素。旧选择器（B1 修复前）返回 0，新选择器返回 1 — 演示不一致",
+        function (c) {
+          var e = document.createElement("div");
+          e.className = "error-tip";
+          e.textContent = "上传失败，请重试";
+          c.appendChild(e);
+        },
+        function () {
+          var legacyEls = querySelectorAllWithTextFilter(
+            window.LEGACY_ERROR_MARKER
+          );
+          var fixedEls = querySelectorAllWithTextFilter(
+            window.PLATFORM_ERROR_MARKER
+          );
+          return {
+            expected: { legacy: 0, fixed: 1 },
+            actual: { legacy: legacyEls.length, fixed: fixedEls.length },
+            detail:
+              "旧选择器 .error-message/.toast-error/.dialog-error 匹配 " +
+              legacyEls.length +
+              " 个；新选择器 .error-tip/.error-content/.upload-error 匹配 " +
+              fixedEls.length +
+              " 个。B1 修复前 error 路径永远走不通。",
+          };
+        }
+      );
+
+      // ============================================================
+      // J10: B2 bug 验证 — 同时存在 success + duplicate 标记，duplicate 优先
+      // ============================================================
+      addTest(
+        "J10", "B2 bug 验证：duplicate 优先于 success",
+        "DOM 同时含 success 和 duplicate 标记，分类结果应为 duplicate_detected（后端 _classify_communication_markers 优先级：duplicate → success → error）",
+        function (c) {
+          // success marker: .chat-message:has-text('已发送')
+          var msg = document.createElement("div");
+          msg.className = "chat-message";
+          msg.textContent = "已发送";
+          c.appendChild(msg);
+          // duplicate marker: .btn-start:has-text('继续沟通')
+          var btn = document.createElement("button");
+          btn.className = "btn-start";
+          btn.textContent = "继续沟通";
+          c.appendChild(btn);
+        },
+        function () {
+          var successEls = querySelectorAllWithTextFilter(
+            window.COMMUNICATION_SUCCESS_MARKER
+          );
+          var duplicateEls = querySelectorAllWithTextFilter(
+            window.COMMUNICATION_DUPLICATE_MARKER
+          );
+          var errorEls = querySelectorAllWithTextFilter(
+            window.PLATFORM_ERROR_MARKER
+          );
+          var markerCounts = {
+            success_count: successEls.length,
+            duplicate_count: duplicateEls.length,
+            error_count: errorEls.length,
+          };
+          var outcome = classifyMarkers(markerCounts);
+          return {
+            expected: "duplicate_detected",
+            actual: outcome,
+            detail:
+              "marker_counts=" +
+              JSON.stringify(markerCounts) +
+              "；后端分类优先级 duplicate→success→error。",
+          };
+        }
+      );
+
+      // ============================================================
+      // J11: 空输入
+      // ============================================================
+      addTest(
+        "J11", "空输入",
+        "选择器 \"\"，应返回空数组",
+        function (c) {
+          var d = document.createElement("div");
+          d.textContent = "anything";
+          c.appendChild(d);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter("");
+          return { expected: 0, actual: els.length };
+        }
+      );
+
+      // ============================================================
+      // J12: 双引号变体
+      // ============================================================
+      addTest(
+        "J12", "双引号变体 :has-text(\"已发送\")",
+        "使用双引号而非单引号，应正常匹配",
+        function (c) {
+          var d = document.createElement("div");
+          d.className = "chat-message";
+          d.textContent = "消息已发送";
+          c.appendChild(d);
+        },
+        function () {
+          var els = querySelectorAllWithTextFilter(
+            '.chat-message:has-text("已发送")'
+          );
+          return { expected: 1, actual: els.length };
+        }
+      );
+
+      // ---- 汇总 ----
+      var summary = document.getElementById("summary");
+      summary.textContent = passCount + " / " + total + " 通过";
+      if (passCount === total) {
+        summary.classList.add("all-pass");
+      } else {
+        summary.classList.add("has-fail");
+      }
+    })();
+  </script>
+</body>
+</html>
