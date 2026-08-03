@@ -237,7 +237,83 @@ curl -X POST http://localhost:8000/api/v1/applications/<application_id>/platform
 3. 记录事件到 `check.jsonl`，说明模糊原因与人工结论。
 4. 若是选择器漂移，更新 `backend/app/platforms/boss/selectors.py` 并补充测试。
 
-## 8. 禁用真实适配器
+---
+
+## 8. 立即沟通（Immediate Communicate）试点
+
+立即沟通流程与简历投递（submit）是两条独立的操作路径。投递填写表单并
+点击「发送」提交简历；沟通则在职位卡片页点击「立即沟通」按钮，打开聊天
+对话框，发送一条开场白消息。
+
+### 8.1 前置条件
+
+- 油猴脚本已安装且已连接（模式 A），或 CDP 适配器已启用（模式 B）。
+- 已通过 JD 读取 + 匹配决策生成了 `boss_match_decision` artifact，且
+  `decision == "communicate"`，`opening_message` 非空。
+- 已调用 `POST /api/v1/boss/recommended-jobs/{job_id}/communicate/prepare`
+  草拟了 `boss_immediate_communicate` action（状态 `approval_required`）。
+- 用户已手动审批该 action（`POST /applications/{application_id}/actions/
+  {action_id}/approve`）。
+
+### 8.2 执行立即沟通
+
+```bash
+curl -X POST \
+  http://localhost:8000/api/v1/boss/recommended-jobs/<job_id>/communicate/<action_id>/execute \
+  -H "Content-Type: application/json" \
+  -H "X-User-Id: <user_id>" \
+  -d '{"application_id": "<application_id>"}'
+```
+
+### 8.3 验证清单
+
+- [ ] 前置审批（approval boundary）已通过，否则返回 409。
+- [ ] 外部幂等键已检查（重复执行返回已有终态结果，不再次调用适配器）。
+- [ ] 适配器**至多点击一次** `click_immediate_communicate`（「立即沟通」按钮）。
+- [ ] 适配器**至多点击一次** `send_opening_message`（聊天对话框「发送」按钮）。
+- [ ] 点击前页面 URL hash 与 `target_resource` 一致；填充消息后再次验证。
+- [ ] `succeeded` → `external_result_status == "submitted"`（confirmed send）。
+- [ ] `duplicate` → `external_result_status == "duplicate"`（对话已存在，非失败）。
+- [ ] `unknown` → `external_result_status == "unknown"`（硬停止，不自动重试）。
+- [ ] `failed` → `external_result_status == "failed"` + failure envelope code。
+- [ ] 适配器执行完成后 `active_application_id` 已清空（channel cleared）。
+- [ ] 结果中无 cookie / token / 原始 HTML / 原始消息内容。
+
+### 8.4 沟通失败场景
+
+| failure_code                    | 含义                              | 处理                               |
+| ------------------------------- | --------------------------------- | ---------------------------------- |
+| `bridge_not_connected`          | 油猴脚本未连接 / CDP 断开         | 重新连接适配器，确认页面在 zhipin  |
+| `page_binding_mismatch`         | 页面 URL hash 不匹配（已导航离开）| 重新导航到目标职位页，重新执行     |
+| `immediate_button_missing`      | 「立即沟通」按钮未找到            | 确认在职位详情页；可能选择器漂移   |
+| `message_input_missing`         | 聊天输入框未找到                  | 「立即沟通」可能未成功打开对话框   |
+| `send_result_unknown`           | 发送后页面状态无法分类            | 人工登录 BOSS 确认消息是否已发送   |
+| `communication_failure`         | 通用沟通失败                      | 检查 `diagnostic_reference`        |
+| `communication_duplicate_detected` | 对话已存在（非失败）           | 正常，无需重试                     |
+| `communication_unknown_result`  | 模糊状态                          | 人工介入，**不**自动重试           |
+
+### 8.5 幂等重放
+
+对已产生终态结果的 communicate action 再次调用 execute：
+
+- 返回 200（非 409），`external_result_status` 保持终态值不变。
+- 消息包含 `幂等重放` 前缀。
+- 适配器**不会被再次调用**（`communicate_calls` 长度不增加）。
+- Timeline 记录 `boss_communicate_blocked` 事件，`reason=idempotency_replay`。
+
+### 8.6 沟通回滚 / 人工对账
+
+如果 execute 返回 `unknown`：
+
+1. **不要**自动重试。人工登录 BOSS Web 查看聊天列表，确认消息是否已发送。
+2. 在数据库中手动修正 `external_result`（标注人工对账结论）。
+3. 记录事件到 `check.jsonl`，说明模糊原因与人工结论。
+4. 若是选择器漂移（按钮/输入框/标记未找到），更新 `selectors.py` 中对应的
+   `COMMUNICATION_*` 选择器并补充测试。
+
+---
+
+## 9. 禁用真实适配器
 
 试点结束后，取消环境标志即可回退到 fake 适配器：
 
@@ -255,6 +331,7 @@ unset BOSS_SESSION_PROFILE_DIR
 - 永不持久化 credentials / cookies / tokens / Playwright storage state / 原始 HTML / 原始 JD / 原始简历。
 - prepare 永不点击最终提交按钮。
 - submit 至多点击一次最终提交按钮。
+- 立即沟通至多点击一次「立即沟通」按钮 + 一次「发送」按钮。
 - CAPTCHA / 限流 / 选择器漂移 / 模糊状态 = 硬停止。
 - 所有选择器和浏览器逻辑仅留在 `app/platforms/boss/` 内。
 - `session_reference` / CDP endpoint / userscript 连接配置不走请求 / 队列 / DB，
@@ -265,4 +342,9 @@ unset BOSS_SESSION_PROFILE_DIR
 - **油猴桥接模式下**：指令队列纯内存不持久化；回传结果只含脱敏值
   （visible/count/sha256(url)/截断title/stripped error）；永不发送 navigate
   指令（用户手动导航）；submit 的点击由后端 `UserscriptBossPage.click` 在
-  submit 阶段精确触发一次；无认证端点不携带 X-User-Id。
+  submit 阶段精确触发一次；立即沟通的点击由后端在 execute 阶段精确触发
+  一次 `click_immediate_communicate` + 一次 `send_opening_message`；
+  无认证端点不携带 X-User-Id。
+- **立即沟通安全约束**：Unknown result 永不触发自动重试；page hash 在点击前
+  和填充后各验证一次（mismatch = `unknown` 硬停止）；channel 在每次 execute
+  完成后清空（`active_application_id` 归 `None`）。
