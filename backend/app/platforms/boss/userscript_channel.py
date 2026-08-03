@@ -44,11 +44,22 @@ _log = get_logger("app.platforms.boss.userscript_channel")
 INSTRUCTION_POLL_TIMEOUT_S = 5.0
 
 #: How long the adapter waits for a result before aborting.
-RESULT_TIMEOUT_S = 15.0
+#:
+#: 90 s accommodates browser background-tab throttling: when a BOSS tab is not
+#: the active tab, Chrome/Edge throttle ``setInterval`` to ~60 s. The userscript
+#: polls ``next-instruction`` on a 1 s ``setInterval``, but in a background tab
+#: that becomes ~60 s. A 90 s result timeout ensures the adapter does not abort
+#: before a background-tab poll picks up the instruction and posts back a result.
+RESULT_TIMEOUT_S = 90.0
 
 #: If no heartbeat arrives within this window, the userscript is considered
 #: disconnected.
-CONNECTION_TIMEOUT_S = 15.0
+#:
+#: 120 s accommodates the same background-tab throttling: the userscript sends
+#: a heartbeat every 5 s, but in a background tab ``setInterval`` is throttled
+#: to ~60 s. A 120 s connection timeout ensures a background tab is not marked
+#: disconnected between throttled heartbeats.
+CONNECTION_TIMEOUT_S = 120.0
 
 
 OpKind = Literal[

@@ -205,6 +205,21 @@ class ProbeRequest(BaseModel):
         default=None,
         description="Max chars to extract for read_jd.",
     )
+    page_id: str | None = Field(
+        default=None,
+        description=(
+            "Bind the instruction to this page_id (tab). When omitted, the "
+            "instruction auto-binds to the active page. Used by Stage 7 "
+            "multi-tab verification to test page_id filtering."
+        ),
+    )
+    expected_url_hash: str | None = Field(
+        default=None,
+        description=(
+            "Expected page URL hash. When omitted, auto-binds from the active "
+            "page. Used with page_id for Stage 7 multi-tab verification."
+        ),
+    )
 
 
 class ProbeResponse(BaseModel):
@@ -217,6 +232,7 @@ class ProbeResponse(BaseModel):
     url: str | None = None
     error: str | None = None
     jd: dict | None = None
+    instruction_page_id: str | None = None
 
 
 @router.post("/probe", response_model=ProbeResponse)
@@ -226,6 +242,11 @@ async def probe(body: ProbeRequest) -> ProbeResponse:
     This endpoint is for P0-2 verification only — it lets us probe the real BOSS
     DOM to find the correct CSS selector for the chat message input. It will be
     removed after the selector is confirmed.
+
+    When *page_id* is provided, the instruction is bound to that specific tab.
+    This is the Stage 7 multi-tab safety test: we send an instruction bound to
+    Tab-A's page_id while Tab-B is the active page. The userscript on Tab-A
+    should pick it up; Tab-B should skip it.
     """
     ch = get_channel()
     if not ch.is_connected():
@@ -238,6 +259,8 @@ async def probe(body: ProbeRequest) -> ProbeResponse:
         selector_name=body.selector_name,
         selector_profile=body.selector_profile,
         max_text_chars=body.max_text_chars,
+        page_id=body.page_id,
+        expected_url_hash=body.expected_url_hash,
     )
     result = await ch.put_instruction(ins)
     return ProbeResponse(
@@ -248,4 +271,5 @@ async def probe(body: ProbeRequest) -> ProbeResponse:
         url=result.url,
         error=result.error,
         jd=result.jd,
+        instruction_page_id=ins.page_id,
     )
