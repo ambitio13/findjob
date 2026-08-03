@@ -14,6 +14,10 @@ Covers:
 - Idempotent replay → 200, same action, no re-execution.
 - Payload hash mismatch → 409 with ``detail.reason == "payload_hash_mismatch"``.
 - Cross-user → 404.
+- Adapter returns ``failed`` → 200 with ``external_result_status == "failed"``
+  and non-empty ``failure_code``.
+- Adapter returns ``unknown`` → 200 with ``external_result_status == "unknown"``
+  and non-empty ``failure_code``.
 
 The fake model gateway is used by default (``MODEL_PROVIDER=fake`` in
 ``conftest.py``). The DB is truncated per test via the shared ``client``
@@ -500,3 +504,109 @@ def test_execute_cross_user_returns_404(client: TestClient) -> None:
         headers=_headers(ids["other_user_id"]),
     )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Execute — failed / unknown terminal outcomes
+# ---------------------------------------------------------------------------
+
+def _prepare_and_approve(
+    client: TestClient, ids: dict[str, str]
+) -> tuple[str, str]:
+    """Run match → prepare → approve, returning (application_id, action_id)."""
+    match = _run_match_api(client, ids)
+    artifact_id = match["artifact_id"]
+
+    prepare_resp = client.post(
+        f"/api/v1/boss/recommended-jobs/{ids['job_id']}/communicate/prepare",
+        json={
+            "resume_version_id": ids["resume_version_id"],
+            "match_artifact_id": artifact_id,
+        },
+        headers=_headers(ids["user_id"]),
+    )
+    assert prepare_resp.status_code == 201, prepare_resp.text
+    action = prepare_resp.json()["action"]
+    application_id = action["application_id"]
+    action_id = action["id"]
+
+    _approve_via_api(client, application_id, action_id, ids["user_id"])
+    return application_id, action_id
+
+
+def test_execute_failed_returns_200_with_failed_status(
+    client: TestClient, monkeypatch
+) -> None:
+    """When the adapter returns ``failed``, the API responds 200 with
+    ``external_result_status == "failed"`` and a non-empty ``failure_code``
+    inside ``external_result.result``."""
+    ids = _seed()
+    application_id, action_id = _prepare_and_approve(client, ids)
+
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_failed")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
+    resp = client.post(
+        f"/api/v1/boss/recommended-jobs/{ids['job_id']}/communicate/{action_id}/execute",
+        json={"application_id": application_id},
+        headers=_headers(ids["user_id"]),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    action = body["action"]
+
+    # Terminal status is "failed".
+    assert action["external_result_status"] == "failed"
+    assert action["external_completed_at"] is not None
+
+    # The external_result envelope carries a non-empty failure_code.
+    ext_result = action["external_result"]
+    assert ext_result is not None
+    assert ext_result["result_status"] == "failed"
+    failure_code = ext_result["result"].get("failure_code")
+    assert failure_code is not None
+    assert failure_code != ""
+
+
+def test_execute_unknown_returns_200_with_unknown_status(
+    client: TestClient, monkeypatch
+) -> None:
+    """When the adapter returns ``unknown``, the API responds 200 with
+    ``external_result_status == "unknown"`` and a non-empty ``failure_code``
+    inside ``external_result.result``."""
+    ids = _seed()
+    application_id, action_id = _prepare_and_approve(client, ids)
+
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_unknown")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
+    resp = client.post(
+        f"/api/v1/boss/recommended-jobs/{ids['job_id']}/communicate/{action_id}/execute",
+        json={"application_id": application_id},
+        headers=_headers(ids["user_id"]),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    action = body["action"]
+
+    # Terminal status is "unknown" (hard stop, no retry).
+    assert action["external_result_status"] == "unknown"
+    assert action["external_completed_at"] is not None
+
+    # The external_result envelope carries a non-empty failure_code.
+    ext_result = action["external_result"]
+    assert ext_result is not None
+    assert ext_result["result_status"] == "unknown"
+    failure_code = ext_result["result"].get("failure_code")
+    assert failure_code is not None
+    assert failure_code != ""
