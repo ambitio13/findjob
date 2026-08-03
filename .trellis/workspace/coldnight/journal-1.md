@@ -841,3 +841,36 @@ the only remaining blocker before the PRD acceptance item "dry-run navigation
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: Fix P1/P2: :has-text() selector protocol + page binding + task metadata
+
+**Date**: 2026-08-03
+**Task**: Fix P1/P2: :has-text() selector protocol + page binding + task metadata
+**Branch**: `wanzhen`
+
+### Summary
+
+Fixed 4 blocking issues from user review of BOSS auto-communicate pilot. P1: Added querySelectorAllWithTextFilter() to boss-userscript.user.js — strips Playwright-only :has-text() pseudo-selectors from CSS, runs querySelectorAll on cleaned CSS, filters by textContent.includes(). Applied in resolveLocator CSS path (fixes submit-flow markers) and read_communication_result op (fixes communicate-flow self-classification, was always returning unknown). P2: Added page_id query param to GET /next-instruction with take_instruction_for_page() that filters the queue so non-target tabs don't consume instructions. P2: Populated task.json/implement.jsonl/check.jsonl for Trellis handoff. Runbook updated with read_communication_result verification checklist. 755 tests pass, ruff clean, frontend lint/type/build clean.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5496980` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
