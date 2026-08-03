@@ -63,14 +63,23 @@ def get_status() -> BridgeStatusResponse:
     response_model=InstructionOut,
     responses={204: {"description": "No instruction available"}},
 )
-async def get_next_instruction(response: Response) -> Response | InstructionOut:
+async def get_next_instruction(
+    response: Response,
+    page_id: str | None = None,
+) -> Response | InstructionOut:
     """Long-poll for the next instruction.
 
     Returns ``200`` with an :class:`InstructionOut` if an instruction is
     available within 5 seconds, or ``204 No Content`` if the queue is empty.
+
+    The optional *page_id* query parameter filters the queue so that only
+    instructions bound to this tab (or unbound instructions) are returned.
+    Non-matching instructions are re-enqueued for the correct tab. This is
+    the server-side half of page binding — the userscript also checks
+    ``page_id`` client-side as defense-in-depth.
     """
     ch = get_channel()
-    instruction = await ch.take_instruction()
+    instruction = await ch.take_instruction_for_page(page_id)
     if instruction is None:
         response.status_code = status.HTTP_204_NO_CONTENT
         return response

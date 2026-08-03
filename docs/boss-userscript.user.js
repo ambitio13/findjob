@@ -269,13 +269,69 @@
   // The backend sends selector_kind + selector_value (+ selector_name for
   // role selectors). We resolve them using the standard DOM APIs — the same
   // semantics as Playwright's get_by_role/label/placeholder/locator.
+  //
+  // CSS selectors may contain ``:has-text('...')`` pseudo-selectors which are
+  // Playwright-only — native ``querySelectorAll`` throws on them. We strip
+  // them and apply text-contains filtering post-query, mirroring the role/label
+  // text-filtering pattern. See ``querySelectorAllWithTextFilter`` below.
+
+  // Regex to extract ``:has-text('...')`` or ``:has-text("...")`` from CSS.
+  // Captures the text content inside the quotes.
+  var HAS_TEXT_RE = /:has-text\(\s*(['"])([^'"]+)\1\s*\)/g;
+
+  // Resolve a CSS selector string that may contain Playwright-only
+  // ``:has-text('...')`` pseudo-selectors.
+  //
+  // The selector string is a comma-separated list of alternatives. For each
+  // alternative:
+  //   1. Extract all ``:has-text('...')`` segments, capturing the text.
+  //   2. Strip them to get valid CSS.
+  //   3. Run ``querySelectorAll`` on the cleaned CSS.
+  //   4. If the alternative had ``:has-text`` filters, keep only elements whose
+  //      ``textContent`` includes *every* extracted text (AND semantics).
+  //
+  // Alternatives with no ``:has-text`` pass through unchanged. This mirrors
+  // the existing ``role`` kind text-filtering pattern.
+  function querySelectorAllWithTextFilter(rawCss) {
+    var alternatives = String(rawCss).split(",");
+    var matched = [];
+    for (var i = 0; i < alternatives.length; i++) {
+      var alt = alternatives[i].trim();
+      if (!alt) continue;
+      var texts = [];
+      var cleanCss = alt.replace(HAS_TEXT_RE, function (_match, _quote, text) {
+        texts.push(text);
+        return "";
+      });
+      var els;
+      try {
+        els = document.querySelectorAll(cleanCss);
+      } catch (_e) {
+        // If the cleaned CSS is still invalid (e.g. it became empty after
+        // stripping), skip this alternative rather than throwing.
+        continue;
+      }
+      Array.from(els).forEach(function (el) {
+        var ok = true;
+        for (var t = 0; t < texts.length; t++) {
+          if (!(el.textContent || "").includes(texts[t])) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) matched.push(el);
+      });
+    }
+    return matched;
+  }
+
   function resolveLocator(ins) {
     const kind = ins.selector_kind;
     const value = ins.selector_value;
     const name = ins.selector_name;
 
     if (kind === "css") {
-      return document.querySelectorAll(value);
+      return querySelectorAllWithTextFilter(value);
     }
     if (kind === "role") {
       // role=button → all <button> elements; filter by accessible name if given.
@@ -533,16 +589,19 @@
         // markers. Return a classification string via result.text so the
         // backend can map it to a CommunicationOutcome.
         //
-        // The selector_value carries a CSS selector for the success marker;
-        // we also check the duplicate and error markers via fixed selectors
-        // matching the selectors.py constants.
-        const successEls = document.querySelectorAll(
+        // The selector strings match the selectors.py constants
+        // (COMMUNICATION_SUCCESS_MARKER, COMMUNICATION_DUPLICATE_MARKER,
+        // PLATFORM_ERROR_MARKER). We use querySelectorAllWithTextFilter
+        // instead of native querySelectorAll because the selectors contain
+        // Playwright-only ``:has-text()`` pseudo-selectors that would throw
+        // a DOMException in native CSS.
+        const successEls = querySelectorAllWithTextFilter(
           ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), .chat-content .message-item:not(.pending)",
         );
-        const duplicateEls = document.querySelectorAll(
+        const duplicateEls = querySelectorAllWithTextFilter(
           ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通')",
         );
-        const errorEls = document.querySelectorAll(
+        const errorEls = querySelectorAllWithTextFilter(
           ".error-message, .toast-error, .dialog-error",
         );
         if (duplicateEls.length > 0) {
@@ -640,10 +699,15 @@
   async function pollOnce() {
     let ins;
     try {
-      ins = await gmFetch(BRIDGE + "/next-instruction", {
-        method: "GET",
-        timeout: 10000, // slightly longer than the backend's 5s long-poll
-      });
+      ins = await gmFetch(
+        BRIDGE +
+          "/next-instruction?page_id=" +
+          encodeURIComponent(PAGE_ID),
+        {
+          method: "GET",
+          timeout: 10000, // slightly longer than the backend's 5s long-poll
+        },
+      );
     } catch (_e) {
       // Network error or backend down — back off and retry.
       return false;

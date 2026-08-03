@@ -390,3 +390,110 @@ def test_full_round_trip_with_page_binding() -> None:
     result = ch._results.get(instruction.instruction_id)
     assert result is not None
     assert result.page_id == "tab-xyz"
+
+
+# ---------------------------------------------------------------------------
+# GET /next-instruction with page_id filtering
+# ---------------------------------------------------------------------------
+
+def test_next_instruction_filters_by_page_id() -> None:
+    """When ?page_id=tab-A is given, only tab-A's instruction is returned."""
+    _reset()
+    ch = get_channel()
+    ins_a = make_instruction("count", selector_kind="css", selector_value=".a",
+                             page_id="tab-A")
+    ins_b = make_instruction("count", selector_kind="css", selector_value=".b",
+                             page_id="tab-B")
+    asyncio.run(ch._queue.put(ins_a))
+    asyncio.run(ch._queue.put(ins_b))
+
+    import app.platforms.boss.userscript_channel as mod
+    original = mod.INSTRUCTION_POLL_TIMEOUT_S
+    mod.INSTRUCTION_POLL_TIMEOUT_S = 0.1
+    try:
+        with _client() as client:
+            # tab-A polls — should get ins_a, not ins_b.
+            resp = client.get(
+                "/api/v1/userscript-bridge/next-instruction",
+                params={"page_id": "tab-A"},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["instruction_id"] == ins_a.instruction_id
+            assert body["page_id"] == "tab-A"
+
+            # tab-A polls again — no more matching instructions.
+            resp2 = client.get(
+                "/api/v1/userscript-bridge/next-instruction",
+                params={"page_id": "tab-A"},
+            )
+            assert resp2.status_code == 204
+    finally:
+        mod.INSTRUCTION_POLL_TIMEOUT_S = original
+
+    # ins_b should still be in the queue for tab-B.
+    assert ch._queue.qsize() == 1
+    remaining = asyncio.run(ch._queue.get())
+    assert remaining.instruction_id == ins_b.instruction_id
+
+
+def test_next_instruction_returns_unbound_without_page_id_filter() -> None:
+    """An instruction with page_id=None is returned to any ?page_id."""
+    _reset()
+    ch = get_channel()
+    ins = make_instruction("count", selector_kind="css", selector_value=".x")
+    # page_id is None (unbound).
+    asyncio.run(ch._queue.put(ins))
+
+    with _client() as client:
+        resp = client.get(
+            "/api/v1/userscript-bridge/next-instruction",
+            params={"page_id": "tab-A"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["instruction_id"] == ins.instruction_id
+
+
+def test_next_instruction_requeues_non_matching() -> None:
+    """A non-matching instruction is re-enqueued for the correct tab."""
+    _reset()
+    ch = get_channel()
+    ins_b = make_instruction("count", selector_kind="css", selector_value=".b",
+                             page_id="tab-B")
+    asyncio.run(ch._queue.put(ins_b))
+
+    import app.platforms.boss.userscript_channel as mod
+    original = mod.INSTRUCTION_POLL_TIMEOUT_S
+    mod.INSTRUCTION_POLL_TIMEOUT_S = 0.1
+    try:
+        with _client() as client:
+            # tab-A polls — ins_b doesn't match, should get 204 (timeout).
+            resp = client.get(
+                "/api/v1/userscript-bridge/next-instruction",
+                params={"page_id": "tab-A"},
+            )
+            assert resp.status_code == 204
+    finally:
+        mod.INSTRUCTION_POLL_TIMEOUT_S = original
+
+    # ins_b should still be in the queue for tab-B to consume.
+    assert ch._queue.qsize() == 1
+    remaining = asyncio.run(ch._queue.get())
+    assert remaining.instruction_id == ins_b.instruction_id
+    assert remaining.page_id == "tab-B"
+
+
+def test_next_instruction_no_page_id_param_returns_any() -> None:
+    """Without ?page_id param, any instruction is returned (backward compat)."""
+    _reset()
+    ch = get_channel()
+    ins_b = make_instruction("count", selector_kind="css", selector_value=".b",
+                             page_id="tab-B")
+    asyncio.run(ch._queue.put(ins_b))
+
+    with _client() as client:
+        resp = client.get("/api/v1/userscript-bridge/next-instruction")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["instruction_id"] == ins_b.instruction_id

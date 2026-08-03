@@ -276,6 +276,9 @@ curl -X POST \
 - [ ] `duplicate` → `external_result_status == "duplicate"`（对话已存在，非失败）。
 - [ ] `unknown` → `external_result_status == "unknown"`（硬停止，不自动重试）。
 - [ ] `failed` → `external_result_status == "failed"` + failure envelope code。
+- [ ] `read_communication_result` 在真实页面返回 `succeeded / duplicate_detected /
+      platform_failure / unknown`（非总是 `unknown`——若总是 `unknown`，说明
+      `:has-text()` 伪选择器未被 `querySelectorAllWithTextFilter` 正确处理）。
 - [ ] 适配器执行完成后 `active_application_id` 已清空（channel cleared）。
 - [ ] 结果中无 cookie / token / 原始 HTML / 原始消息内容。
 

@@ -310,6 +310,56 @@ class UserscriptChannel:
         except TimeoutError:
             return None
 
+    async def take_instruction_for_page(
+        self, page_id: str | None
+    ) -> Instruction | None:
+        """Long-poll for the next instruction bound to *page_id*.
+
+        When *page_id* is ``None`` (old userscripts that don't send the query
+        param), this behaves identically to :meth:`take_instruction` — any
+        instruction is returned.
+
+        When *page_id* is provided, only instructions whose ``page_id`` is
+        ``None`` (unbound — backward compatible) or equal to *page_id* are
+        returned. Non-matching instructions are re-enqueued at the back of
+        the queue so the correct tab can still consume them later. If the
+        queue contains only non-matching instructions, this method polls until
+        the timeout expires and returns ``None``.
+
+        This is the server-side half of page binding: the client-side half
+        (userscript refuses mismatched ``page_id``) and the result-side half
+        (``put_result`` rejects mismatched ``page_id``) provide defense-in-depth.
+        """
+        if page_id is None:
+            return await self.take_instruction()
+
+        deadline = datetime.now(UTC) + timedelta(seconds=INSTRUCTION_POLL_TIMEOUT_S)
+        skipped: list[Instruction] = []
+        result: Instruction | None = None
+        while datetime.now(UTC) < deadline:
+            try:
+                remaining = (deadline - datetime.now(UTC)).total_seconds()
+                instruction = await asyncio.wait_for(
+                    self._queue.get(), timeout=max(remaining, 0.01)
+                )
+            except TimeoutError:
+                break
+
+            if (
+                instruction.page_id is None
+                or instruction.page_id == page_id
+            ):
+                result = instruction
+                break
+            # Non-matching: re-enqueue for the correct tab.
+            skipped.append(instruction)
+
+        # Put any skipped instructions back so they aren't lost.
+        for ins in reversed(skipped):
+            await self._queue.put(ins)
+
+        return result
+
     def put_result(self, result: InstructionResult) -> bool:
         """Post back a result for a completed instruction.
 
