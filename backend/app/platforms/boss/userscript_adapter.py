@@ -301,20 +301,23 @@ class UserscriptBossPage:
         if not result.success:
             raise RuntimeError(result.error or "send_opening_message_failed")
 
-    async def read_communication_result(self) -> str:
-        """Read the post-send page state and return a classification string.
+    async def read_communication_result(self) -> dict[str, int] | None:
+        """Read the post-send page state and return raw marker counts.
 
-        The userscript checks for success/duplicate/error markers and returns
-        one of: ``succeeded``, ``duplicate_detected``, ``platform_failure``,
-        ``unknown``. This is decoded by the adapter into a
-        :class:`CommunicationOutcome`.
+        The userscript counts success / duplicate / error marker elements and
+        returns them as a dict. The backend (via
+        :func:`classify_communication_result`) decides the classification —
+        the userscript does **not** classify.
+
+        Returns ``None`` if the instruction failed, signaling the adapter to
+        treat the result as ``unknown``.
         """
         result = await self._send(
             make_instruction("read_communication_result")
         )
         if not result.success:
-            return "unknown"
-        return result.text or "unknown"
+            return None
+        return result.marker_counts
 
     # --- Internal --------------------------------------------------------
 
@@ -356,6 +359,46 @@ def _resolve(page: UserscriptBossPage, selector: Selector) -> RemoteLocator:
     if selector.kind.value == "placeholder":
         return page.get_by_placeholder(selector.value)
     return page.locator(selector.value)
+
+
+def _classify_communication_markers(
+    marker_counts: dict[str, int],
+) -> PageClassification:
+    """Classify communicate-result marker counts from the userscript.
+
+    This is the count-based equivalent of
+    :func:`~app.platforms.boss.classifiers.classify_communication_result`. The
+    userscript reports raw element counts for each marker group; the backend
+    applies the priority order (duplicate → success → error → unknown) to
+    decide the outcome.
+
+    Using the Python classifier (not the userscript) for the classification
+    decision keeps "backend owns platform failure classification" intact —
+    see ``design.md`` §Backend owns classification.
+    """
+    success_count = marker_counts.get("success_count", 0)
+    duplicate_count = marker_counts.get("duplicate_count", 0)
+    error_count = marker_counts.get("error_count", 0)
+
+    if duplicate_count > 0:
+        return PageClassification(
+            outcome=DUPLICATE_DETECTED,
+            diagnostic_reference="communication_duplicate_marker",
+        )
+    if success_count > 0:
+        return PageClassification(
+            outcome="succeeded",
+            diagnostic_reference="communication_success_marker",
+        )
+    if error_count > 0:
+        return PageClassification(
+            outcome="platform_failure",
+            diagnostic_reference="communication_platform_error_marker",
+        )
+    return PageClassification(
+        outcome=UNKNOWN,
+        diagnostic_reference="communication_no_confirmation",
+    )
 
 
 class UserscriptBossAdapter:
@@ -891,9 +934,21 @@ class UserscriptBossAdapter:
                 "communicate must click at most 1 immediate + 1 send"
             )
 
-            # Step 8: Read and classify the post-send state.
-            result_text = await page.read_communication_result()
-            return self._communication_result_from_text(result_text, now)
+            # Step 8: Read raw marker counts and classify via the Python
+            # classifier. The userscript only reports what it sees; the
+            # backend owns the classification decision.
+            marker_counts = await page.read_communication_result()
+            if marker_counts is None:
+                # read_communication_result instruction itself failed.
+                return CommunicationExecuteResult(
+                    outcome=CommunicationOutcome.unknown,
+                    failure_code="send_result_unknown",
+                    message="Could not read the post-send page state.",
+                    diagnostic_reference=sanitize_diagnostic("read_result_failed"),
+                    occurred_at=now,
+                )
+            classification = _classify_communication_markers(marker_counts)
+            return self._communication_result_from_classification(classification, now)
         except RuntimeError as exc:
             _log.warning(
                 "boss.userscript.communicate.runtime_error", error=str(exc)
@@ -909,30 +964,35 @@ class UserscriptBossAdapter:
             self._channel.clear()
 
     @staticmethod
-    def _communication_result_from_text(
-        result_text: str, now: datetime
+    def _communication_result_from_classification(
+        classification: PageClassification, now: datetime
     ) -> CommunicationExecuteResult:
-        """Map the userscript's classification string to a result."""
-        if result_text == "succeeded":
+        """Map a :class:`PageClassification` to a communication result.
+
+        This mirrors :meth:`_submit_result_from_classification` but for the
+        communicate flow. Priority: duplicate → success → error → unknown
+        (same order as :func:`classify_communication_result`).
+        """
+        if classification.outcome == "succeeded":
             return CommunicationExecuteResult(
                 outcome=CommunicationOutcome.succeeded,
                 platform_reference=None,
                 occurred_at=now,
             )
-        if result_text == "duplicate_detected":
+        if classification.outcome == DUPLICATE_DETECTED:
             return CommunicationExecuteResult(
                 outcome=CommunicationOutcome.duplicate,
                 failure_code=communication_failure_code(CommunicationOutcome.duplicate),
                 message="A conversation already exists for this contact.",
-                diagnostic_reference=sanitize_diagnostic("communication_duplicate_marker"),
+                diagnostic_reference=sanitize_diagnostic(classification.diagnostic_reference),
                 occurred_at=now,
             )
-        if result_text == "platform_failure":
+        if classification.outcome == "platform_failure":
             return CommunicationExecuteResult(
                 outcome=CommunicationOutcome.failed,
                 failure_code=communication_failure_code(CommunicationOutcome.failed),
                 message="Platform error observed after sending the message.",
-                diagnostic_reference=sanitize_diagnostic("communication_platform_error_marker"),
+                diagnostic_reference=sanitize_diagnostic(classification.diagnostic_reference),
                 occurred_at=now,
             )
         # Ambiguous: no clear success, no clear failure. Hard stop.
@@ -940,7 +1000,7 @@ class UserscriptBossAdapter:
             outcome=CommunicationOutcome.unknown,
             failure_code="send_result_unknown",
             message="Ambiguous post-send state; manual reconciliation required.",
-            diagnostic_reference=sanitize_diagnostic("communication_no_confirmation"),
+            diagnostic_reference=sanitize_diagnostic(classification.diagnostic_reference),
             occurred_at=now,
         )
 

@@ -585,36 +585,35 @@
         return result;
       }
       if (ins.op === "read_communication_result") {
-        // Check the post-send page state for success / duplicate / error
-        // markers. Return a classification string via result.text so the
-        // backend can map it to a CommunicationOutcome.
+        // Count success / duplicate / error marker elements on the post-send
+        // page. Return raw counts via result.marker_counts — the **backend**
+        // classifies the result (see _classify_communication_markers in
+        // userscript_adapter.py). The userscript does NOT decide the outcome.
         //
-        // The selector strings match the selectors.py constants
-        // (COMMUNICATION_SUCCESS_MARKER, COMMUNICATION_DUPLICATE_MARKER,
-        // PLATFORM_ERROR_MARKER). We use querySelectorAllWithTextFilter
-        // instead of native querySelectorAll because the selectors contain
-        // Playwright-only ``:has-text()`` pseudo-selectors that would throw
-        // a DOMException in native CSS.
+        // The selector strings must stay in sync with the selectors.py
+        // constants (COMMUNICATION_SUCCESS_MARKER,
+        // COMMUNICATION_DUPLICATE_MARKER, PLATFORM_ERROR_MARKER). We use
+        // querySelectorAllWithTextFilter instead of native querySelectorAll
+        // because the selectors contain Playwright-only ``:has-text()``
+        // pseudo-selectors that would throw a DOMException in native CSS.
         const successEls = querySelectorAllWithTextFilter(
           ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), .chat-content .message-item:not(.pending)",
         );
         const duplicateEls = querySelectorAllWithTextFilter(
           ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通')",
         );
+        // Must stay in sync with PLATFORM_ERROR_MARKER in
+        // backend/app/platforms/boss/selectors.py. Hardcoded here because
+        // userscript does not yet receive selectors from the backend (see
+        // roadmap P2-2 in docs/boss-communicate-testing-plan.md).
         const errorEls = querySelectorAllWithTextFilter(
-          ".error-message, .toast-error, .dialog-error",
+          ".error-tip, .error-content, .upload-error",
         );
-        if (duplicateEls.length > 0) {
-          result.text = "duplicate_detected";
-        } else if (errorEls.length > 0) {
-          result.text = "platform_failure";
-        } else if (successEls.length > 0) {
-          result.text = "succeeded";
-        } else {
-          // Ambiguous state — the backend treats this as "unknown" (hard
-          // stop, manual reconciliation).
-          result.text = "unknown";
-        }
+        result.marker_counts = {
+          success_count: successEls.length,
+          duplicate_count: duplicateEls.length,
+          error_count: errorEls.length,
+        };
         return result;
       }
 

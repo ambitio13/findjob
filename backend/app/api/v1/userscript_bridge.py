@@ -124,6 +124,7 @@ def post_result(body: ResultIn) -> AckResponse:
             error=sanitize_result_error(body.error),
             page_id=body.page_id,
             jd=sanitized_jd,
+            marker_counts=body.marker_counts,
         )
     )
     if not accepted:

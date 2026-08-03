@@ -154,6 +154,14 @@ class ResultIn(BaseModel):
             "— never raw HTML. Sanitized by the backend before storage."
         ),
     )
+    marker_counts: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Raw element counts for success / duplicate / error markers, "
+            "only for read_communication_result results. The backend "
+            "classifies the outcome — the userscript does NOT classify."
+        ),
+    )
 
 
 class HeartbeatIn(BaseModel):

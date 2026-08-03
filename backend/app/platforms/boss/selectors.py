@@ -170,8 +170,9 @@ COMMUNICATION_SEND_BUTTON = Selector(
 )
 
 #: Post-send success marker. After ``send_opening_message``, the chat dialog
-#: shows a sent confirmation or the conversation continues — this indicates
-#: the message was delivered.
+#: shows a sent confirmation ("已发送") or a non-pending message item. Note:
+#: "继续沟通" is a *duplicate* marker (see ``COMMUNICATION_DUPLICATE_MARKER``),
+#: not a success marker — it means a conversation already existed.
 COMMUNICATION_SUCCESS_MARKER = Selector(
     kind=LocatorKind.CSS,
     value=(

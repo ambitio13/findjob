@@ -112,6 +112,12 @@ class InstructionResult:
     sanitized by the API layer via :func:`sanitize_jd_result` before being
     stored. It carries only text fields — never raw HTML.
 
+    ``marker_counts`` is returned by the ``read_communication_result`` op. It
+    carries raw marker-element counts (``success_count``, ``duplicate_count``,
+    ``error_count``) so the backend can classify the result. The userscript
+    does **not** decide the classification — it only reports what it sees.
+    This keeps the "backend owns classification" design invariant intact.
+
     ``page_id`` identifies which browser tab produced the result. The channel
     rejects results whose ``page_id`` does not match the instruction's
     ``page_id``, preventing a wrong tab from consuming another tab's
@@ -127,6 +133,7 @@ class InstructionResult:
     error: str | None = None
     page_id: str | None = None
     jd: dict | None = None
+    marker_counts: dict[str, int] | None = None
 
 
 @dataclass

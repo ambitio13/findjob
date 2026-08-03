@@ -175,6 +175,14 @@ async def classify_communication_result(page: BossPage) -> PageClassification:
     (conversation already existed), surfaced an error, or left us in an
     ambiguous state. ``unknown`` is a hard stop for manual reconciliation —
     never infer success from lack of error.
+
+    Priority order (matches the userscript ``read_communication_result`` op):
+
+    1. **duplicate** — "继续沟通" button means a conversation already existed.
+       Checked first because when both success and duplicate markers are
+       present, the conversation pre-dates this send attempt.
+    2. **success** — "已发送" confirmation or a non-pending message item.
+    3. **error** — platform error markers (upload failure, rate limit, etc.).
     """
     from app.platforms.boss.selectors import (
         COMMUNICATION_DUPLICATE_MARKER,
@@ -182,15 +190,15 @@ async def classify_communication_result(page: BossPage) -> PageClassification:
         PLATFORM_ERROR_MARKER,
     )
 
-    if await _count(page, COMMUNICATION_SUCCESS_MARKER) > 0:
-        return PageClassification(
-            outcome="succeeded", diagnostic_reference="communication_success_marker"
-        )
-
     if await _count(page, COMMUNICATION_DUPLICATE_MARKER) > 0:
         return PageClassification(
             outcome=DUPLICATE_DETECTED,
             diagnostic_reference="communication_duplicate_marker",
+        )
+
+    if await _count(page, COMMUNICATION_SUCCESS_MARKER) > 0:
+        return PageClassification(
+            outcome="succeeded", diagnostic_reference="communication_success_marker"
         )
 
     if await _count(page, PLATFORM_ERROR_MARKER) > 0:

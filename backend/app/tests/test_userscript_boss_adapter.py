@@ -30,6 +30,7 @@ from app.platforms.base import (
     PrepareOutcome,
     SubmitContext,
     SubmitOutcome,
+    communication_failure_code,
 )
 from app.platforms.boss.sanitizer import sanitize_diagnostic, sanitize_url
 from app.platforms.boss.selectors import (
@@ -111,6 +112,7 @@ class FakeUserscriptChannel(UserscriptChannel):
                 url=result.url,
                 error=result.error,
                 jd=result.jd,
+                marker_counts=result.marker_counts,
             )
         # Default: success with no data.
         return InstructionResult(instruction_id=instruction.instruction_id, success=True)
@@ -192,6 +194,24 @@ def _fail_result(error: str = "op_failed") -> InstructionResult:
 
 def _text_result(text: str) -> InstructionResult:
     return InstructionResult(instruction_id="_", success=True, text=text)
+
+
+def _marker_result(
+    *,
+    success_count: int = 0,
+    duplicate_count: int = 0,
+    error_count: int = 0,
+) -> InstructionResult:
+    """Build a read_communication_result with raw marker counts."""
+    return InstructionResult(
+        instruction_id="_",
+        success=True,
+        marker_counts={
+            "success_count": success_count,
+            "duplicate_count": duplicate_count,
+            "error_count": error_count,
+        },
+    )
 
 
 def _url_result(url_hash: str = _TARGET_URL_HASH) -> InstructionResult:
@@ -1004,8 +1024,9 @@ async def test_communicate_success() -> None:
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
-            # read_communication_result returns "succeeded".
-            ("read_communication_result", None): _text_result("succeeded"),
+            # read_communication_result returns marker counts. Backend
+            # classifies: success_count > 0 → succeeded.
+            ("read_communication_result", None): _marker_result(success_count=1),
         }
     )
     adapter = UserscriptBossAdapter(channel=ch)
@@ -1035,12 +1056,90 @@ async def test_communicate_duplicate() -> None:
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
-            ("read_communication_result", None): _text_result("duplicate_detected"),
+            # duplicate_count > 0 → duplicate (checked before success).
+            ("read_communication_result", None): _marker_result(duplicate_count=1),
         }
     )
     adapter = UserscriptBossAdapter(channel=ch)
     result = await adapter.execute_communication(_communicate_ctx())
     assert result.outcome == CommunicationOutcome.duplicate
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: B2 regression — duplicate takes priority over success
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_duplicate_priority_over_success() -> None:
+    """When both duplicate and success markers are present, duplicate wins.
+
+    This is the B2 regression test: "继续沟通" (duplicate) and "已发送"
+    (success) can co-exist on the page. Duplicate must be checked first
+    because it means the conversation pre-dates this send attempt.
+    """
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            ("read_communication_result", None): _marker_result(
+                success_count=1, duplicate_count=1
+            ),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.duplicate
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: platform_failure via error markers
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_platform_failure() -> None:
+    """error_count > 0 (and no duplicate/success) → platform_failure.
+
+    This covers the B1 fix: the error selector now matches
+    PLATFORM_ERROR_MARKER, and the backend classifies it as failed.
+    """
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            ("read_communication_result", None): _marker_result(error_count=1),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.failed
+    assert result.failure_code == communication_failure_code(CommunicationOutcome.failed)
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: read_communication_result instruction fails → unknown
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_read_result_failure_returns_unknown() -> None:
+    """If the read_communication_result instruction itself fails, hard stop."""
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            ("read_communication_result", None): _fail_result("read_failed"),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.unknown
+    assert result.failure_code == "send_result_unknown"
+    assert result.diagnostic_reference == sanitize_diagnostic("read_result_failed")
 
 
 # ---------------------------------------------------------------------------
@@ -1055,7 +1154,8 @@ async def test_communicate_unknown_result() -> None:
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
-            ("read_communication_result", None): _text_result("unknown"),
+            # All counts zero → unknown (hard stop).
+            ("read_communication_result", None): _marker_result(),
         }
     )
     adapter = UserscriptBossAdapter(channel=ch)
@@ -1076,7 +1176,7 @@ async def test_communicate_clears_channel_after_success() -> None:
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
-            ("read_communication_result", None): _text_result("succeeded"),
+            ("read_communication_result", None): _marker_result(success_count=1),
         }
     )
     adapter = UserscriptBossAdapter(channel=ch)
