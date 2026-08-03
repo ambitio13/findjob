@@ -32,6 +32,7 @@ Safety invariants (all preserved from the Playwright adapter):
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -70,6 +71,7 @@ from app.platforms.boss.sanitizer import sanitize_diagnostic, sanitize_url
 from app.platforms.boss.selectors import (
     COMMUNICATION_MESSAGE_INPUT,
     COMMUNICATION_SEND_BUTTON,
+    CONTINUE_COMMUNICATE_BUTTON,
     FINAL_SUBMIT_BUTTON,
     IMMEDIATE_COMMUNICATE_BUTTON,
     MESSAGE_INPUT,
@@ -369,8 +371,14 @@ def _classify_communication_markers(
     This is the count-based equivalent of
     :func:`~app.platforms.boss.classifiers.classify_communication_result`. The
     userscript reports raw element counts for each marker group; the backend
-    applies the priority order (duplicate → success → error → unknown) to
+    applies the priority order (success → duplicate → error → unknown) to
     decide the outcome.
+
+    Priority: success first. After a successful send, the job-detail page
+    also shows "继续沟通" (button changes from 立即沟通). Checking duplicate
+    first would misclassify a successful send as a duplicate. Only when
+    there are NO success markers but 继续沟通 is present do we classify as
+    duplicate (the conversation pre-dated this send attempt).
 
     Using the Python classifier (not the userscript) for the classification
     decision keeps "backend owns platform failure classification" intact —
@@ -380,15 +388,15 @@ def _classify_communication_markers(
     duplicate_count = marker_counts.get("duplicate_count", 0)
     error_count = marker_counts.get("error_count", 0)
 
-    if duplicate_count > 0:
-        return PageClassification(
-            outcome=DUPLICATE_DETECTED,
-            diagnostic_reference="communication_duplicate_marker",
-        )
     if success_count > 0:
         return PageClassification(
             outcome="succeeded",
             diagnostic_reference="communication_success_marker",
+        )
+    if duplicate_count > 0:
+        return PageClassification(
+            outcome=DUPLICATE_DETECTED,
+            diagnostic_reference="communication_duplicate_marker",
         )
     if error_count > 0:
         return PageClassification(
@@ -861,31 +869,82 @@ class UserscriptBossAdapter:
                     occurred_at=now,
                 )
 
-            # Step 4: Click "立即沟通".
+            # Step 4: Click "立即沟通" (or "继续沟通" if the chat was already
+            # initiated by a previous execute that failed before sending).
+            # If the chat input is already visible, skip the click entirely.
             immediate_locator = _resolve(page, IMMEDIATE_COMMUNICATE_BUTTON)
+            chat_already_open = False
             try:
                 await page.click_immediate_communicate(immediate_locator)
             except Exception as exc:
-                _log.warning(
-                    "boss.userscript.communicate.immediate_click_failed",
-                    error=str(exc),
+                # 立即沟通 not found — check whether the chat input is already
+                # visible (a previous execute may have opened the panel) or
+                # whether 继续沟通 is shown (conversation already started).
+                message_locator_check = _resolve(page, COMMUNICATION_MESSAGE_INPUT)
+                probe_result = await page._send(
+                    make_instruction(
+                        "check_visible",
+                        selector_kind=message_locator_check.kind,
+                        selector_value=message_locator_check.value,
+                        selector_name=message_locator_check.name,
+                    )
                 )
-                return CommunicationExecuteResult(
-                    outcome=CommunicationOutcome.failed,
-                    failure_code="immediate_button_missing",
-                    message="Could not find or click the 立即沟通 button.",
-                    diagnostic_reference=sanitize_diagnostic("immediate_button_missing"),
-                    occurred_at=now,
-                )
+                if probe_result.success and probe_result.visible:
+                    _log.info(
+                        "boss.userscript.communicate.chat_already_open",
+                    )
+                    chat_already_open = True
+                else:
+                    # Try 继续沟通 as a fallback.
+                    continue_locator = _resolve(page, CONTINUE_COMMUNICATE_BUTTON)
+                    try:
+                        await page.click_immediate_communicate(continue_locator)
+                    except Exception as exc2:
+                        _log.warning(
+                            "boss.userscript.communicate.immediate_click_failed",
+                            error=str(exc2),
+                        )
+                        return CommunicationExecuteResult(
+                            outcome=CommunicationOutcome.failed,
+                            failure_code="immediate_button_missing",
+                            message=(
+                                "Could not find or click the 立即沟通 or 继续沟通"
+                                " button."
+                            ),
+                            diagnostic_reference=sanitize_diagnostic(
+                                "immediate_button_missing"
+                            ),
+                            occurred_at=now,
+                        )
 
             # Step 5: Fill the opening message into the chat dialog.
+            # After clicking 立即沟通, BOSS opens the chat panel asynchronously.
+            # Retry the fill a few times with a short delay so the panel has
+            # time to render before we give up.
             message_locator = _resolve(page, COMMUNICATION_MESSAGE_INPUT)
-            try:
-                await page.fill_opening_message(message_locator, ctx.opening_message)
-            except Exception as exc:
+            fill_ok = False
+            fill_exc: Exception | None = None
+            for _attempt in range(5):
+                try:
+                    await page.fill_opening_message(
+                        message_locator, ctx.opening_message
+                    )
+                    fill_ok = True
+                    break
+                except Exception as exc:
+                    fill_exc = exc
+                    _log.warning(
+                        "boss.userscript.communicate.fill_message_retry",
+                        attempt=_attempt + 1,
+                        error=str(exc),
+                    )
+                    # Brief pause before retrying — the chat panel may still
+                    # be rendering after the 立即沟通 click.
+                    await asyncio.sleep(1.0)
+            if not fill_ok:
                 _log.warning(
                     "boss.userscript.communicate.fill_message_failed",
-                    error=str(exc),
+                    error=str(fill_exc),
                 )
                 return CommunicationExecuteResult(
                     outcome=CommunicationOutcome.failed,
@@ -937,7 +996,19 @@ class UserscriptBossAdapter:
             # Step 8: Read raw marker counts and classify via the Python
             # classifier. The userscript only reports what it sees; the
             # backend owns the classification decision.
-            marker_counts = await page.read_communication_result()
+            # Retry a few times with a short delay — after clicking send, BOSS
+            # may take a moment to update the DOM (show 已发送, switch to
+            # 继续沟通, or show an error).
+            marker_counts: dict[str, int] | None = None
+            for _attempt in range(5):
+                await asyncio.sleep(0.8)
+                marker_counts = await page.read_communication_result()
+                if marker_counts is None:
+                    continue
+                # Stop early as soon as we see a non-zero marker — no point
+                # waiting if the page already shows a definitive result.
+                if any(v > 0 for v in marker_counts.values()):
+                    break
             if marker_counts is None:
                 # read_communication_result instruction itself failed.
                 return CommunicationExecuteResult(
@@ -970,7 +1041,7 @@ class UserscriptBossAdapter:
         """Map a :class:`PageClassification` to a communication result.
 
         This mirrors :meth:`_submit_result_from_classification` but for the
-        communicate flow. Priority: duplicate → success → error → unknown
+        communicate flow. Priority: success → duplicate → error → unknown
         (same order as :func:`classify_communication_result`).
         """
         if classification.outcome == "succeeded":

@@ -64,6 +64,7 @@ OpKind = Literal[
     "fill_opening_message",
     "send_opening_message",
     "read_communication_result",
+    "probe_elements",
 ]
 
 

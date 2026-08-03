@@ -1066,16 +1066,17 @@ async def test_communicate_duplicate() -> None:
 
 
 # ---------------------------------------------------------------------------
-# execute_communication: B2 regression — duplicate takes priority over success
+# execute_communication: success takes priority over duplicate
 # ---------------------------------------------------------------------------
 
 
-async def test_communicate_duplicate_priority_over_success() -> None:
-    """When both duplicate and success markers are present, duplicate wins.
+async def test_communicate_success_priority_over_duplicate() -> None:
+    """When both success and duplicate markers are present, success wins.
 
-    This is the B2 regression test: "继续沟通" (duplicate) and "已发送"
-    (success) can co-exist on the page. Duplicate must be checked first
-    because it means the conversation pre-dates this send attempt.
+    After a successful send, the job-detail button changes from "立即沟通" to
+    "继续沟通" (the duplicate marker), AND the chat panel shows the sent
+    message (the success marker). Success must be checked first so a
+    successful send is not misclassified as a duplicate.
     """
     ch = FakeUserscriptChannel(
         result_map={
@@ -1090,7 +1091,7 @@ async def test_communicate_duplicate_priority_over_success() -> None:
     )
     adapter = UserscriptBossAdapter(channel=ch)
     result = await adapter.execute_communication(_communicate_ctx())
-    assert result.outcome == CommunicationOutcome.duplicate
+    assert result.outcome == CommunicationOutcome.succeeded
 
 
 # ---------------------------------------------------------------------------

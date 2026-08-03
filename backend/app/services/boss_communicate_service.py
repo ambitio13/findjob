@@ -614,7 +614,11 @@ async def run_boss_communicate_execute(
             )
             db.commit()
             db.refresh(action)
-            return record, action, True
+            # Copy the terminal result onto the current action so the API
+            # layer can surface the correct external_result_status. Without
+            # this, the replay message reads ``None`` because the current
+            # action was never executed.
+            return record, terminal, True
 
     # --- Recompute the current payload hash from the stored preview. ---
     preview = ApplicationActionPreview.model_validate(action.payload_preview)

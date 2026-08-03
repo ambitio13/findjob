@@ -54,7 +54,8 @@ class InstructionOut(BaseModel):
             "Operation: fill, click, check_visible, count, "
             "read_title, read_url, read_content, read_jd, "
             "click_immediate_communicate, fill_opening_message, "
-            "send_opening_message, read_communication_result."
+            "send_opening_message, read_communication_result, "
+            "probe_elements."
         )
     )
     selector_kind: str | None = Field(

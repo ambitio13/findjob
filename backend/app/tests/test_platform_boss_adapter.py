@@ -224,6 +224,7 @@ def test_registry_returns_fake_adapter_by_default(monkeypatch: pytest.MonkeyPatc
     from app.core.config import get_settings
 
     monkeypatch.delenv("BOSS_ADAPTER_ENABLED", raising=False)
+    monkeypatch.delenv("BOSS_USERSCRIPT_BRIDGE_ENABLED", raising=False)
     get_settings.cache_clear()
     try:
         adapter = get_adapter()
@@ -236,6 +237,7 @@ def test_registry_forwards_scenario_to_fake_adapter(monkeypatch: pytest.MonkeyPa
     from app.core.config import get_settings
 
     monkeypatch.delenv("BOSS_ADAPTER_ENABLED", raising=False)
+    monkeypatch.delenv("BOSS_USERSCRIPT_BRIDGE_ENABLED", raising=False)
     get_settings.cache_clear()
     try:
         adapter = get_adapter(scenario="captcha_required")

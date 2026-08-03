@@ -64,7 +64,15 @@ def sanitize_url(url: str) -> str:
     The raw target resource URL can carry query params (job id, tracking tokens,
     referral codes). We keep none of it — only a ``sha256:<8>`` digest so logs
     and snapshots can correlate without leaking PII.
+
+    **Idempotent:** if the input is already a ``sha256:<8>`` digest (produced by
+    an earlier call or by the userscript's ``sha256Short``), it is returned
+    unchanged. This prevents double-hashing when a value that is already a hash
+    (e.g. ``ctx.target_resource`` from ``job_url_hash``, or a ``read_url`` result
+    from the userscript) passes through this function.
     """
+    if isinstance(url, str) and url.startswith("sha256:"):
+        return url
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
     return f"sha256:{digest}"
 

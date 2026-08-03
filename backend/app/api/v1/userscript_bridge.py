@@ -20,12 +20,18 @@ The channel is a process-local singleton (see
 from __future__ import annotations
 
 from fastapi import APIRouter, Response, status
+from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
-from app.platforms.boss.sanitizer import sanitize_jd_result
+from app.platforms.boss.sanitizer import (
+    _COOKIE_PATTERN,
+    _SECRET_PATTERNS,
+    sanitize_jd_result,
+)
 from app.platforms.boss.userscript_channel import (
     InstructionResult,
     get_channel,
+    make_instruction,
     sanitize_result_error,
     sanitize_result_text,
     sanitize_result_url,
@@ -113,13 +119,26 @@ def post_result(body: ResultIn) -> AckResponse:
     # field is HTML-stripped, secret-stripped, and length-capped. The raw JD
     # dict from the userscript is never stored — only the sanitized version.
     sanitized_jd = sanitize_jd_result(body.jd.model_dump() if body.jd else None)
+    # text field: sanitize normally, EXCEPT for probe_elements which returns
+    # a JSON diagnostic payload (up to 8000 chars) that should not be truncated
+    # to _TITLE_MAX (120). The probe endpoint is P0-2 verification only.
+    raw_text = body.text
+    if raw_text and len(raw_text) > 120 and raw_text.lstrip().startswith("["):
+        # Likely a probe_elements JSON payload — sanitize secrets but don't truncate.
+        cleaned_text = raw_text.strip()
+        for pattern in _SECRET_PATTERNS:
+            cleaned_text = pattern.sub(r"\1<redacted>", cleaned_text)
+        cleaned_text = _COOKIE_PATTERN.sub(r"\1=<redacted>", cleaned_text)
+        sanitized_text = cleaned_text[:8000] if cleaned_text else None
+    else:
+        sanitized_text = sanitize_result_text(raw_text)
     accepted = ch.put_result(
         InstructionResult(
             instruction_id=body.instruction_id,
             success=body.success,
             visible=body.visible,
             count=body.count,
-            text=sanitize_result_text(body.text),
+            text=sanitized_text,
             url=sanitize_result_url(body.url),
             error=sanitize_result_error(body.error),
             page_id=body.page_id,
@@ -158,3 +177,75 @@ def post_heartbeat(body: HeartbeatIn) -> AckResponse:
         page_url_hash=body.page_url_hash,
     )
     return AckResponse(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Temporary diagnostic endpoint — probe DOM selectors (P0-2 verification)
+# ---------------------------------------------------------------------------
+
+
+class ProbeRequest(BaseModel):
+    """Request body for the diagnostic probe endpoint."""
+
+    selector_kind: str = Field(default="css", description="css, role, placeholder")
+    selector_value: str = Field(default="", description="The selector value to probe.")
+    selector_name: str | None = Field(default=None)
+    op: str = Field(
+        default="count",
+        description=(
+            "count, check_visible, read_content, read_title, read_url, "
+            "read_jd, probe_elements."
+        ),
+    )
+    selector_profile: str | None = Field(
+        default=None,
+        description="Extraction profile for read_jd (e.g. boss_recommended_job_v1).",
+    )
+    max_text_chars: int | None = Field(
+        default=None,
+        description="Max chars to extract for read_jd.",
+    )
+
+
+class ProbeResponse(BaseModel):
+    """Response from the diagnostic probe endpoint."""
+
+    success: bool = True
+    count: int | None = None
+    visible: bool | None = None
+    text: str | None = None
+    url: str | None = None
+    error: str | None = None
+    jd: dict | None = None
+
+
+@router.post("/probe", response_model=ProbeResponse)
+async def probe(body: ProbeRequest) -> ProbeResponse:
+    """Send a diagnostic instruction to the userscript and return the raw result.
+
+    This endpoint is for P0-2 verification only — it lets us probe the real BOSS
+    DOM to find the correct CSS selector for the chat message input. It will be
+    removed after the selector is confirmed.
+    """
+    ch = get_channel()
+    if not ch.is_connected():
+        return ProbeResponse(success=False, error="bridge_not_connected")
+
+    ins = make_instruction(
+        op=body.op,  # type: ignore[arg-type]
+        selector_kind=body.selector_kind,
+        selector_value=body.selector_value,
+        selector_name=body.selector_name,
+        selector_profile=body.selector_profile,
+        max_text_chars=body.max_text_chars,
+    )
+    result = await ch.put_instruction(ins)
+    return ProbeResponse(
+        success=result.success,
+        count=result.count,
+        visible=result.visible,
+        text=result.text,
+        url=result.url,
+        error=result.error,
+        jd=result.jd,
+    )

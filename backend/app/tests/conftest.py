@@ -15,11 +15,16 @@ from __future__ import annotations
 import os
 import tempfile
 
-# Override the resume upload directory BEFORE the app/settings are imported so
-# the Settings instance picks up the temp path. ``get_settings`` is cached on
+# Force the test environment BEFORE the app/settings are imported so the
+# Settings instance picks up the correct values. ``get_settings`` is cached on
 # first call, so this must happen before ``app.main`` is imported.
-os.environ.setdefault("APP_ENV", "test")
-os.environ.setdefault("MODEL_PROVIDER", "fake")
+#
+# We use ``os.environ[...] = ...`` (not ``setdefault``) because the Docker
+# container may already have ``MODEL_PROVIDER=auto`` and ``APP_ENV=prod`` in
+# its environment. ``setdefault`` would leave those in place, causing tests to
+# call the real DeepSeek API instead of the fake gateway.
+os.environ["APP_ENV"] = "test"
+os.environ["MODEL_PROVIDER"] = "fake"
 os.environ["RESUME_UPLOAD_DIR"] = tempfile.mkdtemp(prefix="resume_test_")
 
 import pytest

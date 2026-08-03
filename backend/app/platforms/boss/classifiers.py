@@ -178,10 +178,13 @@ async def classify_communication_result(page: BossPage) -> PageClassification:
 
     Priority order (matches the userscript ``read_communication_result`` op):
 
-    1. **duplicate** — "继续沟通" button means a conversation already existed.
-       Checked first because when both success and duplicate markers are
-       present, the conversation pre-dates this send attempt.
-    2. **success** — "已发送" confirmation or a non-pending message item.
+    1. **success** — "已发送" confirmation or a non-pending message item.
+       Checked first because after a successful send, the job-detail page
+       also shows "继续沟通" (the button changes from 立即沟通). We must
+       not misclassify a successful send as a duplicate just because the
+       继续沟通 button appeared.
+    2. **duplicate** — "继续沟通" button with NO success markers means a
+       conversation already existed before this send attempt.
     3. **error** — platform error markers (upload failure, rate limit, etc.).
     """
     from app.platforms.boss.selectors import (
@@ -190,15 +193,15 @@ async def classify_communication_result(page: BossPage) -> PageClassification:
         PLATFORM_ERROR_MARKER,
     )
 
+    if await _count(page, COMMUNICATION_SUCCESS_MARKER) > 0:
+        return PageClassification(
+            outcome="succeeded", diagnostic_reference="communication_success_marker"
+        )
+
     if await _count(page, COMMUNICATION_DUPLICATE_MARKER) > 0:
         return PageClassification(
             outcome=DUPLICATE_DETECTED,
             diagnostic_reference="communication_duplicate_marker",
-        )
-
-    if await _count(page, COMMUNICATION_SUCCESS_MARKER) > 0:
-        return PageClassification(
-            outcome="succeeded", diagnostic_reference="communication_success_marker"
         )
 
     if await _count(page, PLATFORM_ERROR_MARKER) > 0:

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BOSS 投递桥接 (投简历 Agent)
 // @namespace    https://github.com/coldnight/tou_jianli_agent
-// @version      0.2.0
+// @version      0.3.1
 // @description  Tampermonkey userscript that executes backend-issued instructions on the BOSS直聘 page. No CDP signature, no hard-coded selectors — the backend sends everything.
 // @author       tou_jianli_agent
 // @match        https://www.zhipin.com/*
@@ -113,7 +113,7 @@
     [/(token=)[A-Za-z0-9._-]+/gi, "$1<redacted>"],
     [/(session=)[A-Za-z0-9._-]+/gi, "$1<redacted>"],
     [/(password=)[^\s&]+/gi, "$1<redacted>"],
-    [/(authorization:\s*)[A-Za-z0-9._- ]+/gi, "$1<redacted>"],
+    [/(authorization:\s*)[A-Za-z0-9._\- ]+/gi, "$1<redacted>"],
     [
       /([A-Za-z0-9_]*(?:session|cookie|token|auth)[A-Za-z0-9_]*)=([A-Za-z0-9._\-+/=]+)/gi,
       "$1=<redacted>",
@@ -430,7 +430,7 @@
       if (ins.op === "read_content") {
         // Truncated text content of the main area — for diagnostics only.
         const main = document.body ? document.body.innerText : "";
-        result.text = sanitizeText(main.slice(0, 200));
+        result.text = sanitizeText(main.slice(0, ins.max_text_chars || 200));
         return result;
       }
       if (ins.op === "read_jd") {
@@ -571,17 +571,75 @@
         result.visible = true;
         return result;
       }
+      if (ins.op === "probe_elements") {
+        // Diagnostic op: return details about all matched elements so we can
+        // find the correct send button in the BOSS chat panel. Returns up to 20
+        // elements with tagName, className, id, aria-label, textContent preview,
+        // and visibility. The CSS selector is in selector_value.
+        const details = list.slice(0, 20).map((el) => ({
+          tag: el.tagName,
+          class: (el.className || "").toString().slice(0, 80),
+          id: el.id || "",
+          aria_label: el.getAttribute("aria-label") || "",
+          text: (el.textContent || "").trim().slice(0, 80),
+          visible: isElementVisible(el),
+        }));
+        // Bypass sanitizeText (120 char limit) — probe_elements needs more room.
+        // The backend channel also sanitizes; we keep it reasonable at 8000 chars.
+        result.text = JSON.stringify(details).slice(0, 8000);
+        result.count = list.length;
+        return result;
+      }
       if (ins.op === "send_opening_message") {
-        // Click the send button in the chat dialog — same logic as click.
-        if (list.length === 0) {
-          result.success = false;
-          result.error = sanitizeError("element_not_found");
+        // Send the opening message in the chat dialog.
+        // BOSS chat does NOT use a standard <button> for sending. The send
+        // button is typically a <div>/<span> with an icon, and its class/name
+        // varies across BOSS UI versions. The most reliable approach is to
+        // simulate an Enter keypress in the textarea, which BOSS listens for
+        // to send the message. If that fails (no textarea found), we fall back
+        // to clicking any element matched by the CSS selector.
+        //
+        // Strategy:
+        //   1. Find the chat textarea, focus it, dispatch Enter keydown+keyup.
+        //   2. If no textarea found, click the first visible matched element.
+        const textarea = document.querySelector(
+          ".edit-area textarea, .chat-message textarea, .chat-input textarea, [class*='chat'] textarea",
+        );
+        if (textarea) {
+          textarea.focus();
+          // Dispatch a realistic Enter key sequence (keydown → keypress → keyup).
+          // Some frameworks listen on keydown, others on keypress or keyup.
+          const enterOpts = {
+            key: "Enter",
+            code: "Enter",
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true,
+          };
+          textarea.dispatchEvent(new KeyboardEvent("keydown", enterOpts));
+          textarea.dispatchEvent(new KeyboardEvent("keypress", enterOpts));
+          textarea.dispatchEvent(new KeyboardEvent("keyup", enterOpts));
+          result.visible = true;
           return result;
         }
-        const el = list[0];
-        el.scrollIntoView({ block: "center", behavior: "instant" });
-        el.click();
-        result.visible = true;
+        // Fallback: click the first VISIBLE element matched by the selector.
+        if (list.length > 0) {
+          let target = null;
+          for (const el of list) {
+            if (isElementVisible(el)) {
+              target = el;
+              break;
+            }
+          }
+          if (!target) target = list[0];
+          target.scrollIntoView({ block: "center", behavior: "instant" });
+          target.click();
+          result.visible = true;
+          return result;
+        }
+        result.success = false;
+        result.error = sanitizeError("element_not_found");
         return result;
       }
       if (ins.op === "read_communication_result") {
@@ -597,10 +655,10 @@
         // because the selectors contain Playwright-only ``:has-text()``
         // pseudo-selectors that would throw a DOMException in native CSS.
         const successEls = querySelectorAllWithTextFilter(
-          ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), .chat-content .message-item:not(.pending)",
+          ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), .chat-content .message-item:not(.pending), .chat-message:has-text('发送成功'), [class*='message']:has-text('已发送')",
         );
         const duplicateEls = querySelectorAllWithTextFilter(
-          ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通')",
+          ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通'), [class*='btn']:has-text('继续沟通'), [class*='operate']:has-text('继续沟通')",
         );
         // Must stay in sync with PLATFORM_ERROR_MARKER in
         // backend/app/platforms/boss/selectors.py. Hardcoded here because
@@ -648,14 +706,14 @@
         data: options.body ? JSON.stringify(options.body) : undefined,
         timeout: options.timeout || 15000,
         onload(resp) {
-          if (resp.status >= 200 && resp.status < 300) {
+          if (resp.status === 204) {
+            resolve(null);
+          } else if (resp.status >= 200 && resp.status < 300) {
             try {
               resolve(resp.responseText ? JSON.parse(resp.responseText) : {});
             } catch (_e) {
               resolve({});
             }
-          } else if (resp.status === 204) {
-            resolve(null);
           } else {
             reject(new Error("HTTP " + resp.status));
           }

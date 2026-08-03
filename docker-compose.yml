@@ -49,6 +49,7 @@ services:
       MODEL_API_KEY: ${MODEL_API_KEY:-}
       MODEL_DEFAULT_MODEL: ${MODEL_DEFAULT_MODEL:-deepseek-chat}
       RESUME_UPLOAD_DIR: ${RESUME_UPLOAD_DIR:-/data/resumes}
+      BOSS_USERSCRIPT_BRIDGE_ENABLED: ${BOSS_USERSCRIPT_BRIDGE_ENABLED:-1}
     ports:
       - "8000:8000"
     volumes:

@@ -148,24 +148,76 @@ IMMEDIATE_COMMUNICATE_BUTTON = Selector(
     name="立即沟通",
 )
 
+#: The "继续沟通" button — shown when a conversation already exists with this
+#: HR. Clicking it also opens the chat dialog. The adapter falls back to this
+#: when 立即沟通 is absent (e.g. a previous execute clicked 立即沟通 but failed
+#: before sending the message).
+CONTINUE_COMMUNICATE_BUTTON = Selector(
+    kind=LocatorKind.ROLE,
+    value="button",
+    name="继续沟通",
+)
+
 #: The chat message input inside the communicate dialog. Distinct from
 #: ``MESSAGE_INPUT`` (the resume-submission HR message input) — the chat
-#: dialog uses a different placeholder.
+#: dialog uses a different DOM structure. This selector is intentionally broad:
+#: it covers the known BOSS chat dialog variants (contenteditable div, textarea,
+#: and input) across markup changes. The userscript's ``fill_opening_message``
+#: picks the first visible match, and the chat dialog is the only editable
+#: element on the page after clicking "立即沟通".
 COMMUNICATION_MESSAGE_INPUT = Selector(
     kind=LocatorKind.CSS,
     value=(
-        ".chat-message input[type='text'], .edit-area[contenteditable='true'],"
-        " .chat-input textarea"
+        # .edit-area textarea — confirmed on real BOSS job detail page (2026-08-03).
+        # BOSS wraps the chat <textarea> in a div.edit-area; no contenteditable attr.
+        ".edit-area textarea,"
+        # contenteditable div variants (older BOSS markup)
+        ".chat-input [contenteditable='true'],"
+        " .chat-footer [contenteditable='true'],"
+        " .chat-box [contenteditable='true'],"
+        " .input-wrap [contenteditable='true'],"
+        " .edit-area[contenteditable='true'],"
+        # textarea variants in other chat containers
+        ".chat-input textarea,"
+        " .chat-box textarea,"
+        " .input-wrap textarea,"
+        " .chat-message textarea,"
+        # input variants (older)
+        ".chat-message input[type='text'],"
+        ".chat-input input[type='text'],"
+        # broad fallback: any visible contenteditable or textarea in a chat container
+        ".chat-content [contenteditable='true'],"
+        " [class*='chat'] [contenteditable='true'],"
+        " [class*='chat'] textarea"
     ),
     name=None,
 )
 
 #: The send button inside the communicate dialog. Clicked at most once per
-#: communicate execute. Shares the label "发送" with ``FINAL_SUBMIT_BUTTON`` but
-#: is a distinct selector entry because it lives in a different DOM context.
+#: communicate execute. BOSS chat send button is typically a <div> or <span>
+#: with a class containing "send" inside the chat panel — NOT a standard
+#: <button>. We use a CSS selector targeting the chat area. The userscript's
+#: ``send_opening_message`` handler also has an Enter-key fallback if no
+#: element matches.
 COMMUNICATION_SEND_BUTTON = Selector(
-    kind=LocatorKind.ROLE,
-    value="button",
+    kind=LocatorKind.CSS,
+    value=(
+        # BOSS chat send button variants (icon/text div or span)
+        ".chat-message .btn-send,"
+        ".chat-message [class*='send'],"
+        ".chat-input .btn-send,"
+        ".chat-input [class*='send'],"
+        ".chat-content .btn-send,"
+        ".chat-content [class*='send'],"
+        ".edit-area .btn-send,"
+        ".edit-area [class*='send'],"
+        # broader: any clickable element with "发送" text inside chat containers
+        ".chat-message [class*='btn']:has-text('发送'),"
+        ".chat-input [class*='btn']:has-text('发送'),"
+        ".chat-content [class*='btn']:has-text('发送'),"
+        # final fallback: any element with class containing send in a chat context
+        " [class*='chat'] [class*='send']"
+    ),
     name="发送",
 )
 
@@ -177,7 +229,9 @@ COMMUNICATION_SUCCESS_MARKER = Selector(
     kind=LocatorKind.CSS,
     value=(
         ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), "
-        ".chat-content .message-item:not(.pending)"
+        ".chat-content .message-item:not(.pending), "
+        ".chat-message:has-text('发送成功'), "
+        "[class*='message']:has-text('已发送')"
     ),
     name=None,
 )
@@ -186,7 +240,11 @@ COMMUNICATION_SUCCESS_MARKER = Selector(
 #: this contact (e.g. "继续沟通" button is shown instead of a fresh send).
 COMMUNICATION_DUPLICATE_MARKER = Selector(
     kind=LocatorKind.CSS,
-    value=".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通')",
+    value=(
+        ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通'), "
+        "[class*='btn']:has-text('继续沟通'), "
+        "[class*='operate']:has-text('继续沟通')"
+    ),
     name=None,
 )
 
@@ -197,6 +255,7 @@ __all__ = [
     "COMMUNICATION_MESSAGE_INPUT",
     "COMMUNICATION_SEND_BUTTON",
     "COMMUNICATION_SUCCESS_MARKER",
+    "CONTINUE_COMMUNICATE_BUTTON",
     "DUPLICATE_MARKER",
     "FINAL_SUBMIT_BUTTON",
     "IMMEDIATE_COMMUNICATE_BUTTON",

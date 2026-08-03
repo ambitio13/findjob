@@ -3,7 +3,7 @@
   "name": "boss-communicate-testing-hardening",
   "title": "BOSS 自动沟通测试与硬化",
   "description": "覆盖 docs/boss-communicate-testing-plan.md 中所有未完成工作项的父任务",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
