@@ -41,6 +41,7 @@ class ExternalActionType(StrEnum):
     resume_upload = "resume_upload"
     profile_fill = "profile_fill"
     follow_up_message = "follow_up_message"
+    boss_immediate_communicate = "boss_immediate_communicate"
 
 
 class ExternalActionStatus(StrEnum):
