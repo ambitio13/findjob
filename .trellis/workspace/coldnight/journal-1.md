@@ -874,3 +874,36 @@ Fixed 4 blocking issues from user review of BOSS auto-communicate pilot. P1: Add
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: fix(boss): B1/B2/B3 — 沟通分类三连修
+
+**Date**: 2026-08-03
+**Task**: fix(boss): B1/B2/B3 — 沟通分类三连修
+**Branch**: `wanzhen`
+
+### Summary
+
+修复 BOSS 自动沟通三个已知问题：B1 油猴 error 选择器与 PLATFORM_ERROR_MARKER 对齐；B2 Python classifier 优先级改为 duplicate→success→error（与 userscript 一致）；B3 userscript 不再自行分类，只返回 marker_counts，后端用 _classify_communication_markers() 做分类决策，恢复'后端拥有分类权'设计不变量。涉及 9 个文件，新增 3 个回归测试，758 测试通过，ruff clean。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `782bf09` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
