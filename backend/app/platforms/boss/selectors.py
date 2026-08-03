@@ -133,10 +133,72 @@ PLATFORM_ERROR_MARKER = Selector(
 REQUIRED_FORM_ANCHORS = [MESSAGE_INPUT, FINAL_SUBMIT_BUTTON]
 
 
+# --- Immediate-communicate selectors ----------------------------------------
+#
+# These are distinct from the resume-submission selectors above. The
+# communicate flow clicks "立即沟通" on the job card page, which opens a chat
+# dialog with its own message input and send button. The markers below are
+# checked after the send click to classify the communication result.
+
+#: The "立即沟通" button on the job card / job detail page. Clicking this opens
+#: the chat dialog. Clicked at most once per communicate execute.
+IMMEDIATE_COMMUNICATE_BUTTON = Selector(
+    kind=LocatorKind.ROLE,
+    value="button",
+    name="立即沟通",
+)
+
+#: The chat message input inside the communicate dialog. Distinct from
+#: ``MESSAGE_INPUT`` (the resume-submission HR message input) — the chat
+#: dialog uses a different placeholder.
+COMMUNICATION_MESSAGE_INPUT = Selector(
+    kind=LocatorKind.CSS,
+    value=(
+        ".chat-message input[type='text'], .edit-area[contenteditable='true'],"
+        " .chat-input textarea"
+    ),
+    name=None,
+)
+
+#: The send button inside the communicate dialog. Clicked at most once per
+#: communicate execute. Shares the label "发送" with ``FINAL_SUBMIT_BUTTON`` but
+#: is a distinct selector entry because it lives in a different DOM context.
+COMMUNICATION_SEND_BUTTON = Selector(
+    kind=LocatorKind.ROLE,
+    value="button",
+    name="发送",
+)
+
+#: Post-send success marker. After ``send_opening_message``, the chat dialog
+#: shows a sent confirmation or the conversation continues — this indicates
+#: the message was delivered.
+COMMUNICATION_SUCCESS_MARKER = Selector(
+    kind=LocatorKind.CSS,
+    value=(
+        ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), "
+        ".chat-content .message-item:not(.pending)"
+    ),
+    name=None,
+)
+
+#: Post-send duplicate marker. Indicates a conversation already existed for
+#: this contact (e.g. "继续沟通" button is shown instead of a fresh send).
+COMMUNICATION_DUPLICATE_MARKER = Selector(
+    kind=LocatorKind.CSS,
+    value=".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通')",
+    name=None,
+)
+
+
 __all__ = [
     "CAPTCHA_MARKER",
+    "COMMUNICATION_DUPLICATE_MARKER",
+    "COMMUNICATION_MESSAGE_INPUT",
+    "COMMUNICATION_SEND_BUTTON",
+    "COMMUNICATION_SUCCESS_MARKER",
     "DUPLICATE_MARKER",
     "FINAL_SUBMIT_BUTTON",
+    "IMMEDIATE_COMMUNICATE_BUTTON",
     "LOGIN_MARKER",
     "LocatorKind",
     "MESSAGE_INPUT",

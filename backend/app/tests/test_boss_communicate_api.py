@@ -23,7 +23,6 @@ fixture.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -294,7 +293,9 @@ def test_prepare_skip_decision_returns_422(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_execute_approved_returns_200_with_started_at(client: TestClient) -> None:
+def test_execute_approved_returns_200_with_terminal_result(
+    client: TestClient, monkeypatch
+) -> None:
     ids = _seed()
     match = _run_match_api(client, ids)
     artifact_id = match["artifact_id"]
@@ -314,6 +315,15 @@ def test_execute_approved_returns_200_with_started_at(client: TestClient) -> Non
 
     _approve_via_api(client, application_id, action_id, ids["user_id"])
 
+    # Inject a fake adapter with the communicate_succeeded scenario.
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_succeeded")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
     resp = client.post(
         f"/api/v1/boss/recommended-jobs/{ids['job_id']}/communicate/{action_id}/execute",
         json={"application_id": application_id},
@@ -322,8 +332,9 @@ def test_execute_approved_returns_200_with_started_at(client: TestClient) -> Non
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["action"]["external_started_at"] is not None
-    assert body["action"]["external_result_status"] is None
-    assert "message" in body
+    # succeeded → external_result_status == "submitted"
+    assert body["action"]["external_result_status"] == "submitted"
+    assert "已完成" in body["message"]
 
 
 def test_execute_unapproved_returns_409_not_approved(client: TestClient) -> None:
@@ -356,7 +367,9 @@ def test_execute_unapproved_returns_409_not_approved(client: TestClient) -> None
     assert detail["action_id"] == action_id
 
 
-def test_execute_idempotent_replay_returns_200_same_action(client: TestClient) -> None:
+def test_execute_idempotent_replay_returns_200_same_action(
+    client: TestClient, monkeypatch
+) -> None:
     ids = _seed()
     match = _run_match_api(client, ids)
     artifact_id = match["artifact_id"]
@@ -375,44 +388,25 @@ def test_execute_idempotent_replay_returns_200_same_action(client: TestClient) -
 
     _approve_via_api(client, application_id, action_id, ids["user_id"])
 
-    # First execute.
+    # Inject a fake adapter so the first execute produces a terminal result.
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_succeeded")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
+    # First execute — produces a terminal "submitted" result.
     resp1 = client.post(
         f"/api/v1/boss/recommended-jobs/{ids['job_id']}/communicate/{action_id}/execute",
         json={"application_id": application_id},
         headers=_headers(ids["user_id"]),
     )
     assert resp1.status_code == 200
+    assert resp1.json()["action"]["external_result_status"] == "submitted"
 
-    # Simulate terminal result (adapter completed in Subtask 6).
-    # The external_result JSON must match ExternalActionResult shape.
-    from app.db.repositories import application_action_repo
-
-    with SessionLocal() as db:
-        action_row = application_action_repo.get_for_user_and_application(
-            db,
-            action_id=action_id,
-            application_id=application_id,
-            user_id=ids["user_id"],
-        )
-        assert action_row is not None
-        now = datetime.now(UTC)
-        application_action_repo.update(
-            db,
-            action_row,
-            external_completed_at=now,
-            external_result_status="submitted",
-            external_result={
-                "result_status": "submitted",
-                "started_at": action_row.external_started_at.isoformat()
-                if action_row.external_started_at
-                else now.isoformat(),
-                "completed_at": now.isoformat(),
-                "result": {"platform": "boss"},
-            },
-        )
-        db.commit()
-
-    # Second execute → idempotency replay.
+    # Second execute → idempotency replay (same terminal result, no re-call).
     resp2 = client.post(
         f"/api/v1/boss/recommended-jobs/{ids['job_id']}/communicate/{action_id}/execute",
         json={"application_id": application_id},
@@ -422,6 +416,8 @@ def test_execute_idempotent_replay_returns_200_same_action(client: TestClient) -
     body2 = resp2.json()
     assert body2["action"]["id"] == action_id
     assert body2["action"]["external_result_status"] == "submitted"
+    # The adapter was called only once (first execute), not on the replay.
+    assert len(fake.communicate_calls) == 1
     # The message should indicate idempotency replay.
     assert "幂等" in body2["message"] or "重放" in body2["message"]
 

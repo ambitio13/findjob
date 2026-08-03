@@ -37,6 +37,9 @@ from datetime import UTC, datetime
 
 from app.core.logging import get_logger
 from app.platforms.base import (
+    CommunicationExecuteContext,
+    CommunicationExecuteResult,
+    CommunicationOutcome,
     FilledAttachment,
     FilledField,
     FilledPageState,
@@ -47,6 +50,7 @@ from app.platforms.base import (
     SubmitContext,
     SubmitOutcome,
     SubmitResult,
+    communication_failure_code,
     prepare_failure_code,
     submit_failure_code,
 )
@@ -64,7 +68,10 @@ from app.platforms.boss.classifiers import (
 )
 from app.platforms.boss.sanitizer import sanitize_diagnostic, sanitize_url
 from app.platforms.boss.selectors import (
+    COMMUNICATION_MESSAGE_INPUT,
+    COMMUNICATION_SEND_BUTTON,
     FINAL_SUBMIT_BUTTON,
+    IMMEDIATE_COMMUNICATE_BUTTON,
     MESSAGE_INPUT,
     RESUME_UPLOAD,
     Selector,
@@ -109,6 +116,7 @@ class UserscriptBossPage:
         self._channel = channel
         self._is_submit_phase = is_submit_phase
         self._click_count = 0
+        self._communicate_click_count = 0
 
     # --- Locator resolution ---------------------------------------------
 
@@ -249,6 +257,65 @@ class UserscriptBossPage:
             return None
         return result.jd
 
+    # --- Immediate-communicate ops --------------------------------------
+
+    async def click_immediate_communicate(self, locator: RemoteLocator) -> None:
+        """Click the "立即沟通" button. Tracked separately from submit clicks."""
+        self._communicate_click_count += 1
+        result = await self._send(
+            make_instruction(
+                "click_immediate_communicate",
+                selector_kind=locator.kind,
+                selector_value=locator.value,
+                selector_name=locator.name,
+            )
+        )
+        if not result.success:
+            raise RuntimeError(result.error or "click_immediate_communicate_failed")
+
+    async def fill_opening_message(self, locator: RemoteLocator, value: str) -> None:
+        """Fill the opening message into the chat dialog input."""
+        result = await self._send(
+            make_instruction(
+                "fill_opening_message",
+                selector_kind=locator.kind,
+                selector_value=locator.value,
+                selector_name=locator.name,
+                fill_value=value,
+            )
+        )
+        if not result.success:
+            raise RuntimeError(result.error or "fill_opening_message_failed")
+
+    async def send_opening_message(self, locator: RemoteLocator) -> None:
+        """Click the send button in the chat dialog. Tracked separately."""
+        self._communicate_click_count += 1
+        result = await self._send(
+            make_instruction(
+                "send_opening_message",
+                selector_kind=locator.kind,
+                selector_value=locator.value,
+                selector_name=locator.name,
+            )
+        )
+        if not result.success:
+            raise RuntimeError(result.error or "send_opening_message_failed")
+
+    async def read_communication_result(self) -> str:
+        """Read the post-send page state and return a classification string.
+
+        The userscript checks for success/duplicate/error markers and returns
+        one of: ``succeeded``, ``duplicate_detected``, ``platform_failure``,
+        ``unknown``. This is decoded by the adapter into a
+        :class:`CommunicationOutcome`.
+        """
+        result = await self._send(
+            make_instruction("read_communication_result")
+        )
+        if not result.success:
+            return "unknown"
+        return result.text or "unknown"
+
     # --- Internal --------------------------------------------------------
 
     async def _send(self, instruction: Instruction) -> InstructionResult:
@@ -257,6 +324,10 @@ class UserscriptBossPage:
     @property
     def click_count(self) -> int:
         return self._click_count
+
+    @property
+    def communicate_click_count(self) -> int:
+        return self._communicate_click_count
 
 
 @dataclass(frozen=True)
@@ -667,6 +738,209 @@ class UserscriptBossAdapter:
             failure_code=submit_failure_code(SubmitOutcome.unknown),
             message="Ambiguous post-submit state; manual reconciliation required.",
             diagnostic_reference=sanitize_diagnostic(classification.diagnostic_reference),
+            occurred_at=now,
+        )
+
+    # ------------------------------------------------------------------
+    # Execute communication: click 立即沟通 + send opening message
+    # ------------------------------------------------------------------
+
+    async def execute_communication(
+        self, ctx: CommunicationExecuteContext
+    ) -> CommunicationExecuteResult:
+        """Click "立即沟通" and send the opening message via the userscript bridge.
+
+        Flow:
+        1. Verify connected; disconnected → ``unknown``.
+        2. Set active application (single-active invariant).
+        3. **Verify page binding.** Compare current page URL hash with
+           ``sanitize_url(ctx.target_resource)``. Mismatch → ``unknown``
+           (stale action, never click on the wrong page).
+        4. Click "立即沟通" (click budget: 1).
+        5. Fill the opening message into the chat dialog input.
+        6. **Verify page hash unchanged** since step 3 (page hash binding
+           invariant). If changed → ``unknown`` (stale action).
+        7. Click send (click budget: 2 total).
+        8. Read the post-send page state and classify the result.
+        9. Assert click budget: at most 1 ``click_immediate_communicate`` + 1
+           ``send_opening_message``.
+        10. Clear the channel.
+        """
+        _log.info(
+            "boss.userscript.communicate",
+            application_id=ctx.application_id,
+            target_resource=sanitize_url(ctx.target_resource),
+        )
+        now = datetime.now(UTC)
+
+        if not self._channel.is_connected():
+            self._channel.clear()
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.unknown,
+                failure_code=communication_failure_code(CommunicationOutcome.unknown),
+                message="Userscript bridge is not connected.",
+                diagnostic_reference=sanitize_diagnostic("bridge_not_connected"),
+                occurred_at=now,
+            )
+
+        try:
+            await self._channel.set_active_application(ctx.application_id)
+        except RuntimeError as exc:
+            _log.warning("boss.userscript.communicate.active_conflict", error=str(exc))
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.unknown,
+                failure_code=communication_failure_code(CommunicationOutcome.unknown),
+                message=str(exc),
+                diagnostic_reference=sanitize_diagnostic("active_conflict"),
+                occurred_at=now,
+            )
+
+        try:
+            page = UserscriptBossPage(self._channel, is_submit_phase=False)
+
+            # P1: Verify page binding — never click on the wrong BOSS tab.
+            target_hash = sanitize_url(ctx.target_resource)
+            current_hash = await page._fetch_url_hash()
+            if current_hash != target_hash:
+                _log.warning(
+                    "boss.userscript.communicate.page_mismatch",
+                    target_hash=target_hash,
+                    current_hash=current_hash,
+                )
+                return CommunicationExecuteResult(
+                    outcome=CommunicationOutcome.unknown,
+                    failure_code=communication_failure_code(CommunicationOutcome.unknown),
+                    message=(
+                        "Userscript is not on the target page. Navigate to "
+                        "the target job page in the BOSS tab."
+                    ),
+                    diagnostic_reference=sanitize_diagnostic("page_binding_mismatch"),
+                    occurred_at=now,
+                )
+
+            # Step 4: Click "立即沟通".
+            immediate_locator = _resolve(page, IMMEDIATE_COMMUNICATE_BUTTON)
+            try:
+                await page.click_immediate_communicate(immediate_locator)
+            except Exception as exc:
+                _log.warning(
+                    "boss.userscript.communicate.immediate_click_failed",
+                    error=str(exc),
+                )
+                return CommunicationExecuteResult(
+                    outcome=CommunicationOutcome.failed,
+                    failure_code="immediate_button_missing",
+                    message="Could not find or click the 立即沟通 button.",
+                    diagnostic_reference=sanitize_diagnostic("immediate_button_missing"),
+                    occurred_at=now,
+                )
+
+            # Step 5: Fill the opening message into the chat dialog.
+            message_locator = _resolve(page, COMMUNICATION_MESSAGE_INPUT)
+            try:
+                await page.fill_opening_message(message_locator, ctx.opening_message)
+            except Exception as exc:
+                _log.warning(
+                    "boss.userscript.communicate.fill_message_failed",
+                    error=str(exc),
+                )
+                return CommunicationExecuteResult(
+                    outcome=CommunicationOutcome.failed,
+                    failure_code="message_input_missing",
+                    message="Could not find or fill the chat message input.",
+                    diagnostic_reference=sanitize_diagnostic("message_input_missing"),
+                    occurred_at=now,
+                )
+
+            # Step 6: Verify page hash hasn't changed since step 3.
+            post_fill_hash = await page._fetch_url_hash()
+            if post_fill_hash != target_hash:
+                _log.warning(
+                    "boss.userscript.communicate.page_hash_changed",
+                    target_hash=target_hash,
+                    post_fill_hash=post_fill_hash,
+                )
+                return CommunicationExecuteResult(
+                    outcome=CommunicationOutcome.unknown,
+                    failure_code=communication_failure_code(CommunicationOutcome.unknown),
+                    message="Page changed during communication; action is stale.",
+                    diagnostic_reference=sanitize_diagnostic("page_binding_mismatch"),
+                    occurred_at=now,
+                )
+
+            # Step 7: Click send.
+            send_locator = _resolve(page, COMMUNICATION_SEND_BUTTON)
+            try:
+                await page.send_opening_message(send_locator)
+            except Exception as exc:
+                _log.warning(
+                    "boss.userscript.communicate.send_failed",
+                    error=str(exc),
+                )
+                return CommunicationExecuteResult(
+                    outcome=CommunicationOutcome.failed,
+                    failure_code="send_result_unknown",
+                    message="Could not click the send button.",
+                    diagnostic_reference=sanitize_diagnostic("send_failed"),
+                    occurred_at=now,
+                )
+
+            # Safety assertion: at most 1 click_immediate_communicate + 1
+            # send_opening_message per execute call.
+            assert page.communicate_click_count <= 2, (
+                "communicate must click at most 1 immediate + 1 send"
+            )
+
+            # Step 8: Read and classify the post-send state.
+            result_text = await page.read_communication_result()
+            return self._communication_result_from_text(result_text, now)
+        except RuntimeError as exc:
+            _log.warning(
+                "boss.userscript.communicate.runtime_error", error=str(exc)
+            )
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.unknown,
+                failure_code=communication_failure_code(CommunicationOutcome.unknown),
+                message="BOSS communicate aborted due to a runtime error.",
+                diagnostic_reference=sanitize_diagnostic("runtime_error"),
+                occurred_at=now,
+            )
+        finally:
+            self._channel.clear()
+
+    @staticmethod
+    def _communication_result_from_text(
+        result_text: str, now: datetime
+    ) -> CommunicationExecuteResult:
+        """Map the userscript's classification string to a result."""
+        if result_text == "succeeded":
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.succeeded,
+                platform_reference=None,
+                occurred_at=now,
+            )
+        if result_text == "duplicate_detected":
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.duplicate,
+                failure_code=communication_failure_code(CommunicationOutcome.duplicate),
+                message="A conversation already exists for this contact.",
+                diagnostic_reference=sanitize_diagnostic("communication_duplicate_marker"),
+                occurred_at=now,
+            )
+        if result_text == "platform_failure":
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.failed,
+                failure_code=communication_failure_code(CommunicationOutcome.failed),
+                message="Platform error observed after sending the message.",
+                diagnostic_reference=sanitize_diagnostic("communication_platform_error_marker"),
+                occurred_at=now,
+            )
+        # Ambiguous: no clear success, no clear failure. Hard stop.
+        return CommunicationExecuteResult(
+            outcome=CommunicationOutcome.unknown,
+            failure_code="send_result_unknown",
+            message="Ambiguous post-send state; manual reconciliation required.",
+            diagnostic_reference=sanitize_diagnostic("communication_no_confirmation"),
             occurred_at=now,
         )
 

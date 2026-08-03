@@ -21,6 +21,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.platforms.base import (
+    CommunicationExecuteContext,
+    CommunicationOutcome,
     FilledField,
     FilledPageState,
     FilledSubmissionSnapshot,
@@ -32,8 +34,11 @@ from app.platforms.base import (
 from app.platforms.boss.sanitizer import sanitize_diagnostic, sanitize_url
 from app.platforms.boss.selectors import (
     CAPTCHA_MARKER,
+    COMMUNICATION_MESSAGE_INPUT,
+    COMMUNICATION_SEND_BUTTON,
     DUPLICATE_MARKER,
     FINAL_SUBMIT_BUTTON,
+    IMMEDIATE_COMMUNICATE_BUTTON,
     LOGIN_MARKER,
     MESSAGE_INPUT,
     PLATFORM_ERROR_MARKER,
@@ -805,4 +810,282 @@ async def test_submit_clears_channel_after_success() -> None:
     )
     adapter = UserscriptBossAdapter(channel=ch)
     await adapter.submit_prepared(_submit_ctx())
+    assert ch.active_application_id is None
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: helpers
+# ---------------------------------------------------------------------------
+
+
+def _communicate_ctx(**overrides: Any) -> CommunicationExecuteContext:
+    base: dict[str, Any] = {
+        "application_id": "app-1",
+        "target_platform": "boss",
+        "target_resource": "https://www.zhipin.com/job/123",
+        "opening_message": "您好，我对这个岗位很感兴趣。",
+        "source_hash": "sha256:abc",
+        "session_reference": None,
+    }
+    base.update(overrides)
+    return CommunicationExecuteContext(**base)
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: disconnected
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_disconnected_returns_unknown() -> None:
+    ch = FakeUserscriptChannel(connected=False)
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.unknown
+    assert result.diagnostic_reference == sanitize_diagnostic("bridge_not_connected")
+    assert ch.instructions_sent == []
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: page-binding (P1)
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_wrong_page_returns_unknown() -> None:
+    """If the userscript is on a different page → unknown, no clicks sent."""
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(_WRONG_URL_HASH),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.unknown
+    assert result.diagnostic_reference == sanitize_diagnostic("page_binding_mismatch")
+    # No communicate clicks should have been sent.
+    assert [
+        ins
+        for ins in ch.instructions_sent
+        if ins.op in ("click_immediate_communicate", "send_opening_message")
+    ] == []
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: immediate button missing → failed
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_immediate_button_missing_returns_failed() -> None:
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            # The click_immediate_communicate instruction fails.
+            (
+                "click_immediate_communicate",
+                IMMEDIATE_COMMUNICATE_BUTTON.value,
+            ): _fail_result("element_not_found"),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.failed
+    assert result.failure_code == "immediate_button_missing"
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: message input missing → failed
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_message_input_missing_returns_failed() -> None:
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            (
+                "click_immediate_communicate",
+                IMMEDIATE_COMMUNICATE_BUTTON.value,
+            ): _ok_result(),
+            # The fill_opening_message instruction fails.
+            (
+                "fill_opening_message",
+                COMMUNICATION_MESSAGE_INPUT.value,
+            ): _fail_result("element_not_found"),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.failed
+    assert result.failure_code == "message_input_missing"
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: page hash changed after fill → unknown
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_page_hash_changed_after_fill_returns_unknown() -> None:
+    """If the page URL hash changes between the initial check and the
+    post-fill check → unknown (stale action)."""
+    call_count = [0]
+
+    class _ChangingHashChannel(FakeUserscriptChannel):
+        async def put_instruction(  # type: ignore[override]
+            self, instruction: Instruction
+        ) -> InstructionResult:
+            self.instructions_sent.append(instruction)
+            if instruction.op == "read_url":
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return _url_result(_TARGET_URL_HASH)
+                # Second read_url (post-fill check) returns a different hash.
+                return _url_result(_WRONG_URL_HASH)
+            key = (instruction.op, instruction.selector_value)
+            if key in self.result_map:
+                result = self.result_map[key]
+                return InstructionResult(
+                    instruction_id=instruction.instruction_id,
+                    success=result.success,
+                    visible=result.visible,
+                    count=result.count,
+                    text=result.text,
+                    url=result.url,
+                    error=result.error,
+                    jd=result.jd,
+                )
+            return InstructionResult(instruction_id=instruction.instruction_id, success=True)
+
+    ch = _ChangingHashChannel(
+        result_map={
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.unknown
+    assert result.diagnostic_reference == sanitize_diagnostic("page_binding_mismatch")
+    # send_opening_message should NOT have been sent.
+    assert [
+        ins for ins in ch.instructions_sent if ins.op == "send_opening_message"
+    ] == []
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: send fails → failed
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_send_failure_returns_failed() -> None:
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            (
+                "send_opening_message",
+                COMMUNICATION_SEND_BUTTON.value,
+            ): _fail_result("element_not_found"),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.failed
+    assert result.failure_code == "send_result_unknown"
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: success
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_success() -> None:
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            # read_communication_result returns "succeeded".
+            ("read_communication_result", None): _text_result("succeeded"),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.succeeded
+
+    # Safety: at most 1 click_immediate_communicate + 1 send_opening_message.
+    immediate_clicks = [
+        ins for ins in ch.instructions_sent if ins.op == "click_immediate_communicate"
+    ]
+    send_clicks = [
+        ins for ins in ch.instructions_sent if ins.op == "send_opening_message"
+    ]
+    assert len(immediate_clicks) == 1
+    assert len(send_clicks) == 1
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: duplicate
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_duplicate() -> None:
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            ("read_communication_result", None): _text_result("duplicate_detected"),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.duplicate
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: unknown (ambiguous post-send state)
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_unknown_result() -> None:
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            ("read_communication_result", None): _text_result("unknown"),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+    assert result.outcome == CommunicationOutcome.unknown
+    assert result.failure_code == "send_result_unknown"
+
+
+# ---------------------------------------------------------------------------
+# execute_communication: clears channel after every operation
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_clears_channel_after_success() -> None:
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            ("read_communication_result", None): _text_result("succeeded"),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    await adapter.execute_communication(_communicate_ctx())
+    assert ch.active_application_id is None
+
+
+async def test_communicate_clears_channel_after_failure() -> None:
+    ch = FakeUserscriptChannel(connected=False)
+    adapter = UserscriptBossAdapter(channel=ch)
+    await adapter.execute_communication(_communicate_ctx())
     assert ch.active_application_id is None

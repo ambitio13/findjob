@@ -55,16 +55,32 @@ from app.db.repositories import (
     generated_artifact_repo,
 )
 from app.db.repositories.application_action_repo import CLEAR
+from app.platforms.base import (
+    COMMUNICATION_FAILURE_CODES,
+    CommunicationExecuteContext,
+    CommunicationExecuteResult,
+    CommunicationOutcome,
+)
+from app.platforms.boss.registry import get_adapter
+from app.schemas.application import (
+    ApplicationFailureCategory,
+    ApplicationFailureNextAction,
+)
 from app.schemas.application_action import (
     ApplicationActionOut,
     ApplicationActionPreview,
     ApplicationActionSourceSnapshot,
     ApprovalBlockedError,
+    ExternalActionResult,
+    ExternalActionResultStatus,
     ExternalActionStatus,
     ExternalActionType,
 )
 from app.schemas.boss_match_decision import MatchDecision, MatchDecisionModelOutput
-from app.services.application_state import build_source_snapshot
+from app.services.application_state import (
+    build_failure_envelope,
+    build_source_snapshot,
+)
 from app.services.approval_boundary import (
     assert_action_approved,
     compute_external_idempotency_key,
@@ -545,7 +561,7 @@ async def run_boss_communicate_execute(
     job_id: str,
     application_id: str,
     action_id: str,
-) -> tuple[ApplicationRecord, ApplicationAction]:
+) -> tuple[ApplicationRecord, ApplicationAction, bool]:
     """Run the approval + idempotency guards for a communicate execute.
 
     Mirrors ``run_platform_guided_submit_submit``:
@@ -559,14 +575,15 @@ async def run_boss_communicate_execute(
        re-raise as :class:`BossCommunicateBlockedError` (mapped to 409).
     6. Record ``external_started_at`` + flush.
     7. Append ``boss_communicate_started`` timeline event.
+    8. **Invoke the browser adapter** — ``adapter.execute_communication()`` to
+       click "立即沟通", fill the opening message, send it, and read the result.
+    9. **Persist the terminal result** — map the adapter outcome to
+       ``external_result_status`` and append the matching timeline event.
 
-    **Subtask 5 stops here.** The actual browser adapter call (click
-    "立即沟通" + send opening message) is inserted in a later subtask between
-    step 7 and the commit. For now the function commits and returns the guarded
-    action so the approval/idempotency contract is fully testable.
-
-    Returns ``(record, action)`` after the guards pass. Raises
-    :class:`BossCommunicateBlockedError` when the approval guard blocks
+    Returns ``(record, action, replayed)`` after the adapter call completes.
+    ``replayed`` is ``True`` when Guard 0 short-circuited (terminal result
+    already exists) so the API can surface an idempotency-replay message.
+    Raises :class:`BossCommunicateBlockedError` when the approval guard blocks
     execution (the caller maps it to 409).
     """
     record, action = load_communicate_execute_context(
@@ -597,7 +614,7 @@ async def run_boss_communicate_execute(
             )
             db.commit()
             db.refresh(action)
-            return record, action
+            return record, action, True
 
     # --- Recompute the current payload hash from the stored preview. ---
     preview = ApplicationActionPreview.model_validate(action.payload_preview)
@@ -640,22 +657,182 @@ async def run_boss_communicate_execute(
         idempotency_key=idempotency_key,
     )
 
-    # Subtask 6 will insert the browser adapter call here:
-    #   result = await adapter.communicate(...)
-    #   _persist_communicate_result(db, record=record, action=action, result=result, ...)
-    # For now we commit and return the guarded action.
+    # --- Step 8: Invoke the browser adapter. ---
+    # The adapter is selected via get_adapter(): fake by default (tests/dev),
+    # userscript bridge when boss_userscript_bridge_enabled is set, real
+    # Playwright/CDP when boss_adapter_enabled is set.
+    preview_for_ctx = ApplicationActionPreview.model_validate(action.payload_preview)
+    source_snapshot_dict = action.source_snapshot or {}
+    job_url_hash = source_snapshot_dict.get("job_url_hash") or preview_for_ctx.target_resource
+
+    adapter = get_adapter()
+    result = await adapter.execute_communication(
+        CommunicationExecuteContext(
+            application_id=record.id,
+            target_platform=preview_for_ctx.target_platform,
+            target_resource=job_url_hash,
+            opening_message=preview_for_ctx.outgoing_text or "",
+            source_hash=current_source_hash,
+        )
+    )
+
+    # --- Step 9: Persist the terminal result. ---
+    _persist_communicate_result(
+        db,
+        record=record,
+        action=action,
+        result=result,
+        started_at=started_at,
+    )
 
     db.commit()
     db.refresh(action)
 
     _log.info(
-        "boss_communicate.guards_passed",
+        "boss_communicate.completed",
         user_id=current_user.id,
         application_id=record.id,
         action_id=action.id,
+        outcome=result.outcome.value,
         idempotency_key=idempotency_key,
     )
-    return record, action
+    return record, action, False
+
+
+# ---------------------------------------------------------------------------
+# Persist the terminal communicate result
+# ---------------------------------------------------------------------------
+
+
+def _persist_communicate_result(
+    db: Session,
+    *,
+    record: ApplicationRecord,
+    action: ApplicationAction,
+    result: CommunicationExecuteResult,
+    started_at: datetime,
+) -> None:
+    """Persist the terminal result of an immediate-communicate execute.
+
+    Maps the adapter outcome to:
+
+    - ``succeeded`` → ``external_result_status=submitted`` (the durable enum
+      uses ``submitted`` for confirmed success across all action types),
+      ``boss_communicate_succeeded`` timeline event. Application status is
+      unchanged — communicate is a side-channel message, not a formal submit.
+    - ``duplicate`` → ``external_result_status=duplicate``,
+      ``boss_communicate_duplicate`` timeline event + failure envelope.
+    - ``failed`` → ``external_result_status=failed``,
+      ``boss_communicate_failed`` timeline event + failure envelope.
+    - ``unknown`` → ``external_result_status=unknown``,
+      ``boss_communicate_unknown`` timeline event + failure envelope. Hard
+      stop — no automatic retry.
+
+    All persisted metadata is sanitized: only IDs, outcome, and the failure
+    code. No cookies, tokens, credentials, raw JD, raw resume, or page HTML.
+    """
+    completed_at = datetime.now(UTC)
+    outcome = result.outcome
+
+    if outcome is CommunicationOutcome.succeeded:
+        external_result = ExternalActionResult(
+            result_status=ExternalActionResultStatus.submitted,
+            started_at=started_at,
+            completed_at=completed_at,
+            result={
+                "outcome": "succeeded",
+                "platform_reference": result.platform_reference,
+                "target_platform": action.payload_preview.get("target_platform"),
+            },
+        )
+        application_action_repo.update(
+            db,
+            action,
+            external_completed_at=completed_at,
+            external_result_status=ExternalActionResultStatus.submitted.value,
+            external_result=external_result.model_dump(mode="json"),
+        )
+        event = application_repo.build_event(
+            type="boss_communicate_succeeded",
+            actor="system",
+            to_status=record.status,
+            summary="BOSS 立即沟通已成功发送",
+            metadata={
+                "action_id": action.id,
+                "platform_reference": result.platform_reference,
+            },
+        )
+        application_repo.append_timeline_event(db, record, event=event)
+        return
+
+    # Non-succeeded outcome: map to the failure envelope code + next action.
+    code, next_action_str = COMMUNICATION_FAILURE_CODES[outcome]
+    next_action = ApplicationFailureNextAction(next_action_str)
+
+    result_status = {
+        CommunicationOutcome.duplicate: ExternalActionResultStatus.duplicate,
+        CommunicationOutcome.failed: ExternalActionResultStatus.failed,
+        CommunicationOutcome.unknown: ExternalActionResultStatus.unknown,
+    }[outcome]
+
+    external_result = ExternalActionResult(
+        result_status=result_status,
+        started_at=started_at,
+        completed_at=completed_at,
+        result={
+            "failure_code": code,
+            "outcome": outcome.value,
+            "message": result.message,
+        },
+    )
+    application_action_repo.update(
+        db,
+        action,
+        external_completed_at=completed_at,
+        external_result_status=result_status.value,
+        external_result=external_result.model_dump(mode="json"),
+    )
+
+    envelope = build_failure_envelope(
+        category=ApplicationFailureCategory.platform,
+        code=code,
+        message=result.message or f"boss communicate failed: {outcome.value}",
+        retryable=False,  # communicate never auto-retries
+        next_action=next_action,
+        agent_run_id=None,
+        source_ids={
+            "application_id": record.id,
+            "action_id": action.id,
+            "target_platform": action.payload_preview.get("target_platform"),
+        },
+        occurred_at=completed_at,
+    )
+
+    event_type = {
+        CommunicationOutcome.duplicate: "boss_communicate_duplicate",
+        CommunicationOutcome.failed: "boss_communicate_failed",
+        CommunicationOutcome.unknown: "boss_communicate_unknown",
+    }[outcome]
+
+    event = application_repo.build_event(
+        type=event_type,
+        actor="system",
+        to_status=record.status,
+        summary=f"BOSS 立即沟通: {code}",
+        metadata={
+            "action_id": action.id,
+            "error_code": code,
+            "outcome": outcome.value,
+            "diagnostic_reference": result.diagnostic_reference,
+        },
+    )
+    application_repo.update_status_with_event(
+        db,
+        record,
+        new_status=record.status,
+        event=event,
+        latest_error=envelope.model_dump(mode="json"),
+    )
 
 
 __all__ = [

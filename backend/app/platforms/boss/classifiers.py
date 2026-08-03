@@ -167,6 +167,44 @@ async def classify_submit_result(page: BossPage) -> PageClassification:
     return PageClassification(outcome=UNKNOWN, diagnostic_reference="no_confirmation")
 
 
+async def classify_communication_result(page: BossPage) -> PageClassification:
+    """Classify the page state *after* the ``send_opening_message`` click.
+
+    Used by :meth:`UserscriptBossAdapter.execute_communication` to decide
+    whether the platform confirmed the message send, reported a duplicate
+    (conversation already existed), surfaced an error, or left us in an
+    ambiguous state. ``unknown`` is a hard stop for manual reconciliation —
+    never infer success from lack of error.
+    """
+    from app.platforms.boss.selectors import (
+        COMMUNICATION_DUPLICATE_MARKER,
+        COMMUNICATION_SUCCESS_MARKER,
+        PLATFORM_ERROR_MARKER,
+    )
+
+    if await _count(page, COMMUNICATION_SUCCESS_MARKER) > 0:
+        return PageClassification(
+            outcome="succeeded", diagnostic_reference="communication_success_marker"
+        )
+
+    if await _count(page, COMMUNICATION_DUPLICATE_MARKER) > 0:
+        return PageClassification(
+            outcome=DUPLICATE_DETECTED,
+            diagnostic_reference="communication_duplicate_marker",
+        )
+
+    if await _count(page, PLATFORM_ERROR_MARKER) > 0:
+        return PageClassification(
+            outcome="platform_failure",
+            diagnostic_reference="communication_platform_error_marker",
+        )
+
+    # Ambiguous: no clear success, no clear failure. Hard stop.
+    return PageClassification(
+        outcome=UNKNOWN, diagnostic_reference="communication_no_confirmation"
+    )
+
+
 __all__ = [
     "CAPTCHA_REQUIRED",
     "DUPLICATE_DETECTED",
@@ -176,6 +214,7 @@ __all__ = [
     "RATE_LIMITED",
     "SELECTOR_DRIFT",
     "UNKNOWN",
+    "classify_communication_result",
     "classify_page",
     "classify_submit_result",
 ]

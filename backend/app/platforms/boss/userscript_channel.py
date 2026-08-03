@@ -60,6 +60,10 @@ OpKind = Literal[
     "read_url",
     "read_content",
     "read_jd",
+    "click_immediate_communicate",
+    "fill_opening_message",
+    "send_opening_message",
+    "read_communication_result",
 ]
 
 
@@ -67,10 +71,13 @@ OpKind = Literal[
 class Instruction:
     """One instruction sent from the backend to the userscript.
 
-    ``fill_value`` is only set for the ``fill`` op. ``selector_*`` fields are
-    only set for ops that resolve a DOM locator (``fill``, ``click``,
-    ``check_visible``, ``count``). Read ops (``read_title``, ``read_url``,
-    ``read_content``, ``read_jd``) need no selector.
+    ``fill_value`` is only set for the ``fill`` and ``fill_opening_message``
+    ops. ``selector_*`` fields are only set for ops that resolve a DOM locator
+    (``fill``, ``click``, ``check_visible``, ``count``,
+    ``click_immediate_communicate``, ``fill_opening_message``,
+    ``send_opening_message``, ``read_communication_result``). Read ops
+    (``read_title``, ``read_url``, ``read_content``, ``read_jd``) need no
+    selector.
 
     ``page_id`` and ``expected_url_hash`` bind the instruction to a specific
     browser tab and page. The userscript must refuse to execute if either does

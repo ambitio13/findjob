@@ -4,8 +4,8 @@ Exposes two endpoints under ``/boss/recommended-jobs/{job_id}/communicate/...``:
 
 1. ``POST /prepare`` — draft a ``boss_immediate_communicate`` action from a
    match-decision artifact. Synchronous, no browser side effect.
-2. ``POST /{action_id}/execute`` — run the approval + idempotency guards. In
-   this subtask the execute stops after the guards pass (no adapter call yet).
+2. ``POST /{action_id}/execute`` — run the approval + idempotency guards, then
+   invoke the browser adapter to click "立即沟通" and send the opening message.
 
 Safety invariants:
 
@@ -92,11 +92,11 @@ async def execute_communicate(
     actions/{action_id}/approve``) before this endpoint will proceed. A blocked
     execute returns 409 with ``detail.reason`` explaining why.
 
-    In this subtask the execute stops after the guards pass — the browser
-    adapter call is added in a later subtask.
+    After the guards pass, the browser adapter is invoked to click "立即沟通"
+    and send the opening message. The response carries the terminal result.
     """
     try:
-        record, action = await run_boss_communicate_execute(
+        record, action, replayed = await run_boss_communicate_execute(
             db,
             current_user=current_user,
             job_id=job_id,
@@ -113,11 +113,10 @@ async def execute_communicate(
             },
         ) from exc
 
-    # If the action already has a terminal result (idempotency replay), the
-    # message reflects that; otherwise the guards passed and we're ready for
-    # the adapter call (next subtask).
-    if action.external_result_status is not None:
-        message = f"幂等重放：动作已有终态结果 ({action.external_result_status})"
+    if replayed:
+        message = f"幂等重放: 立即沟通已完成: {action.external_result_status}"
+    elif action.external_result_status is not None:
+        message = f"立即沟通已完成: {action.external_result_status}"
     else:
         message = "审批与幂等检查通过，准备执行立即沟通"
 

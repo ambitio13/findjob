@@ -14,6 +14,11 @@ Two-phase contract:
 - :meth:`PlatformAdapter.submit_prepared` — final submit. Called only after the
   approval boundary (:func:`app.services.approval_boundary.assert_action_approved`)
   and the external idempotency guard (design.md §H1) have both passed.
+- :meth:`PlatformAdapter.execute_communication` — immediate communicate. Clicks
+  "立即沟通", fills the opening message, sends it, and reads the post-send state.
+  Called only after the approval boundary + idempotency guards pass for a
+  ``boss_immediate_communicate`` action. Click budget: at most one
+  ``click_immediate_communicate`` and one ``send_opening_message`` per call.
 
 The adapter must never solve CAPTCHA, bypass rate limits, or keep clicking when
 selectors drift. Those are hard stops surfaced as
@@ -212,6 +217,70 @@ class SubmitResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Communication execute results
+# ---------------------------------------------------------------------------
+
+
+class CommunicationOutcome(StrEnum):
+    """Classified outcome of an immediate-communicate execute attempt.
+
+    ``succeeded`` is a confirmed message send. ``duplicate`` means a
+    conversation already existed for this job/contact (not a failure).
+    ``failed`` carries a sanitized failure envelope code (button missing,
+    input missing, etc.). ``unknown`` means the post-send state could not be
+    classified and requires manual reconciliation — no automatic retry.
+    """
+
+    succeeded = "succeeded"
+    duplicate = "duplicate"
+    failed = "failed"
+    unknown = "unknown"
+
+
+class CommunicationExecuteContext(BaseModel):
+    """Inputs for an immediate-communicate execute.
+
+    Carries the opening message text (validated for length/tone/PII at prepare
+    time) plus the same opaque session reference used by the submit flow.
+    ``target_resource`` is the page URL hash binding the action to the exact
+    job page the user approved.
+    """
+
+    application_id: str = Field(min_length=1)
+    target_platform: str = Field(min_length=1)
+    target_resource: str = Field(
+        min_length=1,
+        description="Page URL hash binding the action to the approved job page.",
+    )
+    opening_message: str = Field(
+        min_length=1,
+        description="Validated opening message text to send via the chat dialog.",
+    )
+    source_hash: str = Field(min_length=1, description="Readiness source hash at execute time.")
+    session_reference: str | None = None
+
+
+class CommunicationExecuteResult(BaseModel):
+    """Result of :meth:`PlatformAdapter.execute_communication`.
+
+    ``succeeded`` is a confirmed send. ``duplicate`` means a conversation
+    already existed. ``failed`` carries a failure code for manual-review
+    routing. ``unknown`` is a hard stop requiring manual reconciliation —
+    no automatic retry.
+    """
+
+    outcome: CommunicationOutcome
+    platform_reference: str | None = Field(
+        default=None,
+        description="Safe platform-side reference for a confirmed communication, if any.",
+    )
+    failure_code: str | None = None
+    message: str | None = None
+    diagnostic_reference: str | None = None
+    occurred_at: datetime
+
+
+# ---------------------------------------------------------------------------
 # Adapter protocol
 # ---------------------------------------------------------------------------
 
@@ -238,6 +307,20 @@ class PlatformAdapter(Protocol):
         """Final submit. Called only after approval + idempotency guards pass."""
         ...
 
+    async def execute_communication(
+        self, ctx: CommunicationExecuteContext
+    ) -> CommunicationExecuteResult:
+        """Click "立即沟通" and send the opening message.
+
+        Called only after the approval boundary + idempotency guards pass for a
+        ``boss_immediate_communicate`` action. The adapter clicks the
+        immediate-communicate button, fills the opening message into the chat
+        dialog, sends it, and reads the post-send page state to classify the
+        result. Click budget: at most one ``click_immediate_communicate`` and
+        one ``send_opening_message`` per call.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Failure-code mapping (design.md §Failure Handling)
@@ -262,6 +345,16 @@ SUBMIT_FAILURE_CODES: dict[SubmitOutcome, tuple[str, str]] = {
     SubmitOutcome.duplicate_detected: ("platform_duplicate_detected", "manual_review"),
     SubmitOutcome.unknown: ("platform_unknown_result", "manual_review"),
     SubmitOutcome.platform_failure: ("platform_failure", "manual_review"),
+}
+
+#: Maps each non-succeeded communication outcome to the sanitized failure
+#: envelope code and next-action. ``duplicate`` is NOT a failure — it maps to
+#: its own code so the workflow can route it as "conversation already exists"
+#: rather than retrying.
+COMMUNICATION_FAILURE_CODES: dict[CommunicationOutcome, tuple[str, str]] = {
+    CommunicationOutcome.duplicate: ("communication_duplicate_detected", "manual_review"),
+    CommunicationOutcome.failed: ("communication_failure", "manual_review"),
+    CommunicationOutcome.unknown: ("communication_unknown_result", "manual_review"),
 }
 
 
@@ -293,7 +386,25 @@ def submit_failure_next_action(outcome: SubmitOutcome) -> str:
     return SUBMIT_FAILURE_CODES[outcome][1]
 
 
+def communication_failure_code(outcome: CommunicationOutcome) -> str:
+    """Return the sanitized envelope code for a non-succeeded communicate outcome."""
+    if outcome is CommunicationOutcome.succeeded:
+        raise ValueError("succeeded is not a failure outcome")
+    return COMMUNICATION_FAILURE_CODES[outcome][0]
+
+
+def communication_failure_next_action(outcome: CommunicationOutcome) -> str:
+    """Return the next-action string for a non-succeeded communicate outcome."""
+    if outcome is CommunicationOutcome.succeeded:
+        raise ValueError("succeeded is not a failure outcome")
+    return COMMUNICATION_FAILURE_CODES[outcome][1]
+
+
 __all__ = [
+    "COMMUNICATION_FAILURE_CODES",
+    "CommunicationExecuteContext",
+    "CommunicationExecuteResult",
+    "CommunicationOutcome",
     "FilledAttachment",
     "FilledField",
     "FilledPageState",
@@ -307,6 +418,8 @@ __all__ = [
     "SubmitContext",
     "SubmitOutcome",
     "SubmitResult",
+    "communication_failure_code",
+    "communication_failure_next_action",
     "prepare_failure_code",
     "prepare_failure_next_action",
     "submit_failure_code",

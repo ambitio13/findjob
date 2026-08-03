@@ -461,6 +461,104 @@
         return result;
       }
 
+      // --- Communicate flow ops -------------------------------------------
+      //
+      // These mirror the fill/click logic but use distinct op names so the
+      // backend can enforce the communicate click budget (at most one
+      // click_immediate_communicate + one send_opening_message per execute
+      // call) without the submit-phase gate.
+      if (ins.op === "click_immediate_communicate") {
+        // Click the "立即沟通" button — same logic as click, separate name.
+        if (list.length === 0) {
+          result.success = false;
+          result.error = sanitizeError("element_not_found");
+          return result;
+        }
+        const el = list[0];
+        el.scrollIntoView({ block: "center", behavior: "instant" });
+        el.click();
+        result.visible = true;
+        return result;
+      }
+      if (ins.op === "fill_opening_message") {
+        // Fill the chat input with the opening message — same logic as fill.
+        if (list.length === 0) {
+          result.success = false;
+          result.error = sanitizeError("element_not_found");
+          return result;
+        }
+        const el = list[0];
+        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+          const proto =
+            el.tagName === "TEXTAREA"
+              ? window.HTMLTextAreaElement.prototype
+              : window.HTMLInputElement.prototype;
+          const nativeValueSetter = Object.getOwnPropertyDescriptor(
+            proto,
+            "value",
+          )?.set;
+          if (nativeValueSetter) {
+            nativeValueSetter.call(el, ins.fill_value || "");
+          } else {
+            el.value = ins.fill_value || "";
+          }
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        } else if (el.isContentEditable) {
+          el.textContent = ins.fill_value || "";
+          el.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        } else {
+          result.success = false;
+          result.error = sanitizeError("fill_unsupported_element:" + el.tagName);
+          return result;
+        }
+        result.visible = true;
+        return result;
+      }
+      if (ins.op === "send_opening_message") {
+        // Click the send button in the chat dialog — same logic as click.
+        if (list.length === 0) {
+          result.success = false;
+          result.error = sanitizeError("element_not_found");
+          return result;
+        }
+        const el = list[0];
+        el.scrollIntoView({ block: "center", behavior: "instant" });
+        el.click();
+        result.visible = true;
+        return result;
+      }
+      if (ins.op === "read_communication_result") {
+        // Check the post-send page state for success / duplicate / error
+        // markers. Return a classification string via result.text so the
+        // backend can map it to a CommunicationOutcome.
+        //
+        // The selector_value carries a CSS selector for the success marker;
+        // we also check the duplicate and error markers via fixed selectors
+        // matching the selectors.py constants.
+        const successEls = document.querySelectorAll(
+          ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), .chat-content .message-item:not(.pending)",
+        );
+        const duplicateEls = document.querySelectorAll(
+          ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通')",
+        );
+        const errorEls = document.querySelectorAll(
+          ".error-message, .toast-error, .dialog-error",
+        );
+        if (duplicateEls.length > 0) {
+          result.text = "duplicate_detected";
+        } else if (errorEls.length > 0) {
+          result.text = "platform_failure";
+        } else if (successEls.length > 0) {
+          result.text = "succeeded";
+        } else {
+          // Ambiguous state — the backend treats this as "unknown" (hard
+          // stop, manual reconciliation).
+          result.text = "unknown";
+        }
+        return result;
+      }
+
       result.success = false;
       result.error = sanitizeError("unknown_op:" + ins.op);
       return result;

@@ -594,7 +594,14 @@ async def test_execute_unapproved_returns_blocked_not_approved(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_approved_passes_guards_and_sets_started_at(client) -> None:
+async def test_execute_approved_invokes_adapter_and_persists_result(
+    client, monkeypatch
+) -> None:
+    """Approved execute calls the fake adapter (succeeded) and persists the
+    terminal result: ``external_result_status == "submitted"`` (succeeded maps
+    to submitted), ``external_completed_at`` set, and
+    ``boss_communicate_succeeded`` timeline event appended.
+    """
     ids = _seed()
     artifact_id = await _run_match(ids)
     user = _get_user(ids["user_id"])
@@ -613,8 +620,17 @@ async def test_execute_approved_passes_guards_and_sets_started_at(client) -> Non
     # Approve the action.
     _approve_action(action_id, application_id, ids["user_id"])
 
+    # Inject a fake adapter with the communicate_succeeded scenario.
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_succeeded")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
     with SessionLocal() as db:
-        record, action = await run_boss_communicate_execute(
+        record, action, _ = await run_boss_communicate_execute(
             db,
             current_user=user,
             job_id=ids["job_id"],
@@ -623,10 +639,14 @@ async def test_execute_approved_passes_guards_and_sets_started_at(client) -> Non
         )
 
     assert action.external_started_at is not None
-    # The guards passed; no terminal result yet (adapter call is Subtask 6).
-    assert action.external_result_status is None
+    assert action.external_completed_at is not None
+    # succeeded → external_result_status == "submitted"
+    assert action.external_result_status == "submitted"
+    # The adapter was called exactly once.
+    assert len(fake.communicate_calls) == 1
+    assert fake.communicate_calls[0].application_id == application_id
 
-    # Verify the timeline has boss_communicate_started.
+    # Verify the timeline has boss_communicate_succeeded.
     from app.db.models.models import ApplicationRecord
 
     with SessionLocal() as db:
@@ -634,10 +654,214 @@ async def test_execute_approved_passes_guards_and_sets_started_at(client) -> Non
         assert record_db is not None
         types = [e["type"] for e in record_db.timeline]
         assert "boss_communicate_started" in types
+        assert "boss_communicate_succeeded" in types
 
 
 @pytest.mark.asyncio
-async def test_execute_idempotency_replay_returns_existing_action(client) -> None:
+async def test_execute_adapter_returns_duplicate(client, monkeypatch) -> None:
+    """When the fake adapter returns ``duplicate``, the service persists
+    ``external_result_status == "duplicate"`` and appends the
+    ``boss_communicate_duplicate`` timeline event."""
+    ids = _seed()
+    artifact_id = await _run_match(ids)
+    user = _get_user(ids["user_id"])
+
+    with SessionLocal() as db:
+        action = prepare_communicate_action(
+            db,
+            user,
+            ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+            match_artifact_id=artifact_id,
+        )
+        application_id = action.application_id
+        action_id = action.id
+
+    _approve_action(action_id, application_id, ids["user_id"])
+
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_duplicate")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
+    with SessionLocal() as db:
+        record, action, _ = await run_boss_communicate_execute(
+            db,
+            current_user=user,
+            job_id=ids["job_id"],
+            application_id=application_id,
+            action_id=action_id,
+        )
+
+    assert action.external_result_status == "duplicate"
+    assert action.external_completed_at is not None
+
+    from app.db.models.models import ApplicationRecord
+
+    with SessionLocal() as db:
+        record_db = db.get(ApplicationRecord, application_id)
+        assert record_db is not None
+        types = [e["type"] for e in record_db.timeline]
+        assert "boss_communicate_duplicate" in types
+
+
+@pytest.mark.asyncio
+async def test_execute_adapter_returns_failed(client, monkeypatch) -> None:
+    """When the fake adapter returns ``failed`` (immediate_button_missing),
+    the service persists ``external_result_status == "failed"`` and a failure
+    envelope on the application record."""
+    ids = _seed()
+    artifact_id = await _run_match(ids)
+    user = _get_user(ids["user_id"])
+
+    with SessionLocal() as db:
+        action = prepare_communicate_action(
+            db,
+            user,
+            ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+            match_artifact_id=artifact_id,
+        )
+        application_id = action.application_id
+        action_id = action.id
+
+    _approve_action(action_id, application_id, ids["user_id"])
+
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_failed")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
+    with SessionLocal() as db:
+        record, action, _ = await run_boss_communicate_execute(
+            db,
+            current_user=user,
+            job_id=ids["job_id"],
+            application_id=application_id,
+            action_id=action_id,
+        )
+
+    assert action.external_result_status == "failed"
+    assert action.external_completed_at is not None
+
+    from app.db.models.models import ApplicationRecord
+
+    with SessionLocal() as db:
+        record_db = db.get(ApplicationRecord, application_id)
+        assert record_db is not None
+        types = [e["type"] for e in record_db.timeline]
+        assert "boss_communicate_failed" in types
+        # The failure envelope should carry the code.
+        assert record_db.latest_error is not None
+        assert record_db.latest_error["code"] == "communication_failure"
+
+
+@pytest.mark.asyncio
+async def test_execute_adapter_returns_unknown(client, monkeypatch) -> None:
+    """When the fake adapter returns ``unknown``, the service persists
+    ``external_result_status == "unknown"`` (hard stop, no retry) and a
+    failure envelope with ``retryable=False``."""
+    ids = _seed()
+    artifact_id = await _run_match(ids)
+    user = _get_user(ids["user_id"])
+
+    with SessionLocal() as db:
+        action = prepare_communicate_action(
+            db,
+            user,
+            ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+            match_artifact_id=artifact_id,
+        )
+        application_id = action.application_id
+        action_id = action.id
+
+    _approve_action(action_id, application_id, ids["user_id"])
+
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_unknown")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
+    with SessionLocal() as db:
+        record, action, _ = await run_boss_communicate_execute(
+            db,
+            current_user=user,
+            job_id=ids["job_id"],
+            application_id=application_id,
+            action_id=action_id,
+        )
+
+    assert action.external_result_status == "unknown"
+    assert action.external_completed_at is not None
+
+    from app.db.models.models import ApplicationRecord
+
+    with SessionLocal() as db:
+        record_db = db.get(ApplicationRecord, application_id)
+        assert record_db is not None
+        types = [e["type"] for e in record_db.timeline]
+        assert "boss_communicate_unknown" in types
+        assert record_db.latest_error is not None
+        assert record_db.latest_error["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_execute_no_adapter_call_before_approval(client, monkeypatch) -> None:
+    """The adapter must NOT be called when the action is unapproved —
+    ``BossCommunicateBlockedError`` is raised before reaching the adapter."""
+    ids = _seed()
+    artifact_id = await _run_match(ids)
+    user = _get_user(ids["user_id"])
+
+    with SessionLocal() as db:
+        action = prepare_communicate_action(
+            db,
+            user,
+            ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+            match_artifact_id=artifact_id,
+        )
+        application_id = action.application_id
+        action_id = action.id
+
+    # Do NOT approve.
+
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_succeeded")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
+    with SessionLocal() as db:
+        with pytest.raises(BossCommunicateBlockedError) as exc_info:
+            await run_boss_communicate_execute(
+                db,
+                current_user=user,
+                job_id=ids["job_id"],
+                application_id=application_id,
+                action_id=action_id,
+            )
+    assert exc_info.value.reason == "not_approved"
+    # The adapter was never called.
+    assert len(fake.communicate_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_idempotency_replay_returns_existing_action(
+    client, monkeypatch
+) -> None:
     ids = _seed()
     artifact_id = await _run_match(ids)
     user = _get_user(ids["user_id"])
@@ -656,6 +880,14 @@ async def test_execute_idempotency_replay_returns_existing_action(client) -> Non
     _approve_action(action_id, application_id, ids["user_id"])
 
     # First execute: guards pass.
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_succeeded")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
     with SessionLocal() as db:
         await run_boss_communicate_execute(
             db,
@@ -665,8 +897,9 @@ async def test_execute_idempotency_replay_returns_existing_action(client) -> Non
             action_id=action_id,
         )
 
-    # Simulate a terminal result (as if the adapter completed successfully).
-    # The external_result JSON must match ExternalActionResult shape.
+    # The first execute produced a terminal result. Simulate the shape that
+    # an external idempotency replay would find (the real idempotency check
+    # looks at external_result_status on the action row).
     from app.db.repositories import application_action_repo
 
     with SessionLocal() as db:
@@ -674,6 +907,7 @@ async def test_execute_idempotency_replay_returns_existing_action(client) -> Non
             db, action_id=action_id, application_id=application_id, user_id=ids["user_id"]
         )
         assert action is not None
+        assert action.external_result_status == "submitted"
         now = datetime.now(UTC)
         started = action.external_started_at or now
         application_action_repo.update(
@@ -693,7 +927,7 @@ async def test_execute_idempotency_replay_returns_existing_action(client) -> Non
     # Second execute: idempotency replay should return the existing action
     # without re-running guards or touching the browser.
     with SessionLocal() as db:
-        record, action = await run_boss_communicate_execute(
+        record, action, _ = await run_boss_communicate_execute(
             db,
             current_user=user,
             job_id=ids["job_id"],

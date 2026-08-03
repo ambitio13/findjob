@@ -52,7 +52,9 @@ class InstructionOut(BaseModel):
     op: str = Field(
         description=(
             "Operation: fill, click, check_visible, count, "
-            "read_title, read_url, read_content, read_jd."
+            "read_title, read_url, read_content, read_jd, "
+            "click_immediate_communicate, fill_opening_message, "
+            "send_opening_message, read_communication_result."
         )
     )
     selector_kind: str | None = Field(
@@ -63,7 +65,8 @@ class InstructionOut(BaseModel):
         default=None, description="Accessible name for role selectors."
     )
     fill_value: str | None = Field(
-        default=None, description="Value to type, only for the fill op."
+        default=None,
+        description="Value to type, only for the fill and fill_opening_message ops.",
     )
     page_id: str | None = Field(
         default=None,

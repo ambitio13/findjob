@@ -17,6 +17,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from app.platforms.base import (
+    CommunicationExecuteContext,
+    CommunicationExecuteResult,
+    CommunicationOutcome,
     FilledAttachment,
     FilledField,
     FilledPageState,
@@ -27,6 +30,7 @@ from app.platforms.base import (
     SubmitContext,
     SubmitOutcome,
     SubmitResult,
+    communication_failure_code,
 )
 
 
@@ -55,6 +59,7 @@ class FakeBossAdapter:
         self.message = message
         self.prepare_calls: list[PrepareContext] = []
         self.submit_calls: list[SubmitContext] = []
+        self.communicate_calls: list[CommunicationExecuteContext] = []
 
     # Scenarios that are valid SubmitOutcome values but NOT valid PrepareOutcome
     # values. On prepare these still return a filled preview; on submit they
@@ -111,6 +116,76 @@ class FakeBossAdapter:
             outcome=SubmitOutcome.platform_failure,
             failure_code="platform_failure",
             message=self.message or f"fake boss submit: {self.scenario}",
+            occurred_at=now,
+        )
+
+    async def execute_communication(
+        self, ctx: CommunicationExecuteContext
+    ) -> CommunicationExecuteResult:
+        """Scenario-driven immediate-communicate execute for tests.
+
+        Recognized communicate scenarios:
+
+        - ``communicate_succeeded`` → ``CommunicationOutcome.succeeded``
+        - ``communicate_duplicate`` → ``CommunicationOutcome.duplicate``
+        - ``communicate_failed`` → ``CommunicationOutcome.failed`` (with
+          ``immediate_button_missing`` as the default failure code, or
+          ``message_input_missing`` / ``send_result_unknown`` if the
+          scenario string carries that suffix)
+        - ``communicate_unknown`` → ``CommunicationOutcome.unknown``
+        - default (no communicate scenario) → ``succeeded``
+
+        The ``communicate_calls`` list tracks every invocation so tests can
+        assert that the adapter was (or was not) called.
+        """
+        self.communicate_calls.append(ctx)
+        now = datetime.now(UTC)
+
+        if self.scenario == "communicate_duplicate":
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.duplicate,
+                failure_code=communication_failure_code(CommunicationOutcome.duplicate),
+                message=self.message or "fake boss communicate: duplicate",
+                occurred_at=now,
+            )
+
+        if self.scenario == "communicate_unknown":
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.unknown,
+                failure_code="send_result_unknown",
+                message=self.message or "fake boss communicate: unknown",
+                occurred_at=now,
+            )
+
+        if self.scenario == "communicate_failed":
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.failed,
+                failure_code="immediate_button_missing",
+                message=self.message or "fake boss communicate: failed",
+                occurred_at=now,
+            )
+
+        if self.scenario == "communicate_failed_message_input":
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.failed,
+                failure_code="message_input_missing",
+                message=self.message or "fake boss communicate: message input missing",
+                occurred_at=now,
+            )
+
+        if self.scenario == "communicate_failed_send_unknown":
+            return CommunicationExecuteResult(
+                outcome=CommunicationOutcome.unknown,
+                failure_code="send_result_unknown",
+                message=self.message or "fake boss communicate: send result unknown",
+                occurred_at=now,
+            )
+
+        # Default (including "communicate_succeeded" and any non-communicate
+        # scenario): return succeeded.
+        return CommunicationExecuteResult(
+            outcome=CommunicationOutcome.succeeded,
+            platform_reference=self.platform_reference,
             occurred_at=now,
         )
 
