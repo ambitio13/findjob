@@ -1,1 +1,4 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/big-question/platform-integration-strategy.md", "reason": "Selector drift detection contract: where (adapter execute, not prepare), how (check_visible both-invisible → selector_drift), safety, test conventions"}
+{"file": "backend/app/platforms/base.py", "reason": "CommunicationOutcome enum + CommunicationExecuteResult model + COMMUNICATION_FAILURE_CODES — the failure surface drift maps onto"}
+{"file": "backend/app/platforms/boss/selectors.py", "reason": "IMMEDIATE_COMMUNICATE_BUTTON + CONTINUE_COMMUNICATE_BUTTON definitions — the two entry buttons probed for drift"}
+{"file": "backend/app/platforms/boss/userscript_adapter.py", "reason": "execute_communication() — Step 3.5 drift detection implementation site"}

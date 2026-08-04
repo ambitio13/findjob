@@ -37,6 +37,7 @@ from app.platforms.boss.selectors import (
     CAPTCHA_MARKER,
     COMMUNICATION_MESSAGE_INPUT,
     COMMUNICATION_SEND_BUTTON,
+    CONTINUE_COMMUNICATE_BUTTON,
     DUPLICATE_MARKER,
     FINAL_SUBMIT_BUTTON,
     IMMEDIATE_COMMUNICATE_BUTTON,
@@ -73,9 +74,16 @@ _WRONG_URL_HASH = "sha256:deadbeef"
 class FakeUserscriptChannel(UserscriptChannel):
     """Pre-programmed channel that maps instructions to canned results.
 
-    Tests configure ``result_map`` — a dict from ``(op, selector_value)`` to an
-    :class:`InstructionResult`. When the adapter sends an instruction, the fake
-    channel looks up the result and posts it back immediately.
+    Tests configure ``result_map`` — a dict from ``(op, selector_value)`` or
+    ``(op, selector_value, selector_name)`` to an :class:`InstructionResult`.
+    When the adapter sends an instruction, the fake channel looks up the result
+    and posts it back immediately.
+
+    The 3-tuple key ``(op, selector_value, selector_name)`` is tried first so
+    tests can distinguish selectors that share the same ``selector_value`` —
+    notably role selectors like ``IMMEDIATE_COMMUNICATE_BUTTON`` and
+    ``CONTINUE_COMMUNICATE_BUTTON`` (both ``value="button"``, differing only
+    in ``name``).
 
     ``connected`` controls ``is_connected()``. ``instructions_sent`` records
     every instruction for post-hoc assertions.
@@ -85,7 +93,7 @@ class FakeUserscriptChannel(UserscriptChannel):
         self,
         *,
         connected: bool = True,
-        result_map: dict[tuple[str, str | None], InstructionResult] | None = None,
+        result_map: dict[tuple[str, ...], InstructionResult] | None = None,
     ) -> None:
         super().__init__()
         self._connected = connected
@@ -100,9 +108,13 @@ class FakeUserscriptChannel(UserscriptChannel):
         self, instruction: Instruction
     ) -> InstructionResult:
         self.instructions_sent.append(instruction)
-        key = (instruction.op, instruction.selector_value)
-        if key in self.result_map:
-            result = self.result_map[key]
+        # Try the 3-tuple key first (op, selector_value, selector_name) so
+        # role selectors with the same value but different names can be
+        # distinguished. Fall back to the 2-tuple (op, selector_value).
+        key3 = (instruction.op, instruction.selector_value, instruction.selector_name)
+        key2 = (instruction.op, instruction.selector_value)
+        result = self.result_map.get(key3) or self.result_map.get(key2)
+        if result is not None:
             return InstructionResult(
                 instruction_id=instruction.instruction_id,
                 success=result.success,
@@ -347,9 +359,7 @@ async def test_prepare_wrong_page_returns_unknown() -> None:
     assert result.outcome == PrepareOutcome.unknown
     assert result.diagnostic_reference == sanitize_diagnostic("page_mismatch")
     # No fill/click instructions should have been sent on the wrong page.
-    fill_or_click = [
-        ins for ins in ch.instructions_sent if ins.op in ("fill", "click")
-    ]
+    fill_or_click = [ins for ins in ch.instructions_sent if ins.op in ("fill", "click")]
     assert fill_or_click == []
 
 
@@ -898,6 +908,10 @@ async def test_communicate_immediate_button_missing_returns_failed() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            # Drift check passes: immediate button is visible.
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             # The click_immediate_communicate instruction fails.
             (
                 "click_immediate_communicate",
@@ -920,6 +934,9 @@ async def test_communicate_message_input_missing_returns_failed() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             (
                 "click_immediate_communicate",
                 IMMEDIATE_COMMUNICATE_BUTTON.value,
@@ -958,9 +975,10 @@ async def test_communicate_page_hash_changed_after_fill_returns_unknown() -> Non
                     return _url_result(_TARGET_URL_HASH)
                 # Second read_url (post-fill check) returns a different hash.
                 return _url_result(_WRONG_URL_HASH)
-            key = (instruction.op, instruction.selector_value)
-            if key in self.result_map:
-                result = self.result_map[key]
+            key3 = (instruction.op, instruction.selector_value, instruction.selector_name)
+            key2 = (instruction.op, instruction.selector_value)
+            result = self.result_map.get(key3) or self.result_map.get(key2)
+            if result is not None:
                 return InstructionResult(
                     instruction_id=instruction.instruction_id,
                     success=result.success,
@@ -975,6 +993,9 @@ async def test_communicate_page_hash_changed_after_fill_returns_unknown() -> Non
 
     ch = _ChangingHashChannel(
         result_map={
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
         }
@@ -984,9 +1005,7 @@ async def test_communicate_page_hash_changed_after_fill_returns_unknown() -> Non
     assert result.outcome == CommunicationOutcome.unknown
     assert result.diagnostic_reference == sanitize_diagnostic("page_binding_mismatch")
     # send_opening_message should NOT have been sent.
-    assert [
-        ins for ins in ch.instructions_sent if ins.op == "send_opening_message"
-    ] == []
+    assert [ins for ins in ch.instructions_sent if ins.op == "send_opening_message"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -998,6 +1017,9 @@ async def test_communicate_send_failure_returns_failed() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             (
@@ -1021,6 +1043,9 @@ async def test_communicate_success() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
@@ -1037,9 +1062,7 @@ async def test_communicate_success() -> None:
     immediate_clicks = [
         ins for ins in ch.instructions_sent if ins.op == "click_immediate_communicate"
     ]
-    send_clicks = [
-        ins for ins in ch.instructions_sent if ins.op == "send_opening_message"
-    ]
+    send_clicks = [ins for ins in ch.instructions_sent if ins.op == "send_opening_message"]
     assert len(immediate_clicks) == 1
     assert len(send_clicks) == 1
 
@@ -1053,6 +1076,9 @@ async def test_communicate_duplicate() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
@@ -1081,12 +1107,13 @@ async def test_communicate_success_priority_over_duplicate() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
-            ("read_communication_result", None): _marker_result(
-                success_count=1, duplicate_count=1
-            ),
+            ("read_communication_result", None): _marker_result(success_count=1, duplicate_count=1),
         }
     )
     adapter = UserscriptBossAdapter(channel=ch)
@@ -1108,6 +1135,9 @@ async def test_communicate_platform_failure() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
@@ -1130,6 +1160,9 @@ async def test_communicate_read_result_failure_returns_unknown() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
@@ -1152,6 +1185,9 @@ async def test_communicate_unknown_result() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
@@ -1174,6 +1210,9 @@ async def test_communicate_clears_channel_after_success() -> None:
     ch = FakeUserscriptChannel(
         result_map={
             ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
             ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
             ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
             ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
@@ -1190,3 +1229,147 @@ async def test_communicate_clears_channel_after_failure() -> None:
     adapter = UserscriptBossAdapter(channel=ch)
     await adapter.execute_communication(_communicate_ctx())
     assert ch.active_application_id is None
+
+
+# ---------------------------------------------------------------------------
+# extra_selectors: read_communication_result and send_opening_message carry
+# selector groups from selectors.py so the userscript does not hardcode them.
+# ---------------------------------------------------------------------------
+
+
+async def test_communicate_read_result_carries_extra_selectors() -> None:
+    """read_communication_result must carry success/duplicate/error selectors.
+
+    The selector values must match the constants in selectors.py so the
+    userscript uses the backend-defined selectors instead of its own
+    hardcoded copy. This is the B1 drift fix.
+    """
+    from app.platforms.boss.selectors import (
+        COMMUNICATION_DUPLICATE_MARKER,
+        COMMUNICATION_SUCCESS_MARKER,
+        PLATFORM_ERROR_MARKER,
+    )
+
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            ("read_communication_result", None): _marker_result(success_count=1),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    await adapter.execute_communication(_communicate_ctx())
+
+    read_ins = [ins for ins in ch.instructions_sent if ins.op == "read_communication_result"]
+    assert len(read_ins) == 1
+    extra = read_ins[0].extra_selectors
+    assert extra is not None
+    assert extra["success"] == COMMUNICATION_SUCCESS_MARKER.value
+    assert extra["duplicate"] == COMMUNICATION_DUPLICATE_MARKER.value
+    assert extra["error"] == PLATFORM_ERROR_MARKER.value
+
+
+async def test_communicate_send_carries_message_input_selector() -> None:
+    """send_opening_message must carry the message_input selector.
+
+    The Enter-key path in the userscript reads this selector instead of
+    hardcoding the textarea CSS, keeping it in sync with
+    COMMUNICATION_MESSAGE_INPUT in selectors.py.
+    """
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            ("read_communication_result", None): _marker_result(success_count=1),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    await adapter.execute_communication(_communicate_ctx())
+
+    send_ins = [ins for ins in ch.instructions_sent if ins.op == "send_opening_message"]
+    assert len(send_ins) == 1
+    extra = send_ins[0].extra_selectors
+    assert extra is not None
+    assert extra["message_input"] == COMMUNICATION_MESSAGE_INPUT.value
+
+
+async def test_communicate_selector_drift_returns_failed() -> None:
+    """Both entry buttons invisible → selector_drift failure.
+
+    Step 3.5 probes IMMEDIATE_COMMUNICATE_BUTTON and
+    CONTINUE_COMMUNICATE_BUTTON visibility before clicking. If both are
+    invisible, the page markup has drifted and we must not guess.
+    """
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            # Both entry buttons invisible → drift.
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                False
+            ),
+            ("check_visible", CONTINUE_COMMUNICATE_BUTTON.value, "继续沟通"): _visible_result(
+                False
+            ),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+
+    assert result.outcome == CommunicationOutcome.failed
+    assert result.failure_code == "selector_drift"
+    assert result.diagnostic_reference == sanitize_diagnostic(
+        "selector_drift_immediate_communicate"
+    )
+
+    # Safety: no click instructions sent when drift is detected.
+    clicks = [
+        ins
+        for ins in ch.instructions_sent
+        if ins.op in ("click_immediate_communicate", "send_opening_message")
+    ]
+    assert clicks == []
+
+
+async def test_communicate_drift_check_passes_when_immediate_visible() -> None:
+    """Immediate button visible → normal flow proceeds, no drift failure.
+
+    The drift check (Step 3.5) sends a check_visible for
+    IMMEDIATE_COMMUNICATE_BUTTON. When it returns visible=True, the flow
+    continues to click + fill + send + classify as normal.
+    """
+    ch = FakeUserscriptChannel(
+        result_map={
+            ("read_url", None): _url_result(),
+            # Immediate button visible → drift check passes.
+            ("check_visible", IMMEDIATE_COMMUNICATE_BUTTON.value, "立即沟通"): _visible_result(
+                True
+            ),
+            ("click_immediate_communicate", IMMEDIATE_COMMUNICATE_BUTTON.value): _ok_result(),
+            ("fill_opening_message", COMMUNICATION_MESSAGE_INPUT.value): _ok_result(),
+            ("send_opening_message", COMMUNICATION_SEND_BUTTON.value): _ok_result(),
+            ("read_communication_result", None): _marker_result(success_count=1),
+        }
+    )
+    adapter = UserscriptBossAdapter(channel=ch)
+    result = await adapter.execute_communication(_communicate_ctx())
+
+    assert result.outcome == CommunicationOutcome.succeeded
+
+    # Drift check sent exactly 1 check_visible for the immediate button
+    # (by selector_name, since both buttons share selector_value="button").
+    drift_checks = [
+        ins
+        for ins in ch.instructions_sent
+        if ins.op == "check_visible" and ins.selector_name == "立即沟通"
+    ]
+    assert len(drift_checks) == 1

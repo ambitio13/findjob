@@ -69,12 +69,15 @@ from app.platforms.boss.classifiers import (
 )
 from app.platforms.boss.sanitizer import sanitize_diagnostic, sanitize_url
 from app.platforms.boss.selectors import (
+    COMMUNICATION_DUPLICATE_MARKER,
     COMMUNICATION_MESSAGE_INPUT,
     COMMUNICATION_SEND_BUTTON,
+    COMMUNICATION_SUCCESS_MARKER,
     CONTINUE_COMMUNICATE_BUTTON,
     FINAL_SUBMIT_BUTTON,
     IMMEDIATE_COMMUNICATE_BUTTON,
     MESSAGE_INPUT,
+    PLATFORM_ERROR_MARKER,
     RESUME_UPLOAD,
     Selector,
 )
@@ -112,9 +115,7 @@ class UserscriptBossPage:
     ``click`` raises during prepare, and is allowed exactly once during submit.
     """
 
-    def __init__(
-        self, channel: UserscriptChannel, *, is_submit_phase: bool = False
-    ) -> None:
+    def __init__(self, channel: UserscriptChannel, *, is_submit_phase: bool = False) -> None:
         self._channel = channel
         self._is_submit_phase = is_submit_phase
         self._click_count = 0
@@ -134,9 +135,7 @@ class UserscriptBossPage:
     def locator(self, selector: str) -> RemoteLocator:
         return RemoteLocator(kind="css", value=selector, name=None)
 
-    async def wait_for_selector(
-        self, selector: str, *, timeout: float = 0
-    ) -> RemoteLocator:
+    async def wait_for_selector(self, selector: str, *, timeout: float = 0) -> RemoteLocator:
         # The userscript has no explicit wait_for_selector — it resolves
         # selectors on demand. We return the locator; visibility is checked
         # separately via is_visible.
@@ -298,6 +297,9 @@ class UserscriptBossPage:
                 selector_kind=locator.kind,
                 selector_value=locator.value,
                 selector_name=locator.name,
+                extra_selectors={
+                    "message_input": COMMUNICATION_MESSAGE_INPUT.value,
+                },
             )
         )
         if not result.success:
@@ -311,11 +313,24 @@ class UserscriptBossPage:
         :func:`classify_communication_result`) decides the classification —
         the userscript does **not** classify.
 
+        The 3 marker selector groups are sent via ``extra_selectors`` so the
+        userscript reads them from the backend instead of hardcoding —
+        eliminating selector drift (B1 root cause). The userscript falls back
+        to its built-in selectors if ``extra_selectors`` is absent (old
+        backend).
+
         Returns ``None`` if the instruction failed, signaling the adapter to
         treat the result as ``unknown``.
         """
         result = await self._send(
-            make_instruction("read_communication_result")
+            make_instruction(
+                "read_communication_result",
+                extra_selectors={
+                    "success": COMMUNICATION_SUCCESS_MARKER.value,
+                    "duplicate": COMMUNICATION_DUPLICATE_MARKER.value,
+                    "error": PLATFORM_ERROR_MARKER.value,
+                },
+            )
         )
         if not result.success:
             return None
@@ -601,9 +616,7 @@ class UserscriptBossAdapter:
     def _prepare_failure(classification: PageClassification) -> PrepareResult:
         outcome = _CLASSIFY_TO_PREPARE.get(classification.outcome, PrepareOutcome.unknown)
         failure_code = (
-            prepare_failure_code(outcome)
-            if outcome != PrepareOutcome.filled_preview
-            else None
+            prepare_failure_code(outcome) if outcome != PrepareOutcome.filled_preview else None
         )
         return PrepareResult(
             outcome=outcome,
@@ -807,6 +820,9 @@ class UserscriptBossAdapter:
         3. **Verify page binding.** Compare current page URL hash with
            ``sanitize_url(ctx.target_resource)``. Mismatch → ``unknown``
            (stale action, never click on the wrong page).
+        3.5. **Selector drift detection.** Probe ``IMMEDIATE_COMMUNICATE_BUTTON``
+           and ``CONTINUE_COMMUNICATE_BUTTON`` visibility. Both invisible →
+           ``failed`` (``selector_drift``) — page markup has changed.
         4. Click "立即沟通" (click budget: 1).
         5. Fill the opening message into the chat dialog input.
         6. **Verify page hash unchanged** since step 3 (page hash binding
@@ -869,14 +885,41 @@ class UserscriptBossAdapter:
                     occurred_at=now,
                 )
 
+            # Step 3.5: Selector drift detection — proactively probe the
+            # communicate entry buttons before clicking. If both
+            # IMMEDIATE_COMMUNICATE_BUTTON and CONTINUE_COMMUNICATE_BUTTON are
+            # invisible, the page markup has drifted and we must not guess.
+            # Read-only check (no click/fill); preserves safety invariants.
+            immediate_probe = await page.is_visible(_resolve(page, IMMEDIATE_COMMUNICATE_BUTTON))
+            continue_probe = await page.is_visible(_resolve(page, CONTINUE_COMMUNICATE_BUTTON))
+            if not immediate_probe and not continue_probe:
+                _log.warning(
+                    "boss.userscript.communicate.selector_drift",
+                    immediate_visible=immediate_probe,
+                    continue_visible=continue_probe,
+                )
+                return CommunicationExecuteResult(
+                    outcome=CommunicationOutcome.failed,
+                    failure_code="selector_drift",
+                    message=(
+                        "Selector drift detected: both "
+                        "IMMEDIATE_COMMUNICATE_BUTTON and "
+                        "CONTINUE_COMMUNICATE_BUTTON are invisible. The BOSS "
+                        "page markup may have changed."
+                    ),
+                    diagnostic_reference=sanitize_diagnostic(
+                        "selector_drift_immediate_communicate"
+                    ),
+                    occurred_at=now,
+                )
+
             # Step 4: Click "立即沟通" (or "继续沟通" if the chat was already
             # initiated by a previous execute that failed before sending).
             # If the chat input is already visible, skip the click entirely.
             immediate_locator = _resolve(page, IMMEDIATE_COMMUNICATE_BUTTON)
-            chat_already_open = False
             try:
                 await page.click_immediate_communicate(immediate_locator)
-            except Exception as exc:
+            except Exception:  # noqa: BLE001 — click failure triggers fallback probe
                 # 立即沟通 not found — check whether the chat input is already
                 # visible (a previous execute may have opened the panel) or
                 # whether 继续沟通 is shown (conversation already started).
@@ -893,7 +936,8 @@ class UserscriptBossAdapter:
                     _log.info(
                         "boss.userscript.communicate.chat_already_open",
                     )
-                    chat_already_open = True
+                    # chat_already_open — no action needed; the chat panel is
+                    # already visible so we proceed directly to filling.
                 else:
                     # Try 继续沟通 as a fallback.
                     continue_locator = _resolve(page, CONTINUE_COMMUNICATE_BUTTON)
@@ -907,13 +951,8 @@ class UserscriptBossAdapter:
                         return CommunicationExecuteResult(
                             outcome=CommunicationOutcome.failed,
                             failure_code="immediate_button_missing",
-                            message=(
-                                "Could not find or click the 立即沟通 or 继续沟通"
-                                " button."
-                            ),
-                            diagnostic_reference=sanitize_diagnostic(
-                                "immediate_button_missing"
-                            ),
+                            message=("Could not find or click the 立即沟通 or 继续沟通 button."),
+                            diagnostic_reference=sanitize_diagnostic("immediate_button_missing"),
                             occurred_at=now,
                         )
 
@@ -926,9 +965,7 @@ class UserscriptBossAdapter:
             fill_exc: Exception | None = None
             for _attempt in range(5):
                 try:
-                    await page.fill_opening_message(
-                        message_locator, ctx.opening_message
-                    )
+                    await page.fill_opening_message(message_locator, ctx.opening_message)
                     fill_ok = True
                     break
                 except Exception as exc:
@@ -1021,9 +1058,7 @@ class UserscriptBossAdapter:
             classification = _classify_communication_markers(marker_counts)
             return self._communication_result_from_classification(classification, now)
         except RuntimeError as exc:
-            _log.warning(
-                "boss.userscript.communicate.runtime_error", error=str(exc)
-            )
+            _log.warning("boss.userscript.communicate.runtime_error", error=str(exc))
             return CommunicationExecuteResult(
                 outcome=CommunicationOutcome.unknown,
                 failure_code=communication_failure_code(CommunicationOutcome.unknown),

@@ -146,8 +146,9 @@ do not expose a generic arbitrary-browser-control endpoint.
 - Approval is missing/stale -> `approval_required` or `approval_stale`, no
   browser side effect.
 - Duplicate idempotency key -> return existing terminal result, no new click.
-- CAPTCHA/rate limit/selector drift/unknown send state -> hard stop and manual
-  reconciliation.
+- CAPTCHA/rate limit/unknown send state -> hard stop and manual reconciliation.
+- Selector drift (entry buttons invisible) -> `selector_drift` failure code,
+  hard stop, no click/fill sent. See "Selector Drift Detection" below.
 
 ### 5. Good/Base/Bad Cases
 
@@ -211,3 +212,55 @@ sequence -> userscript returns sanitized terminal result.
 - Do not let a userscript automatically loop through recommended jobs. The
   larger recommendation loop must be backend-orchestrated and gated by the
   one-job pilot metrics.
+
+## Selector Drift Detection
+
+BOSS page markup changes over time. When the entry-point buttons
+(`IMMEDIATE_COMMUNICATE_BUTTON`, `CONTINUE_COMMUNICATE_BUTTON`) are no longer
+visible on a bound job-detail page, the backend must not guess which element to
+click.
+
+### Where
+
+Drift detection lives in the platform adapter's `execute_communication()`
+method, not in the service-layer `prepare_communicate_action()`. The prepare
+step is a pure DB operation (it builds the action record, payload hash, and
+idempotency key) and never touches the browser. Only `execute_communication()`
+talks to the browser via the userscript bridge.
+
+### How
+
+Before clicking 立即沟通, the adapter sends two read-only `check_visible`
+instructions (one per entry button). If **both** are invisible:
+
+- Return `CommunicationOutcome.failed` with `failure_code="selector_drift"`.
+- Set `diagnostic_reference` to a sanitized selector name (e.g.
+  `selector_drift_immediate_communicate`), not a raw CSS string.
+- Do **not** send any `click_immediate_communicate`, `fill_opening_message`, or
+  `send_opening_message` instruction. The flow short-circuits before any
+  side-effecting action.
+
+### Safety
+
+The drift check is read-only (`check_visible` returns `visible: bool` + `count:
+int`, no DOM mutation). It does not violate the semi-auto loop safety
+invariant: execute still requires human confirmation, and the check itself adds
+no new side effects.
+
+### If Only One Button Is Visible
+
+If at least one entry button is visible, the drift check passes and the flow
+proceeds normally. The subsequent `click_immediate_communicate` instruction will
+fail if the wrong button was chosen — that is an ordinary platform failure, not
+a drift event.
+
+### Test Conventions
+
+- `FakeUserscriptChannel` supports 3-tuple lookup keys
+  `(op, selector_value, selector_name)` to disambiguate role selectors that
+  share the same `value` (e.g. both entry buttons are `value="button"`).
+  2-tuple `(op, selector_value)` remains a fallback.
+- Every communicate test whose flow passes Step 3.5 must seed a
+  `check_visible` → `visible=True` entry for `IMMEDIATE_COMMUNICATE_BUTTON` in
+  its `result_map`, otherwise the drift check will short-circuit the flow.
+
