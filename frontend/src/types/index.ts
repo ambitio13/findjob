@@ -584,7 +584,8 @@ export type ExternalActionType =
   | "hr_message"
   | "resume_upload"
   | "profile_fill"
-  | "follow_up_message";
+  | "follow_up_message"
+  | "boss_immediate_communicate";
 
 export type ExternalActionStatus =
   | "draft"
@@ -831,4 +832,55 @@ export interface ReadinessArtifactOut {
 
 export interface ReadinessArtifactListOut {
   items: ReadinessArtifactOut[];
+}
+
+// --- BOSS recommended-job communicate flow ---
+//
+// These types mirror the backend Pydantic schemas in
+// ``backend/app/schemas/boss_recommended_job.py``,
+// ``boss_match_decision.py``, and ``boss_communicate.py``. They back the
+// RecommendedJobPilotPanel which orchestrates the inspect → match → prepare →
+// approve → execute flow for BOSS immediate-communicate.
+
+/** Outcome of a BOSS recommended-job inspect call (mirrors ``InspectStatus``). */
+export type InspectStatus = "ok" | "jd_too_sparse" | "read_failed";
+
+/** Response for ``POST /boss/recommended-jobs/current/inspect``. */
+export interface InspectJobOut {
+  job: JobOut | null;
+  application: ApplicationOut | null;
+  is_new_job: boolean;
+  is_new_application: boolean;
+  inspect_status: InspectStatus;
+  message: string | null;
+  agent_run_id: string | null;
+}
+
+/** Allowed match-decision values (mirrors ``MatchDecision``). */
+export type MatchDecision = "communicate" | "skip" | "needs_review";
+
+/** Response for ``POST /boss/recommended-jobs/{job_id}/match``. */
+export interface MatchDecisionOut {
+  decision: MatchDecision;
+  score: number;
+  reasons: string[];
+  risks: string[];
+  missing_requirements: string[];
+  opening_message: string | null;
+  job_id: string;
+  agent_run_id: string | null;
+  artifact_id: string | null;
+  message: string | null;
+}
+
+/** Response for ``POST /boss/recommended-jobs/{job_id}/communicate/prepare``. */
+export interface CommunicatePrepareOut {
+  action: ApplicationActionOut;
+  message: string;
+}
+
+/** Response for ``POST /boss/recommended-jobs/{job_id}/communicate/{action_id}/execute``. */
+export interface CommunicateExecuteOut {
+  action: ApplicationActionOut;
+  message: string;
 }

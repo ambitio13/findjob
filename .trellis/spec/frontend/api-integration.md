@@ -69,6 +69,18 @@ the sets back to `string`.
   fallback when safe.
 - LLM failures should not erase user input or generated drafts.
 
+## Per-Request Timeouts
+
+The default axios timeout (15s) is too short for endpoints that wait on the
+userscript bridge or model calls. Pass an explicit `timeout` in the request
+config for these cases:
+
+| Endpoint pattern | Timeout | Reason |
+| --- | --- | --- |
+| Userscript bridge reads (inspect, execute) | 120s | Background-tab throttling can delay `setInterval` from 5s to ~60s |
+| Model calls (match) | 60s | LLM inference can exceed 15s |
+| Default (CRUD, status) | 15s | No external dependency |
+
 ## Data Freshness
 
 Invalidate or refresh affected queries after:

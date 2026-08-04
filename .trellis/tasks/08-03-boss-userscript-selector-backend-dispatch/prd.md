@@ -19,36 +19,57 @@
 
 ## Requirements
 
-### R1. 指令携带选择器
+### R1. 指令携带选择器（`extra_selectors` 方案）
 
 `read_communication_result` 指令从后端携带 3 组选择器（success / duplicate / error），
 而非由 userscript 硬编码。具体方案：
 
-- `Instruction` 新增字段或复用现有字段传递多组选择器（需在 `design.md` 中确定方案）
-- 后端在 `execute_communication()` 中从 `selectors.py` 读取
-  `COMMUNICATION_SUCCESS_MARKER`、`COMMUNICATION_DUPLICATE_MARKER`、
-  `PLATFORM_ERROR_MARKER` 的值，放入指令
-- userscript 从指令中读取选择器，用 `querySelectorAllWithTextFilter()` 查询 DOM
+- `Instruction` dataclass 新增 `extra_selectors: dict[str, str] | None = None` 字段
+  - key = marker name（`"success"` / `"duplicate"` / `"error"` / `"message_input"`）
+  - value = CSS selector string（从 `selectors.py` 常量读取）
+- `make_instruction()` 新增 `extra_selectors` 参数
+- `InstructionOut` schema 新增对应字段
+- 后端 `userscript_adapter.py` 中 `read_communication_result` 的 `make_instruction()`
+  调用改为携带 3 组选择器（从 `selectors.py` 读取 `COMMUNICATION_SUCCESS_MARKER`、
+  `COMMUNICATION_DUPLICATE_MARKER`、`PLATFORM_ERROR_MARKER`）
+- `send_opening_message` 的 Enter-key 路径改用 `extra_selectors["message_input"]` 或
+  复用 `selector_value` 字段传 `COMMUNICATION_MESSAGE_INPUT`
+- userscript `read_communication_result` handler 改为从 `ins.extra_selectors` 读取，
+  移除硬编码
+- userscript `send_opening_message` Enter-key 路径改为从 `ins.selector_value` 或
+  `ins.extra_selectors` 读取
 
 ### R2. userscript 移除硬编码
 
 - `boss-userscript.user.js` 中 `read_communication_result` op 不再硬编码任何选择器
+- `send_opening_message` 的 textarea 选择器也改为后端下发
 - 选择器变更只需修改 `selectors.py`，userscript 自动生效
 
 ### R3. 向后兼容
 
-- 旧版 userscript（不读取指令中选择器）应优雅降级或被检测到并提示更新
+- 旧版 userscript（不读取 `extra_selectors`）会 fallback 到硬编码——通过
+  `userscript_version` 心跳字段检测，不匹配时前端提示更新
+
+### R4. JD 提取选择器（已知技术债，本期不处理）
+
+`extractBossRecommendedJobV1`（user.js:175-265）有 10 个 JD 提取选择器完全在 userscript
+侧，后端无对应常量。这属于 P2-2 范围但工作量大，**本期暂不处理**，标注为后续工作。
 
 ## Acceptance Criteria
 
+- [ ] `Instruction` 新增 `extra_selectors` 字段
 - [ ] `read_communication_result` 指令携带 3 组选择器
 - [ ] userscript 从指令中读取选择器，不再硬编码
 - [ ] 修改 `selectors.py` 中的选择器后，userscript 自动使用新选择器（无需改 JS）
+- [ ] `userscript_version` 心跳检测 + 前端更新提示
 - [ ] 全部后端测试通过
 - [ ] ruff clean
 - [ ] `docs/boss-communicate-testing-plan.md` 中 P2-2 标记为已完成
 
 ## Notes
 
-- 需要编写 `design.md` 确定指令携带多组选择器的具体方案（新字段 vs 复用现有字段）。
+- 这是阶段 B 的核心任务，消除 B1 类 bug 的根因（选择器漂移）。
+- `extra_selectors` 字段方案比复用现有 `selector_value` 更灵活，支持一组指令携带
+  多组不同用途的选择器。
 - 参考 `docs/boss-communicate-testing-plan.md` 第 4 节 P2-2。
+

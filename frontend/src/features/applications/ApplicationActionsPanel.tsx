@@ -36,6 +36,7 @@ const ACTION_TYPE_LABEL: Record<ExternalActionType, string> = {
   resume_upload: "简历上传",
   profile_fill: "资料填写",
   follow_up_message: "跟进消息",
+  boss_immediate_communicate: "BOSS 立即沟通",
 };
 
 const STATUS_LABEL: Record<ExternalActionStatus, string> = {

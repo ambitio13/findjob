@@ -47,6 +47,12 @@
 
 ## Notes
 
-- 依赖 P0-2（真实页面验证）通过后开始。
-- 这是手动验证任务，无代码产出。
+- **关键改变**: 不再依赖 curl 手动操作，而是用阶段 A 的半自动 loop 面板来积累：
+  - 每次用半自动 loop 执行 inspect→match→prepare（自动），人工审阅后 execute
+  - 每次 execute 后记录到 `check.jsonl`
+  - 这大幅降低了 dry-run 积累的操作成本
+- 依赖阶段 A（前端 PilotPanel + 半自动 loop）完成后开始。
+- 这是阶段 C 的任务，手动验证类，无代码产出。
 - 记录格式参考 `docs/boss-communicate-testing-plan.md` 第 3 节「验证记录要求」。
+- 通过门槛后才能进入阶段 D（推荐列表全自动大循环，启用 auto-execute）。
+

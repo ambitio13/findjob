@@ -35,6 +35,10 @@ import type {
   PlatformSubmissionPrepareResponse,
   PlatformSubmissionSubmitResponse,
   BridgeStatusResponse,
+  InspectJobOut,
+  MatchDecisionOut,
+  CommunicatePrepareOut,
+  CommunicateExecuteOut,
 } from "@/types";
 
 const baseURL = "/api/v1";
@@ -440,6 +444,97 @@ export async function abortPlatformSubmission(
 export async function getBridgeStatus(): Promise<BridgeStatusResponse> {
   const { data } = await apiClient.get<BridgeStatusResponse>(
     "/userscript-bridge/status",
+  );
+  return data;
+}
+
+// --- BOSS recommended-job communicate flow ---
+//
+// These functions drive the RecommendedJobPilotPanel, which orchestrates the
+// inspect → match → prepare → approve → execute flow for BOSS immediate-
+// communicate. Each endpoint operates on exactly one job/application — there
+// are no batch paths (the backend enforces this invariant).
+
+/**
+ * Inspect the JD on the user's active BOSS browser tab.
+ *
+ * Calls ``POST /boss/recommended-jobs/current/inspect``, which reads the JD
+ * via the userscript bridge and upserts it into a JobPosting (+ApplicationRecord
+ * when ``resumeVersionId`` is supplied).
+ */
+export async function inspectCurrentJob(
+  resumeVersionId: string | null,
+): Promise<InspectJobOut> {
+  const { data } = await apiClient.post<InspectJobOut>(
+    "/boss/recommended-jobs/current/inspect",
+    { resume_version_id: resumeVersionId },
+    // Inspect waits for the userscript to read the JD, which can exceed the
+    // default 15s budget under background-tab throttling.
+    { timeout: 120_000 },
+  );
+  return data;
+}
+
+/**
+ * Run the match-decision model for a BOSS recommended job.
+ *
+ * Calls ``POST /boss/recommended-jobs/{jobId}/match``. This is a pure model
+ * call — no browser side effect. The safety gate may downgrade a
+ * ``communicate`` decision to ``needs_review``.
+ */
+export async function matchJob(
+  jobId: string,
+  resumeVersionId: string,
+): Promise<MatchDecisionOut> {
+  const { data } = await apiClient.post<MatchDecisionOut>(
+    `/boss/recommended-jobs/${jobId}/match`,
+    { resume_version_id: resumeVersionId },
+    // The model call can take longer than the default 15s.
+    { timeout: 60_000 },
+  );
+  return data;
+}
+
+/**
+ * Draft a ``boss_immediate_communicate`` action in ``approval_required`` status.
+ *
+ * Calls ``POST /boss/recommended-jobs/{jobId}/communicate/prepare``. No browser
+ * side effect — this only reads the persisted match artifact and creates an
+ * ApplicationAction row.
+ */
+export async function prepareCommunicate(
+  jobId: string,
+  resumeVersionId: string,
+  matchArtifactId: string,
+): Promise<CommunicatePrepareOut> {
+  const { data } = await apiClient.post<CommunicatePrepareOut>(
+    `/boss/recommended-jobs/${jobId}/communicate/prepare`,
+    {
+      resume_version_id: resumeVersionId,
+      match_artifact_id: matchArtifactId,
+    },
+  );
+  return data;
+}
+
+/**
+ * Execute the approved communicate action (click "立即沟通" + send opening).
+ *
+ * Calls ``POST /boss/recommended-jobs/{jobId}/communicate/{actionId}/execute``.
+ * The action must be ``approved`` first via {@link approveApplicationAction}.
+ * Returns the terminal result (submitted / duplicate / unknown / failed).
+ */
+export async function executeCommunicate(
+  jobId: string,
+  actionId: string,
+  applicationId: string,
+): Promise<CommunicateExecuteOut> {
+  const { data } = await apiClient.post<CommunicateExecuteOut>(
+    `/boss/recommended-jobs/${jobId}/communicate/${actionId}/execute`,
+    { application_id: applicationId },
+    // Execute waits for the userscript to click + send + read markers, which
+    // can exceed the default 15s budget under background-tab throttling.
+    { timeout: 120_000 },
   );
   return data;
 }

@@ -29,6 +29,7 @@ import { ApplicationActionsPanel } from "@/features/applications/ApplicationActi
 import { ArtifactChecklist } from "@/features/applications/ArtifactChecklist";
 import { FailurePanel } from "@/features/applications/FailurePanel";
 import { GuidedSubmitPanel } from "@/features/applications/GuidedSubmitPanel";
+import { RecommendedJobPilotPanel } from "@/features/applications/RecommendedJobPilotPanel";
 import { ReadinessSummary } from "@/features/applications/ReadinessSummary";
 import { SourceSnapshotPanel } from "@/features/applications/SourceSnapshotPanel";
 import {
@@ -443,6 +444,13 @@ function ApplicationDetail({
 
       {/* 7. Guided platform-submit panel (prepare → approve → submit). */}
       <GuidedSubmitPanel application={app} onAfterChange={load} />
+
+      {/* 7b. BOSS recommended-job pilot panel (inspect → match → prepare →
+           approve → execute with optional semi-auto loop). Shown only for BOSS
+           platform applications; the panel itself gates on bridge status. */}
+      {job?.platform === "boss" ? (
+        <RecommendedJobPilotPanel application={app} onAfterChange={load} />
+      ) : null}
 
       {/* 8. Approval preview slot (existing component) */}
       <ApplicationActionsPanel

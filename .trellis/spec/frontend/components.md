@@ -37,3 +37,20 @@ Use Ant Design Pro for operational screens:
 - Do not trigger external platform actions from a plain table row click.
 - Do not hide approval actions inside a generic chat message.
 - Do not duplicate backend decision rules inside display components.
+
+## Semi-Auto Loop Safety
+
+A "semi-auto loop" component (e.g. `RecommendedJobPilotPanel`) may automate
+read-only / side-effect-free steps (inspect, match, prepare) in sequence, but
+**must always stop** before any step with an external side effect (approve,
+execute). This preserves the backend's "execute needs approval" invariant —
+the frontend loop is just serial single-job API calls, not a batch path.
+
+Implementation conventions:
+
+- Use a top-level `Switch` to toggle semi-auto mode; disable it during `busy`.
+- Use a `useRef` dedup key (`${applicationId}:${step}`) to prevent React
+  StrictMode double-firing the same auto-step.
+- Auto-stop (set `semiAuto` to `false`) on any failure or non-`communicate`
+  decision, and surface the reason in an `Alert`.
+
