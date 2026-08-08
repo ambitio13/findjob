@@ -22,3 +22,9 @@ dist/
 .idea/
 .vscode/
 *.swp
+
+# --- Local agent/tool state ---
+.zcode/
+backend/.trellis/
+backend/.zcode/
+backend/AGENTS.md
