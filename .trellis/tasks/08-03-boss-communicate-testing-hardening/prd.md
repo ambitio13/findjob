@@ -26,8 +26,8 @@
 | 真实 BOSS 页面验证（阶段 1-7） | P0-2 | P0 | 手动验证 |
 | JS 测试页（J1-J12） | P1-4 | P1 | 代码 |
 | API 层 failed/unknown 响应测试 | P2-1 | P2 | 代码 |
-| userscript 选择器改为后端下发 | P2-2 | P2 | 代码 |
-| 选择器漂移自动检测 | P2-4 | P2 | 代码 |
+| userscript 选择器改为后端下发（已归档） | P2-2 | P2 | 代码 |
+| 选择器漂移自动检测（已归档） | P2-4 | P2 | 代码 |
 | 前端 RecommendedJobPilotPanel 组件 | P3-1 | P3 | 代码 |
 | 推荐列表大循环 | P3-2 | P3 | 代码 |
 | RealBossAdapter.execute_communication() CDP fallback | P3-3 | P3 | 代码 |
@@ -56,8 +56,8 @@
         │   半自动 loop 为阶段 C 提供 dry-run 积累工具
         │
 阶段 B (可靠): 选择器后端下发 + 漂移检测
-  ├── P2-2 (选择器后端下发) — Instruction 新增 extra_selectors 字段，消除硬编码
-  └── P2-4 (漂移检测) — prepare 阶段 probe_elements 检查关键选择器可见性
+  ├── P2-2 (选择器后端下发) — 已归档，Instruction 新增 extra_selectors 字段
+  └── P2-4 (漂移检测) — 已归档，execute_communication Step 3.5 提前检测 selector_drift
         │
 阶段 C (积累): Dry-run 门槛积累
   └── P3-4 (dry-run 门槛) — 用半自动 loop 积累 10 次无事故，至少 2 次 duplicate

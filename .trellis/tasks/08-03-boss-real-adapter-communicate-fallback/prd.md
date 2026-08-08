@@ -54,5 +54,6 @@ fallback。
 
 ## Notes
 
-- 需要编写 `design.md` 确定 fallback 的触发逻辑和适配器选择策略。
+- `design.md` 已确定 fallback 的触发逻辑和适配器选择策略：不改变 registry 优先级，
+  userscript 仍优先，CDP 只在配置选择 `RealBossAdapter` 时生效。
 - `classify_communication_result()` 在 B2/B3 修复后已是正确的、非死代码的 Python classifier。

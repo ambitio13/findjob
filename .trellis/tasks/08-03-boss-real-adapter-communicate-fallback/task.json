@@ -3,7 +3,7 @@
   "name": "boss-real-adapter-communicate-fallback",
   "title": "RealBossAdapter.execute_communication() CDP fallback",
   "description": "P3-3: 为 communicate 流程实现 CDP fallback",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

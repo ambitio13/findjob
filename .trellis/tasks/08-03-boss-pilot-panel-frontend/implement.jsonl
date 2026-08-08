@@ -1,1 +1,7 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Ant Design Pro component conventions and approval-flow UI patterns for the pilot panel."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Frontend API calling, async status, and error handling rules for inspect/match/prepare/approve/execute."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Local state, reset, and server-state ownership rules for multi-step panels."}
+{"file": ".trellis/spec/frontend/css-layout.md", "reason": "Layout density and responsive behavior requirements for operational UI."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TypeScript contract rules for BOSS response types and UI state."}
+{"file": ".trellis/spec/shared/typescript.md", "reason": "Cross-layer TypeScript naming and nullability conventions."}
+{"file": ".trellis/tasks/archive/2026-08/08-03-boss-jd-read-auto-communicate-agent/design.md", "reason": "Original BOSS JD read + immediate communicate design and safety invariants."}

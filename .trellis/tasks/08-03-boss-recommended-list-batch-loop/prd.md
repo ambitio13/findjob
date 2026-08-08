@@ -19,7 +19,8 @@ approve → execute 闭环，不做推荐列表批量处理。
 
 - 后端新增 `POST /boss/recommended-jobs/batch-loop` 端点
 - 串行遍历推荐列表（受「单活跃 application」不变量约束）
-- 对每个职位执行：inspect → match → prepare → auto-approve（门槛通过后）→ execute
+- 第一阶段对每个职位执行：inspect → match → prepare，停在人工审批前
+- dry-run 门槛通过后，才允许进入 auto-approve / execute 扩展
 - 返回 batch run id，前端轮询进度
 
 ### R2. auto-execute 安全门控
@@ -52,13 +53,13 @@ approve → execute 闭环，不做推荐列表批量处理。
 - [ ] 每个职位结果独立记录
 - [ ] 进度可跟踪（前端批量模式面板）
 - [ ] 支持暂停/恢复
+- [ ] dry-run 门槛未通过时，后端拒绝 `auto_execute`
 - [ ] 全部后端测试通过
 - [ ] ruff / 前端 lint clean
 
 ## Notes
 
-- 这是阶段 D 的任务，**硬前置**：阶段 C（10 次 dry-run 无事故）必须先通过。
-- 渐进式方案：先实现半自动批量（prepare 后停），再实现全自动批量（门槛通过后）。
+- 这是阶段 D 的任务；全自动 execute 的硬前置是阶段 C（10 次 dry-run 无事故）。
+- 渐进式方案：当前可先实现半自动批量（prepare 后停），全自动批量等门槛通过后再启用。
 - 安全不变量「单活跃 application」意味着批量处理本质上是串行的。
 - 建议编写 `design.md` 确定批量端点 API 设计、连续失败阈值、auto-execute 开关持久化方案。
-

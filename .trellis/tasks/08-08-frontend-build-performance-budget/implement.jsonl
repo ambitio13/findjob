@@ -1,1 +1,6 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Route/page organization for code splitting."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Ensure lazy-loaded pages preserve API behavior and errors."}
+{"file": ".trellis/spec/frontend/css-layout.md", "reason": "Loading fallbacks must preserve layout stability."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TypeScript rules for dynamic imports and route components."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Frontend quality gate after build-performance changes."}
+{"file": ".trellis/spec/shared/dependencies.md", "reason": "Dependency policy before adding bundle analysis packages."}

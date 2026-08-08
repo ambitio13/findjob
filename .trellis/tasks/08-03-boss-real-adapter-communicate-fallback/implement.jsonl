@@ -1,1 +1,8 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Adapter result contract must preserve execute API behavior."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "Approval and user-controlled external action rules for communicate execution."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Map CDP/platform failures to structured hard-stop outcomes."}
+{"file": ".trellis/spec/backend/logging.md", "reason": "Log sanitized diagnostics without leaking browser/page secrets."}
+{"file": ".trellis/spec/backend/performance.md", "reason": "Bound browser timeouts and avoid unbounded waits/retries."}
+{"file": "docs/boss-anti-automation-findings.md", "reason": "CDP constraints: no page.goto, manual navigation, disconnect-only cleanup."}
+{"file": "docs/manual-boss-pilot.md", "reason": "Operational rules for userscript-first and CDP fallback modes."}
+{"file": ".trellis/tasks/archive/2026-08/08-03-boss-jd-read-auto-communicate-agent/design.md", "reason": "Immediate communicate safety invariants and rollout contract."}

@@ -1,1 +1,4 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend tests and lint before observability task completion."}
+{"file": ".trellis/spec/backend/logging.md", "reason": "Verify log field and sensitive-data contracts."}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "Frontend quality gate if failure UI changes."}
+{"file": "docs/e2e-smoke.md", "reason": "Manual smoke/log review criteria for missing_run and traceability."}

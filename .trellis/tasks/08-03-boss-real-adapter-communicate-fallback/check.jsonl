@@ -1,1 +1,4 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/quality.md", "reason": "Backend tests and lint checklist for RealBossAdapter changes."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify all runtime and selector failures become safe outcomes."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Verify no external action bypasses approval/idempotency guards."}
+{"file": "docs/boss-anti-automation-findings.md", "reason": "Confirm implementation does not violate CDP anti-automation constraints."}

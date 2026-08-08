@@ -1,1 +1,8 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Batch-loop endpoints must preserve stable async API contracts and user boundaries."}
+{"file": ".trellis/spec/backend/database.md", "reason": "Durable batch progress, AgentRun reuse, and optional schema decisions."}
+{"file": ".trellis/spec/backend/performance.md", "reason": "Queue, concurrency, timeout, and serial processing constraints for batch work."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "External platform actions must remain approval-gated and user-owned."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Frontend polling and batch status handling rules."}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Batch progress panel and operational controls should follow Ant Design patterns."}
+{"file": ".trellis/tasks/archive/2026-08/08-03-boss-jd-read-auto-communicate-agent/design.md", "reason": "Original no-batch-path safety invariant and rollout plan."}
+{"file": "docs/boss-communicate-testing-plan.md", "reason": "Defines dry-run gate dependency and acceptance constraints."}

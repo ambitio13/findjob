@@ -1,1 +1,7 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/logging.md", "reason": "Primary logging and trace-field rules for backend/worker events."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Failure envelope and hard-stop behavior for bridge and queue errors."}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "Keep API response compatibility while surfacing trace IDs."}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "Ensure logs preserve user/action approval boundaries."}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "Frontend failure surfaces and agent_run_id display behavior."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Cross-layer traceability and sensitive data rules."}
+{"file": "docs/e2e-smoke.md", "reason": "Smoke output/log checks that observability work should improve."}

@@ -1,1 +1,4 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": "docs/manual-boss-pilot.md", "reason": "Operational runbook for real BOSS controlled dry-runs."}
+{"file": "docs/boss-communicate-testing-plan.md", "reason": "Defines stage 1-7 validation and dry-run record requirements."}
+{"file": "docs/e2e-smoke.md", "reason": "Local smoke prerequisite and cleanup guidance before real dry-runs."}
+{"file": ".trellis/tasks/archive/2026-08/08-03-boss-jd-read-auto-communicate-agent/design.md", "reason": "Rollout plan and safety invariants for enabling auto-execute."}
