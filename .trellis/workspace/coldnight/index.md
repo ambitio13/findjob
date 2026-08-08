@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 20
-- **Last Active**: 2026-08-03
+- **Total Sessions**: 21
+- **Last Active**: 2026-08-08
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~909 | Active |
+| `journal-1.md` | ~943 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 21 | 2026-08-08 | BOSS selector-backend-dispatch 收尾 + E2E smoke 与测试隔离质量门 | `7496695`, `0ddfacb` | `wanzhen` |
 | 20 | 2026-08-03 | fix(boss): B1/B2/B3 — 沟通分类三连修 | `782bf09` | `wanzhen` |
 | 19 | 2026-08-03 | Fix P1/P2: :has-text() selector protocol + page binding + task metadata | `5496980` | `wanzhen` |
 | 18 | 2026-08-03 | 油猴桥接 P1 修复 + BOSS JD 读取自动沟通规划任务验收 | `6dbe224`, `95dd382` | `wanzhen` |

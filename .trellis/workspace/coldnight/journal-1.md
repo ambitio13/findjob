@@ -907,3 +907,37 @@ Fixed 4 blocking issues from user review of BOSS auto-communicate pilot. P1: Add
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: BOSS selector-backend-dispatch 收尾 + E2E smoke 与测试隔离质量门
+
+**Date**: 2026-08-08
+**Task**: BOSS selector-backend-dispatch 收尾 + E2E smoke 与测试隔离质量门
+**Branch**: `wanzhen`
+
+### Summary
+
+Task A: 收尾 08-03-boss-userscript-selector-backend-dispatch — extra_selectors 5 层改动（channel/schema/api/adapter/userscript）已提交，46 测试通过。Task B: 开工并完成 08-08-boss-e2e-smoke-test-isolation — (1) conftest.py 增加测试环境 guard（APP_ENV/DATABASE_URL/QUEUE_NAMESPACE 三重校验，在 drop_all 前执行），9 个单元测试覆盖所有分支；(2) scripts/e2e-smoke.sh 一键 E2E smoke 脚本，5 阶段覆盖 Compose 健康、backend /health、frontend /、worker readiness、bridge 协议往返（heartbeat → wrong-tab 204 → probe bounded-failure → result success/failure → 队列排空）、inspect bounded-failure（read_failed）；使用时间戳隔离 QUEUE_NAMESPACE 和 SMOKE_USER_ID，连续两次通过 19/19 检查；(3) docs/e2e-smoke.md 文档含运行说明、失败解释表、清理步骤。质量门：backend pytest 773 passed、ruff clean、frontend lint/type-check/build 全通过（chunk warning 非阻塞）。worker 日志在 smoke 窗口无 missing_run 或跨 namespace 污染。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7496695` | (see git log) |
+| `0ddfacb` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
