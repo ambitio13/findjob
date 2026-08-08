@@ -98,6 +98,14 @@ class Instruction:
     ``max_text_chars`` limits the total text returned by ``read_jd`` (default
     8000). ``selector_profile`` tells the userscript which extraction profile
     to use (e.g. ``boss_recommended_job_v1``).
+
+    ``extra_selectors`` carries additional CSS selector strings keyed by
+    semantic name (e.g. ``"success"``, ``"duplicate"``, ``"error"``,
+    ``"message_input"``). It is used by ``read_communication_result`` (3 marker
+    groups) and ``send_opening_message`` (Enter-key textarea path) so the
+    userscript reads selectors from the backend instead of hardcoding them —
+    eliminating selector drift (B1 root cause). Values are raw CSS selector
+    strings from :mod:`app.platforms.boss.selectors`.
     """
 
     instruction_id: str
@@ -110,6 +118,7 @@ class Instruction:
     expected_url_hash: str | None = None
     max_text_chars: int | None = None
     selector_profile: str | None = None
+    extra_selectors: dict[str, str] | None = None
 
 
 @dataclass
@@ -305,6 +314,7 @@ class UserscriptChannel:
                 or self._active_page.page_url_hash,
                 max_text_chars=instruction.max_text_chars,
                 selector_profile=instruction.selector_profile,
+                extra_selectors=instruction.extra_selectors,
             )
 
         await self._queue.put(instruction)
@@ -449,6 +459,7 @@ def make_instruction(
     expected_url_hash: str | None = None,
     max_text_chars: int | None = None,
     selector_profile: str | None = None,
+    extra_selectors: dict[str, str] | None = None,
 ) -> Instruction:
     """Construct an :class:`Instruction` with a generated id."""
     return Instruction(
@@ -462,6 +473,7 @@ def make_instruction(
         expected_url_hash=expected_url_hash,
         max_text_chars=max_text_chars,
         selector_profile=selector_profile,
+        extra_selectors=extra_selectors,
     )
 
 

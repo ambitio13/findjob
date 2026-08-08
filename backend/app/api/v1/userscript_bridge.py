@@ -100,6 +100,7 @@ async def get_next_instruction(
         expected_url_hash=instruction.expected_url_hash,
         max_text_chars=instruction.max_text_chars,
         selector_profile=instruction.selector_profile,
+        extra_selectors=instruction.extra_selectors,
     )
 
 

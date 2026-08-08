@@ -402,7 +402,7 @@ read_result failure    ✅          -         -        -           -
 | # | 工作项 | 说明 |
 |---|--------|------|
 | P2-1 | 补充 API 层 failed/unknown outcome 响应测试 | 当前 API 层只测了 `submitted`，未测 `failed`/`unknown` 的 HTTP 响应 |
-| P2-2 | userscript 选择器改为后端下发 | 消除硬编码选择器与 `selectors.py` 漂移的风险（B1 根因）；`read_communication_result` 指令携带选择器列表 |
+| P2-2 | ✅ 已完成：userscript 选择器改为后端下发 | `Instruction` 新增 `extra_selectors` 字段，`read_communication_result` 携带 success/duplicate/error 3 组选择器，`send_opening_message` 携带 `message_input` 选择器；userscript 从 `ins.extra_selectors` 读取并 fallback 到硬编码（向后兼容）。消除 B1 根因。 |
 | P2-3 | ✅ 已完成：分类逻辑收归后端 | userscript 返回 `{success_count, duplicate_count, error_count}`，后端用 `_classify_communication_markers()` 做分类决策（符合"后端 agent 决策，油猴执行"原则）。即 B3 修复。 |
 | P2-4 | 选择器漂移自动检测 | 定期或在 prepare 阶段检查关键选择器是否匹配，提前预警 |
 

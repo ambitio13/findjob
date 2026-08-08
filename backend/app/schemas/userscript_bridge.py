@@ -98,6 +98,15 @@ class InstructionOut(BaseModel):
             "structure to extract from (e.g. boss_recommended_job_v1)."
         ),
     )
+    extra_selectors: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Additional CSS selectors keyed by semantic name, used by "
+            "read_communication_result (success/duplicate/error markers) and "
+            "send_opening_message (message_input). Eliminates selector drift "
+            "between the backend and the userscript."
+        ),
+    )
 
 
 class JDResultIn(BaseModel):

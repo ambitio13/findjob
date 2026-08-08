@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BOSS 投递桥接 (投简历 Agent)
 // @namespace    https://github.com/coldnight/tou_jianli_agent
-// @version      0.3.1
-// @description  Tampermonkey userscript that executes backend-issued instructions on the BOSS直聘 page. No CDP signature, no hard-coded selectors — the backend sends everything.
+// @version      0.4.0
+// @description  Tampermonkey userscript that executes backend-issued instructions on the BOSS直聘 page. No CDP signature. Selectors (including marker groups) are sent from the backend via extra_selectors.
 // @author       tou_jianli_agent
 // @match        https://www.zhipin.com/*
 // @match        https://zhipin.com/*
@@ -599,12 +599,19 @@
         // to send the message. If that fails (no textarea found), we fall back
         // to clicking any element matched by the CSS selector.
         //
+        // The textarea selector is sent from the backend via
+        // ins.extra_selectors.message_input (sourced from
+        // COMMUNICATION_MESSAGE_INPUT in selectors.py) so the userscript does
+        // not maintain its own copy. Fallback to a hardcoded selector for
+        // backward compatibility with older backends.
+        //
         // Strategy:
         //   1. Find the chat textarea, focus it, dispatch Enter keydown+keyup.
         //   2. If no textarea found, click the first visible matched element.
-        const textarea = document.querySelector(
-          ".edit-area textarea, .chat-message textarea, .chat-input textarea, [class*='chat'] textarea",
-        );
+        const msgInputSel =
+          (ins.extra_selectors && ins.extra_selectors.message_input) ||
+          ".edit-area textarea, .chat-message textarea, .chat-input textarea, [class*='chat'] textarea";
+        const textarea = document.querySelector(msgInputSel);
         if (textarea) {
           textarea.focus();
           // Dispatch a realistic Enter key sequence (keydown → keypress → keyup).
@@ -648,25 +655,25 @@
         // classifies the result (see _classify_communication_markers in
         // userscript_adapter.py). The userscript does NOT decide the outcome.
         //
-        // The selector strings must stay in sync with the selectors.py
-        // constants (COMMUNICATION_SUCCESS_MARKER,
-        // COMMUNICATION_DUPLICATE_MARKER, PLATFORM_ERROR_MARKER). We use
-        // querySelectorAllWithTextFilter instead of native querySelectorAll
-        // because the selectors contain Playwright-only ``:has-text()``
-        // pseudo-selectors that would throw a DOMException in native CSS.
-        const successEls = querySelectorAllWithTextFilter(
-          ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), .chat-content .message-item:not(.pending), .chat-message:has-text('发送成功'), [class*='message']:has-text('已发送')",
-        );
-        const duplicateEls = querySelectorAllWithTextFilter(
-          ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通'), [class*='btn']:has-text('继续沟通'), [class*='operate']:has-text('继续沟通')",
-        );
-        // Must stay in sync with PLATFORM_ERROR_MARKER in
-        // backend/app/platforms/boss/selectors.py. Hardcoded here because
-        // userscript does not yet receive selectors from the backend (see
-        // roadmap P2-2 in docs/boss-communicate-testing-plan.md).
-        const errorEls = querySelectorAllWithTextFilter(
-          ".error-tip, .error-content, .upload-error",
-        );
+        // The 3 marker selector groups are sent from the backend via
+        // ins.extra_selectors (sourced from COMMUNICATION_SUCCESS_MARKER,
+        // COMMUNICATION_DUPLICATE_MARKER, PLATFORM_ERROR_MARKER in
+        // selectors.py) so the userscript does not maintain its own copy.
+        // Fallback to hardcoded selectors for backward compatibility with
+        // older backends. We use querySelectorAllWithTextFilter instead of
+        // native querySelectorAll because the selectors contain Playwright-only
+        // ``:has-text()`` pseudo-selectors that would throw a DOMException in
+        // native CSS.
+        const extraSel = ins.extra_selectors || {};
+        const successSel = extraSel.success ||
+          ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), .chat-content .message-item:not(.pending), .chat-message:has-text('发送成功'), [class*='message']:has-text('已发送')";
+        const duplicateSel = extraSel.duplicate ||
+          ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通'), [class*='btn']:has-text('继续沟通'), [class*='operate']:has-text('继续沟通')";
+        const errorSel = extraSel.error ||
+          ".error-tip, .error-content, .upload-error";
+        const successEls = querySelectorAllWithTextFilter(successSel);
+        const duplicateEls = querySelectorAllWithTextFilter(duplicateSel);
+        const errorEls = querySelectorAllWithTextFilter(errorSel);
         result.marker_counts = {
           success_count: successEls.length,
           duplicate_count: duplicateEls.length,
