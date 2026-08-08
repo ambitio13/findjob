@@ -61,15 +61,15 @@ dry-run 门槛继续由现有 P0/P3 子任务承接。
 
 ## Acceptance Criteria
 
-- [ ] 后端测试默认配置新增安全检查：指向非测试 DB 或默认业务队列 namespace 时拒绝执行破坏性 schema 重建。
-- [ ] 后端测试可在隔离 DB + 隔离 queue namespace 下通过，命令文档化。
-- [ ] 新增一键 E2E smoke 入口，并在无真实 BOSS 页面时可稳定完成本地协议链路验证。
-- [ ] Smoke 验证 page_id 绑定与 wrong-tab requeue，避免跨标签页抢任务。
-- [ ] Smoke 验证 inspect API 的 `read_failed` 有界失败路径，包含超时上限。
-- [ ] Smoke 输出关键证据：服务健康、bridge round-trip、inspect outcome、临时资源清理结果。
-- [ ] `docker compose ps` 中 backend、worker、frontend、postgres、redis 都处于可用状态时，smoke 能重复运行两次且不依赖上一次残留状态。
-- [ ] 质量门通过：backend `pytest`、backend `ruff`、frontend `lint`、frontend `type-check`、frontend `build`。
-- [ ] 不新增真实 BOSS 登录、真实沟通、真实投递行为。
+- [x] 后端测试默认配置新增安全检查：指向非测试 DB 或默认业务队列 namespace 时拒绝执行破坏性 schema 重建。
+- [x] 后端测试可在隔离 DB + 隔离 queue namespace 下通过，命令文档化。
+- [x] 新增一键 E2E smoke 入口，并在无真实 BOSS 页面时可稳定完成本地协议链路验证。
+- [x] Smoke 验证 page_id 绑定与 wrong-tab requeue，避免跨标签页抢任务。
+- [x] Smoke 验证 inspect API 的 `read_failed` 有界失败路径，包含超时上限。
+- [x] Smoke 输出关键证据：服务健康、bridge round-trip、inspect outcome、临时资源清理结果。
+- [x] `docker compose ps` 中 backend、worker、frontend、postgres、redis 都处于可用状态时，smoke 能重复运行两次且不依赖上一次残留状态。
+- [x] 质量门通过：backend `pytest`（773 passed）、backend `ruff`、frontend `lint`、frontend `type-check`、frontend `build`。
+- [x] 不新增真实 BOSS 登录、真实沟通、真实投递行为。
 
 ## Notes
 
@@ -82,3 +82,9 @@ dry-run 门槛继续由现有 P0/P3 子任务承接。
   - `backend/app/api/v1/boss_recommended_jobs.py`
   - `docker-compose.yml`
 - 本任务不要求解决 frontend chunk size 警告；该项作为后续性能债记录。
+
+## Cross-Cutting Quality Gate Note
+
+本任务是**横切质量门**，不计入原 9 项业务路线图（P0–P3），但阻塞后续大规模自动化。
+它为 `08-03-boss-communicate-testing-hardening` 及其子任务提供可重复执行的基础验收机制：
+任何后续 BOSS bridge/selector/inspect 改动都应先通过 `./scripts/e2e-smoke.sh` 再合并。

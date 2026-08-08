@@ -2,36 +2,36 @@
 
 ## Ordered Checklist
 
-- [ ] 读取实现前规范：shared `code-quality.md`、`dependencies.md`；backend `quality.md`、
+- [x] 读取实现前规范：shared `code-quality.md`、`dependencies.md`；backend `quality.md`、
   `database.md`、`performance.md`、`logging.md`、`api-contracts.md`、`authentication.md`；
   frontend `quality.md`、`api-integration.md`。
-- [ ] 在 `backend/app/tests/conftest.py` 增加测试配置 guard：
+- [x] 在 `backend/app/tests/conftest.py` 增加测试配置 guard：
   - `APP_ENV` 必须是 `test`。
   - `DATABASE_URL` 必须显式指向测试库。
   - `QUEUE_NAMESPACE` 必须显式测试化且不能是 `job-search-agent`。
   - guard 在 `Base.metadata.drop_all()` 前执行。
-- [ ] 补充后端测试，覆盖危险 DB/queue 配置会快速失败，安全测试配置继续通过。
-- [ ] 设计 smoke 入口，优先新增 `scripts/e2e-smoke.sh`；必要时新增小型 Python helper 处理 JSON 和轮询。
-- [ ] smoke 启动/检查 Compose 服务：
+- [x] 补充后端测试，覆盖危险 DB/queue 配置会快速失败，安全测试配置继续通过。
+- [x] 设计 smoke 入口，优先新增 `scripts/e2e-smoke.sh`；必要时新增小型 Python helper 处理 JSON 和轮询。
+- [x] smoke 启动/检查 Compose 服务：
   - `docker compose up -d --build`
   - `docker compose ps`
   - backend `/api/v1/health`
   - frontend `/`
   - worker readiness 证据
-- [ ] smoke 使用隔离 DB 和隔离 `QUEUE_NAMESPACE`，并在输出中打印实际使用的 DB/namespace。
-- [ ] smoke 跑 bridge 协议：
+- [x] smoke 使用隔离 DB 和隔离 `QUEUE_NAMESPACE`，并在输出中打印实际使用的 DB/namespace。
+- [x] smoke 跑 bridge 协议：
   - heartbeat
   - probe
   - wrong-tab `204`
   - correct-tab instruction
   - result success
   - result failure/error path
-- [ ] smoke 跑 inspect bounded-failure：
+- [x] smoke 跑 inspect bounded-failure：
   - `POST /api/v1/boss/recommended-jobs/current/inspect`
   - 期望 `inspect_status=read_failed`
   - 输出并尽量清理 `SMOKE_USER_ID` 相关持久记录
-- [ ] 增加文档说明：如何运行 smoke、如何解释失败、如何清理残留。
-- [ ] 更新父任务 PRD，标注该任务是横切质量门，不计入原 9 项业务路线图但阻塞后续大规模自动化。
+- [x] 增加文档说明：如何运行 smoke、如何解释失败、如何清理残留。
+- [x] 更新父任务 PRD，标注该任务是横切质量门，不计入原 9 项业务路线图但阻塞后续大规模自动化。
 
 ## Validation Commands
 
