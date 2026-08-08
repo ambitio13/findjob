@@ -247,13 +247,32 @@ curl -X POST http://localhost:8000/api/v1/applications/<application_id>/platform
 
 ### 8.1 前置条件
 
-- 油猴脚本已安装且已连接（模式 A），或 CDP 适配器已启用（模式 B）。
+- **推荐**：油猴脚本已安装且已连接（模式 A）。油猴脚本桥接是 communicate 的
+  首选路径——它在页面自身的 JS 上下文中执行，不会触发 BOSS 的 CDP 协议层自动
+  化检测。
+- **fallback only**：CDP 适配器（模式 B）作为油猴脚本不可用时的降级路径。
+  CDP 模式有更严格的安全不变式（见下文），仅在用户确认愿意承担风控风险时启用。
 - 已通过 JD 读取 + 匹配决策生成了 `boss_match_decision` artifact，且
   `decision == "communicate"`，`opening_message` 非空。
 - 已调用 `POST /api/v1/boss/recommended-jobs/{job_id}/communicate/prepare`
   草拟了 `boss_immediate_communicate` action（状态 `approval_required`）。
 - 用户已手动审批该 action（`POST /applications/{application_id}/actions/
   {action_id}/approve`）。
+
+> **CDP fallback 安全不变式**（`RealBossAdapter.execute_communication`）：
+>
+> - **永不调用 `page.goto`**。CDP 模式只复用用户当前已打开的 Chrome 标签页，
+>   通过 `connect_over_cdp` 连接，退出时只断开 CDP 客户端、**永不关闭**用户的
+>   Chrome context。
+> - **至多一次点击「立即沟通」+ 一次点击「发送」**（`assert click_count <= 1
+>   and send_count <= 1`）。
+> - **点击前**与**填充消息后**各校验一次页面 URL hash 与 `target_resource`
+>   一致；不一致即返回 `unknown`（`page_binding_mismatch`），**不点击**。
+> - 「继续沟通」可见而「立即沟通」不可见 → `duplicate`（对话已存在），不点击
+>   不发送。两者都不可见 → `failed`（`selector_drift`），硬停止。
+> - 结果分类与油猴脚本路径一致：`succeeded` / `duplicate` / `failed` /
+>   `unknown`，优先级 success → duplicate → error → unknown。
+> - 结果中**不包含**原始 URL、cookie、token、raw HTML 或消息原文。
 
 ### 8.2 执行立即沟通
 
@@ -272,6 +291,8 @@ curl -X POST \
 - [ ] 适配器**至多点击一次** `click_immediate_communicate`（「立即沟通」按钮）。
 - [ ] 适配器**至多点击一次** `send_opening_message`（聊天对话框「发送」按钮）。
 - [ ] 点击前页面 URL hash 与 `target_resource` 一致；填充消息后再次验证。
+- [ ] **CDP fallback only**：适配器未调用 `page.goto`，未关闭用户 Chrome
+      context（仅断开 CDP 客户端）。
 - [ ] `succeeded` → `external_result_status == "submitted"`（confirmed send）。
 - [ ] `duplicate` → `external_result_status == "duplicate"`（对话已存在，非失败）。
 - [ ] `unknown` → `external_result_status == "unknown"`（硬停止，不自动重试）。

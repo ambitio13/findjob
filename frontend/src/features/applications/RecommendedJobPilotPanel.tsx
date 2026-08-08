@@ -129,6 +129,11 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
   // error from the last step (cleared on next action)
   const [error, setError] = useState<string | null>(null);
 
+  // agent_run_id from the last step result, surfaced in the error UI so the
+  // user can locate the run in logs / agent-run detail without exposing HR
+  // message content or other sensitive payloads.
+  const [lastAgentRunId, setLastAgentRunId] = useState<string | null>(null);
+
   const [messageApi, contextHolder] = message.useMessage();
 
   // Resume version is required for match/prepare. Fall back to the
@@ -168,6 +173,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
     setExecuteResult(null);
     setOpeningMessage("");
     setError(null);
+    setLastAgentRunId(null);
   }, [application.id]);
 
   // --- semi-auto loop driver -------------------------------------------
@@ -212,9 +218,11 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
   const handleInspect = useCallback(async () => {
     setBusy(true);
     setError(null);
+    setLastAgentRunId(null);
     try {
       const result = await inspectCurrentJob(resumeVersionId);
       setInspectResult(result);
+      if (result.agent_run_id) setLastAgentRunId(result.agent_run_id);
       if (result.inspect_status === "ok" && result.job) {
         setStep("match");
         messageApi.success("职位读取成功");
@@ -242,17 +250,27 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
     }
     setBusy(true);
     setError(null);
+    setLastAgentRunId(null);
     try {
       const result = await matchJob(jobId, resumeVersionId);
       setMatchResult(result);
+      if (result.agent_run_id) setLastAgentRunId(result.agent_run_id);
       if (result.opening_message) {
         setOpeningMessage(result.opening_message);
       }
       if (result.decision === "communicate") {
         setStep("prepare");
         messageApi.success("匹配通过，建议沟通");
+      } else if (result.decision === "needs_review") {
+        // needs_review: advance to the prepare step so the user can review
+        // risks/missing requirements and manually decide whether to prepare,
+        // but stop the semi-auto loop — prepare must be a conscious human
+        // action when the match is not a clear "communicate".
+        setStep("prepare");
+        if (semiAuto) setSemiAuto(false);
+        messageApi.info("匹配结果为「需人工审阅」，请查看风险与缺失项后决定是否继续");
       } else {
-        // skip or needs_review — stop the loop
+        // skip — hard stop, do not proceed.
         setStep("match");
         if (semiAuto) setSemiAuto(false);
         messageApi.info(`匹配结果：${DECISION_LABEL[result.decision] ?? result.decision}`);
@@ -272,6 +290,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
     }
     setBusy(true);
     setError(null);
+    setLastAgentRunId(null);
     try {
       const result = await prepareCommunicate(
         jobId,
@@ -312,6 +331,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
     if (!jobId || !actionId || !applicationId) return;
     setBusy(true);
     setError(null);
+    setLastAgentRunId(null);
     try {
       const result = await executeCommunicate(jobId, actionId, applicationId);
       setExecuteResult(result);
@@ -342,6 +362,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
     setExecuteResult(null);
     setOpeningMessage("");
     setError(null);
+    setLastAgentRunId(null);
     autoFiredRef.current = "";
   }, []);
 
@@ -406,7 +427,16 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
             type="error"
             showIcon
             message="操作失败"
-            description={error}
+            description={
+              <Space direction="vertical" size={4}>
+                <Text>{error}</Text>
+                {lastAgentRunId ? (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    追踪 ID：<Text code>{lastAgentRunId}</Text>（可在 Agent Runs 详情中查看）
+                  </Text>
+                ) : null}
+              </Space>
+            }
             closable
             onClose={() => setError(null)}
           />
@@ -437,7 +467,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
         )}
 
         {/* Step 3+4: Prepare & Approve */}
-        {(step === "prepare" || step === "approve" || prepareResult) && matchResult?.decision === "communicate" && (
+        {(step === "prepare" || step === "approve" || prepareResult) && (matchResult?.decision === "communicate" || matchResult?.decision === "needs_review") && (
           <PrepareApproveStepCard
             prepareResult={prepareResult}
             step={step}
@@ -660,7 +690,29 @@ function MatchStepCard({
               <Alert type="info" showIcon message={result.message} />
             ) : null}
 
-            {result.decision === "communicate" && openingMessage ? (
+            {result.decision === "needs_review" ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="需人工审阅"
+                description="匹配评分一般或存在风险项。你可以查看上方风险与缺失要求，确认后点击「准备沟通」继续，或放弃此职位。"
+              />
+            ) : null}
+
+            {result.missing_requirements.length > 0 ? (
+              <div>
+                <Text strong>缺失要求：</Text>
+                <ul style={{ margin: "4px 0", paddingLeft: 20 }}>
+                  {result.missing_requirements.map((r, i) => (
+                    <li key={i}>
+                      <Text type="danger">{r}</Text>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {(result.decision === "communicate" || result.decision === "needs_review") && openingMessage ? (
               <div>
                 <Text strong>开场白（可编辑）：</Text>
                 <Input.TextArea

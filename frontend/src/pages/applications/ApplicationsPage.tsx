@@ -22,7 +22,10 @@ import {
   appendTimelineNote,
   getApplication,
   getJob,
+  getResume,
+  inspectCurrentJob,
   listApplications,
+  listResumes,
   updateApplicationStatus,
 } from "@/api/client";
 import { ApplicationActionsPanel } from "@/features/applications/ApplicationActionsPanel";
@@ -32,6 +35,7 @@ import { GuidedSubmitPanel } from "@/features/applications/GuidedSubmitPanel";
 import { RecommendedJobPilotPanel } from "@/features/applications/RecommendedJobPilotPanel";
 import { ReadinessSummary } from "@/features/applications/ReadinessSummary";
 import { SourceSnapshotPanel } from "@/features/applications/SourceSnapshotPanel";
+import { useBridgeStatus } from "@/features/applications/useBridgeStatus";
 import {
   APP_STATUS_COLOR,
   APP_STATUS_LABEL,
@@ -47,6 +51,7 @@ import type {
   ApplicationTimelineEventOut,
   JobOut,
   ReadinessArtifactOut,
+  ResumeOut,
 } from "@/types";
 
 const { Text } = Typography;
@@ -56,6 +61,169 @@ function formatTime(ts: string | null): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return ts;
   return d.toLocaleString();
+}
+
+/**
+ * Independent BOSS inspect entry point. Provides a way to trigger
+ * ``inspectCurrentJob`` without requiring an existing application record,
+ * breaking the chicken-and-egg dependency between PilotPanel and the
+ * application list.
+ *
+ * When the userscript bridge is connected and a resume is selected, the user
+ * clicks "读取当前职位" to read the JD on the current BOSS job page. On
+ * success the parent receives the new application id via ``onInspected``.
+ */
+function BossInspectEntry({
+  onInspected,
+}: {
+  onInspected: (applicationId: string) => void;
+}) {
+  const { status: bridgeStatus, loading: bridgeLoading } =
+    useBridgeStatus(true);
+  const [resumes, setResumes] = useState<ResumeOut[]>([]);
+  // Map resume id → latest version id (needed for inspect's resume_version_id).
+  const [resumeVersionMap, setResumeVersionMap] = useState<
+    Record<string, string>
+  >({});
+  const [selectedResumeId, setSelectedResumeId] = useState<string | null>(null);
+  const [resumeLoading, setResumeLoading] = useState(false);
+  const [inspecting, setInspecting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setResumeLoading(true);
+    listResumes(1, 50)
+      .then(async (list) => {
+        if (cancelled) return;
+        const details = await Promise.all(
+          list.items.map((r) => getResume(r.id)),
+        );
+        if (cancelled) return;
+        setResumes(list.items);
+        const versionMap: Record<string, string> = {};
+        for (const d of details) {
+          if (d.latest_version) {
+            versionMap[d.id] = d.latest_version.id;
+          }
+        }
+        setResumeVersionMap(versionMap);
+        // Auto-select if there is exactly one resume with a latest version.
+        if (list.items.length === 1) {
+          setSelectedResumeId(list.items[0].id);
+        }
+      })
+      .catch(() => {
+        // Resume fetch failure is non-fatal; user can upload via /resumes.
+      })
+      .finally(() => {
+        if (!cancelled) setResumeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const connected = bridgeStatus?.connected ?? false;
+  const resumeVersionId = selectedResumeId
+    ? resumeVersionMap[selectedResumeId] ?? null
+    : null;
+
+  const handleInspect = async () => {
+    if (!resumeVersionId) {
+      void message.warning("请先选择一份简历");
+      return;
+    }
+    setInspecting(true);
+    try {
+      const result = await inspectCurrentJob(resumeVersionId);
+      if (result.inspect_status === "ok" && result.application) {
+        void message.success("已读取当前职位并创建投递记录");
+        onInspected(result.application.id);
+      } else if (result.inspect_status === "jd_too_sparse" && result.application) {
+        void message.warning(
+          result.message ?? "职位描述过于简单，已创建记录但建议补充信息",
+        );
+        onInspected(result.application.id);
+      } else {
+        // read_failed — include the agent_run_id so the user can locate the
+        // run in logs / Agent Runs detail.
+        const runHint = result.agent_run_id
+          ? `（追踪 ID：${result.agent_run_id}）`
+          : "";
+        void message.error(
+          `${result.message ?? "读取职位失败，请确认 BOSS 页面已打开"}${runHint}`,
+        );
+      }
+    } catch (err) {
+      void message.error(apiErrorMessage(err));
+    } finally {
+      setInspecting(false);
+    }
+  };
+
+  return (
+    <Card title="BOSS 职位读取" size="small">
+      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        {/* Bridge status */}
+        {bridgeLoading && !bridgeStatus ? (
+          <Text type="secondary">正在检测 userscript 连接状态…</Text>
+        ) : connected ? (
+          <Alert
+            type="success"
+            showIcon
+            message="userscript 已连接"
+            description={
+              bridgeStatus?.page_title
+                ? `当前页面：${bridgeStatus.page_title}`
+                : "已连接到 BOSS 页面"
+            }
+          />
+        ) : (
+          <Alert
+            type="warning"
+            showIcon
+            message="userscript 未连接"
+            description={
+              <span>
+                请先安装 userscript 并打开 BOSS 职位页面。安装说明见{" "}
+                <Link to="/settings">设置</Link>。
+              </span>
+            }
+          />
+        )}
+
+        {/* Resume selection */}
+        {resumeLoading ? (
+          <Spin size="small" />
+        ) : resumes.length === 0 ? (
+          <Text type="secondary">
+            还没有简历。请先到 <Link to="/resumes">简历管理</Link> 上传简历。
+          </Text>
+        ) : (
+          <Select
+            style={{ minWidth: 320 }}
+            placeholder="选择简历"
+            value={selectedResumeId ?? undefined}
+            onChange={setSelectedResumeId}
+            options={resumes.map((r) => ({
+              label: `${r.filename}${r.latest_version_no ? ` (v${r.latest_version_no})` : ""}`,
+              value: r.id,
+            }))}
+          />
+        )}
+
+        {/* Inspect button */}
+        <Button
+          type="primary"
+          loading={inspecting}
+          disabled={!connected || !resumeVersionId}
+          onClick={handleInspect}
+        >
+          读取当前职位
+        </Button>
+      </Space>
+    </Card>
+  );
 }
 
 /**
@@ -88,18 +256,32 @@ export function ApplicationsPage() {
       : null;
   }, [location.state]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await listApplications(1, 50);
-      setApplications(data.items);
-      setSelectedId((prev) => prev ?? data.items[0]?.id ?? null);
-    } catch (err) {
-      messageApi.warning(apiErrorMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [messageApi]);
+  const refresh = useCallback(
+    async (forceSelectId?: string | null) => {
+      setLoading(true);
+      try {
+        const data = await listApplications(1, 50);
+        setApplications(data.items);
+        if (forceSelectId) {
+          setSelectedId(forceSelectId);
+        } else {
+          setSelectedId((prev) => prev ?? data.items[0]?.id ?? null);
+        }
+      } catch (err) {
+        messageApi.warning(apiErrorMessage(err));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [messageApi],
+  );
+
+  const handleInspected = useCallback(
+    (appId: string) => {
+      void refresh(appId);
+    },
+    [refresh],
+  );
 
   useEffect(() => {
     void refresh();
@@ -120,6 +302,7 @@ export function ApplicationsPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {contextHolder}
+      <BossInspectEntry onInspected={handleInspected} />
       <Card title="投递记录">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           {loading && applications.length === 0 ? (

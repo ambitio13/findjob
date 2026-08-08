@@ -203,8 +203,10 @@ def prepare_communicate_action(
         _log.warning(
             "boss_communicate.artifact_parse_failed",
             user_id=current_user.id,
+            job_id=job_id,
             artifact_id=match_artifact_id,
-            error=str(exc),
+            failure_code="artifact_parse_failed",
+            error_type=type(exc).__name__,
         )
         raise HTTPException(
             status_code=422,
@@ -696,8 +698,10 @@ async def run_boss_communicate_execute(
         "boss_communicate.completed",
         user_id=current_user.id,
         application_id=record.id,
+        job_id=job_id,
         action_id=action.id,
         outcome=result.outcome.value,
+        failure_code=result.failure_code,
         idempotency_key=idempotency_key,
     )
     return record, action, False

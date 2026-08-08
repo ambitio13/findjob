@@ -24,6 +24,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.repositories import agent_run_repo
 from app.db.session import SessionLocal
@@ -37,6 +38,25 @@ from app.queue.payloads import (
 )
 
 _log = get_logger("app.queue.handlers")
+
+
+def _queue_namespace() -> str:
+    """Return the active queue namespace for log enrichment.
+
+    Lets ``missing_run`` / error logs distinguish test pollution, DB
+    inconsistency, and real business failures by namespace (prd.md R3).
+    """
+    return get_settings().queue_namespace
+
+
+def _job_id_from_payload(payload: Any) -> str | None:
+    """Extract ``job_id`` from a typed payload, if it carries one.
+
+    Not every workflow references a ``JobPosting`` (e.g. resume fact
+    extraction, smoke), so ``None`` is a valid answer and must not be treated
+    as a logging error.
+    """
+    return getattr(payload, "job_id", None)
 
 
 def fail_run(agent_run_id: str, *, error: str) -> None:
@@ -83,7 +103,12 @@ async def smoke(
     with SessionLocal() as db:
         run = agent_run_repo.get_run(db, payload.agent_run_id)
         if run is None:
-            _log.warning("queue.smoke_missing_run", agent_run_id=payload.agent_run_id)
+            _log.warning(
+                "queue.smoke_missing_run",
+                agent_run_id=payload.agent_run_id,
+                workflow_type=payload.workflow_type,
+                queue_namespace=_queue_namespace(),
+            )
             return "missing_run"
         if run.started_at is None:
             run.started_at = datetime.now(UTC)
@@ -98,7 +123,12 @@ async def smoke(
             result={"workflow": "smoke", "user_id": payload.user_id},
         )
         db.commit()
-        _log.info("queue.smoke_succeeded", agent_run_id=payload.agent_run_id)
+        _log.info(
+            "queue.smoke_succeeded",
+            agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
+        )
         return run.id
 
 
@@ -139,6 +169,9 @@ async def jd_paste_parsing(
                 _log.warning(
                     "queue.jd_paste_parsing_missing_run",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
+                    job_id=payload.job_id,
                 )
                 return "missing_run"
 
@@ -147,6 +180,9 @@ async def jd_paste_parsing(
                 _log.warning(
                     "queue.jd_paste_parsing_owner_mismatch",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
+                    job_id=payload.job_id,
                     payload_user=payload.user_id,
                     run_user=run.user_id,
                 )
@@ -165,6 +201,9 @@ async def jd_paste_parsing(
             _log.info(
                 "queue.jd_paste_parsing_completed",
                 agent_run_id=payload.agent_run_id,
+                workflow_type=payload.workflow_type,
+                queue_namespace=_queue_namespace(),
+                job_id=payload.job_id,
                 status=run.status,
             )
             return run.id
@@ -172,6 +211,9 @@ async def jd_paste_parsing(
         _log.warning(
             "queue.jd_paste_parsing_error",
             agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
+            job_id=payload.job_id,
             error_type=type(exc).__name__,
             error=str(exc),
         )
@@ -219,6 +261,8 @@ async def resume_fact_extraction(
                 _log.warning(
                     "queue.resume_fact_extraction_missing_run",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
                 )
                 return "missing_run"
 
@@ -227,6 +271,8 @@ async def resume_fact_extraction(
                 _log.warning(
                     "queue.resume_fact_extraction_owner_mismatch",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
                     payload_user=payload.user_id,
                     run_user=run.user_id,
                 )
@@ -245,12 +291,16 @@ async def resume_fact_extraction(
         _log.info(
             "queue.resume_fact_extraction_completed",
             agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
         )
         return payload.agent_run_id
     except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
         _log.warning(
             "queue.resume_fact_extraction_error",
             agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
             error_type=type(exc).__name__,
             error=str(exc),
         )
@@ -298,6 +348,9 @@ async def resume_aware_jd_analysis(
                 _log.warning(
                     "queue.resume_aware_jd_analysis_missing_run",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
+                    job_id=payload.job_id,
                 )
                 return "missing_run"
 
@@ -306,6 +359,9 @@ async def resume_aware_jd_analysis(
                 _log.warning(
                     "queue.resume_aware_jd_analysis_owner_mismatch",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
+                    job_id=payload.job_id,
                     payload_user=payload.user_id,
                     run_user=run.user_id,
                 )
@@ -325,12 +381,18 @@ async def resume_aware_jd_analysis(
         _log.info(
             "queue.resume_aware_jd_analysis_completed",
             agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
+            job_id=payload.job_id,
         )
         return payload.agent_run_id
     except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
         _log.warning(
             "queue.resume_aware_jd_analysis_error",
             agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
+            job_id=payload.job_id,
             error_type=type(exc).__name__,
             error=str(exc),
         )
@@ -379,6 +441,10 @@ async def readiness_generation(
                 _log.warning(
                     "queue.readiness_generation_missing_run",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
+                    job_id=payload.job_id,
+                    application_id=payload.application_id,
                 )
                 return "missing_run"
 
@@ -387,6 +453,10 @@ async def readiness_generation(
                 _log.warning(
                     "queue.readiness_generation_owner_mismatch",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
+                    job_id=payload.job_id,
+                    application_id=payload.application_id,
                     payload_user=payload.user_id,
                     run_user=run.user_id,
                 )
@@ -408,12 +478,20 @@ async def readiness_generation(
         _log.info(
             "queue.readiness_generation_completed",
             agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
+            job_id=payload.job_id,
+            application_id=payload.application_id,
         )
         return payload.agent_run_id
     except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
         _log.warning(
             "queue.readiness_generation_error",
             agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
+            job_id=payload.job_id,
+            application_id=payload.application_id,
             error_type=type(exc).__name__,
             error=str(exc),
         )
@@ -459,6 +537,10 @@ async def platform_guided_submit_prepare(
                 _log.warning(
                     "queue.platform_prepare_missing_run",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
+                    job_id=payload.job_id,
+                    application_id=payload.application_id,
                 )
                 return "missing_run"
 
@@ -467,6 +549,10 @@ async def platform_guided_submit_prepare(
                 _log.warning(
                     "queue.platform_prepare_owner_mismatch",
                     agent_run_id=payload.agent_run_id,
+                    workflow_type=payload.workflow_type,
+                    queue_namespace=_queue_namespace(),
+                    job_id=payload.job_id,
+                    application_id=payload.application_id,
                     payload_user=payload.user_id,
                     run_user=run.user_id,
                 )
@@ -490,12 +576,20 @@ async def platform_guided_submit_prepare(
         _log.info(
             "queue.platform_prepare_completed",
             agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
+            job_id=payload.job_id,
+            application_id=payload.application_id,
         )
         return payload.agent_run_id
     except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
         _log.warning(
             "queue.platform_prepare_error",
             agent_run_id=payload.agent_run_id,
+            workflow_type=payload.workflow_type,
+            queue_namespace=_queue_namespace(),
+            job_id=payload.job_id,
+            application_id=payload.application_id,
             error_type=type(exc).__name__,
             error=str(exc),
         )

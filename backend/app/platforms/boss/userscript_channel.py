@@ -214,6 +214,7 @@ class UserscriptChannel:
         _log.debug(
             "boss.bridge.heartbeat",
             page_id=page_id,
+            page_url_hash=page_url_hash,
         )
 
     def is_connected(self) -> bool:
@@ -323,6 +324,7 @@ class UserscriptChannel:
             instruction_id=instruction.instruction_id,
             op=instruction.op,
             page_id=instruction.page_id,
+            expected_url_hash=instruction.expected_url_hash,
         )
         return await self._take_result(instruction)
 
@@ -382,6 +384,13 @@ class UserscriptChannel:
                 break
             # Non-matching: re-enqueue for the correct tab.
             skipped.append(instruction)
+            _log.debug(
+                "boss.bridge.instruction_requeued",
+                instruction_id=instruction.instruction_id,
+                op=instruction.op,
+                instruction_page_id=instruction.page_id,
+                requesting_page_id=page_id,
+            )
 
         # Put any skipped instructions back so they aren't lost.
         for ins in reversed(skipped):
@@ -423,6 +432,7 @@ class UserscriptChannel:
             instruction_id=result.instruction_id,
             success=result.success,
             page_id=result.page_id,
+            error=result.error if not result.success else None,
         )
         return True
 
@@ -440,6 +450,14 @@ class UserscriptChannel:
                 return self._results.pop(instruction.instruction_id)
             await asyncio.sleep(0.05)
         # Timeout: the userscript did not respond in time.
+        _log.warning(
+            "boss.bridge.result_timeout",
+            instruction_id=instruction.instruction_id,
+            op=instruction.op,
+            page_id=instruction.page_id,
+            expected_url_hash=instruction.expected_url_hash,
+            timeout_s=RESULT_TIMEOUT_S,
+        )
         return InstructionResult(
             instruction_id=instruction.instruction_id,
             success=False,

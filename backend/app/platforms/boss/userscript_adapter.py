@@ -464,6 +464,11 @@ class UserscriptBossAdapter:
 
         if not self._channel.is_connected():
             self._channel.clear()
+            _log.warning(
+                "boss.userscript.prepare.bridge_not_connected",
+                application_id=ctx.application_id,
+                failure_code=prepare_failure_code(PrepareOutcome.unknown),
+            )
             return PrepareResult(
                 outcome=PrepareOutcome.unknown,
                 failure_code=prepare_failure_code(PrepareOutcome.unknown),
@@ -477,7 +482,12 @@ class UserscriptBossAdapter:
         try:
             await self._channel.set_active_application(ctx.application_id)
         except RuntimeError as exc:
-            _log.warning("boss.userscript.prepare.active_conflict", error=str(exc))
+            _log.warning(
+                "boss.userscript.prepare.active_conflict",
+                application_id=ctx.application_id,
+                failure_code="active_conflict",
+                error_type=type(exc).__name__,
+            )
             return PrepareResult(
                 outcome=PrepareOutcome.unknown,
                 failure_code=prepare_failure_code(PrepareOutcome.unknown),
@@ -495,6 +505,8 @@ class UserscriptBossAdapter:
             if current_hash != target_hash:
                 _log.warning(
                     "boss.userscript.prepare.page_mismatch",
+                    application_id=ctx.application_id,
+                    failure_code="page_mismatch",
                     target_hash=target_hash,
                     current_hash=current_hash,
                 )
@@ -513,7 +525,12 @@ class UserscriptBossAdapter:
                 return self._prepare_failure(classification)
             return await self._fill_and_snapshot(page, ctx, classification)
         except RuntimeError as exc:
-            _log.warning("boss.userscript.prepare.runtime_error", error=str(exc))
+            _log.warning(
+                "boss.userscript.prepare.runtime_error",
+                application_id=ctx.application_id,
+                failure_code=prepare_failure_code(PrepareOutcome.unknown),
+                error_type=type(exc).__name__,
+            )
             return PrepareResult(
                 outcome=PrepareOutcome.unknown,
                 failure_code=prepare_failure_code(PrepareOutcome.unknown),
@@ -539,7 +556,12 @@ class UserscriptBossAdapter:
             try:
                 await page.fill(message_locator, ctx.outgoing_text)
             except Exception as exc:
-                _log.warning("boss.userscript.prepare.fill_message_failed", error=str(exc))
+                _log.warning(
+                    "boss.userscript.prepare.fill_message_failed",
+                    application_id=ctx.application_id,
+                    failure_code=prepare_failure_code(PrepareOutcome.selector_drift),
+                    error_type=type(exc).__name__,
+                )
                 return PrepareResult(
                     outcome=PrepareOutcome.selector_drift,
                     failure_code=prepare_failure_code(PrepareOutcome.selector_drift),
@@ -653,6 +675,11 @@ class UserscriptBossAdapter:
 
         if not self._channel.is_connected():
             self._channel.clear()
+            _log.warning(
+                "boss.userscript.submit.bridge_not_connected",
+                application_id=ctx.application_id,
+                failure_code=submit_failure_code(SubmitOutcome.unknown),
+            )
             return SubmitResult(
                 outcome=SubmitOutcome.unknown,
                 failure_code=submit_failure_code(SubmitOutcome.unknown),
@@ -664,7 +691,12 @@ class UserscriptBossAdapter:
         try:
             await self._channel.set_active_application(ctx.application_id)
         except RuntimeError as exc:
-            _log.warning("boss.userscript.submit.active_conflict", error=str(exc))
+            _log.warning(
+                "boss.userscript.submit.active_conflict",
+                application_id=ctx.application_id,
+                failure_code="active_conflict",
+                error_type=type(exc).__name__,
+            )
             return SubmitResult(
                 outcome=SubmitOutcome.unknown,
                 failure_code=submit_failure_code(SubmitOutcome.unknown),
@@ -683,6 +715,8 @@ class UserscriptBossAdapter:
             if current_hash != target_hash:
                 _log.warning(
                     "boss.userscript.submit.page_mismatch",
+                    application_id=ctx.application_id,
+                    failure_code="page_mismatch",
                     target_hash=target_hash,
                     current_hash=current_hash,
                 )
@@ -711,7 +745,12 @@ class UserscriptBossAdapter:
                 try:
                     await page.fill(message_locator, message_field.value)
                 except Exception as exc:
-                    _log.warning("boss.userscript.submit.refill_failed", error=str(exc))
+                    _log.warning(
+                        "boss.userscript.submit.refill_failed",
+                        application_id=ctx.application_id,
+                        failure_code=submit_failure_code(SubmitOutcome.platform_failure),
+                        error_type=type(exc).__name__,
+                    )
                     return SubmitResult(
                         outcome=SubmitOutcome.platform_failure,
                         failure_code=submit_failure_code(SubmitOutcome.platform_failure),
@@ -725,7 +764,12 @@ class UserscriptBossAdapter:
             try:
                 await page.click(submit_locator)
             except Exception as exc:
-                _log.warning("boss.userscript.submit.click_failed", error=str(exc))
+                _log.warning(
+                    "boss.userscript.submit.click_failed",
+                    application_id=ctx.application_id,
+                    failure_code=submit_failure_code(SubmitOutcome.platform_failure),
+                    error_type=type(exc).__name__,
+                )
                 return SubmitResult(
                     outcome=SubmitOutcome.platform_failure,
                     failure_code=submit_failure_code(SubmitOutcome.platform_failure),
@@ -741,7 +785,12 @@ class UserscriptBossAdapter:
             result_classification = await classify_submit_result(page)
             return self._submit_result_from_classification(result_classification, now)
         except RuntimeError as exc:
-            _log.warning("boss.userscript.submit.runtime_error", error=str(exc))
+            _log.warning(
+                "boss.userscript.submit.runtime_error",
+                application_id=ctx.application_id,
+                failure_code=submit_failure_code(SubmitOutcome.unknown),
+                error_type=type(exc).__name__,
+            )
             return SubmitResult(
                 outcome=SubmitOutcome.unknown,
                 failure_code=submit_failure_code(SubmitOutcome.unknown),
@@ -842,6 +891,11 @@ class UserscriptBossAdapter:
 
         if not self._channel.is_connected():
             self._channel.clear()
+            _log.warning(
+                "boss.userscript.communicate.bridge_not_connected",
+                application_id=ctx.application_id,
+                failure_code=communication_failure_code(CommunicationOutcome.unknown),
+            )
             return CommunicationExecuteResult(
                 outcome=CommunicationOutcome.unknown,
                 failure_code=communication_failure_code(CommunicationOutcome.unknown),
@@ -853,7 +907,12 @@ class UserscriptBossAdapter:
         try:
             await self._channel.set_active_application(ctx.application_id)
         except RuntimeError as exc:
-            _log.warning("boss.userscript.communicate.active_conflict", error=str(exc))
+            _log.warning(
+                "boss.userscript.communicate.active_conflict",
+                application_id=ctx.application_id,
+                failure_code="active_conflict",
+                error_type=type(exc).__name__,
+            )
             return CommunicationExecuteResult(
                 outcome=CommunicationOutcome.unknown,
                 failure_code=communication_failure_code(CommunicationOutcome.unknown),
@@ -871,6 +930,8 @@ class UserscriptBossAdapter:
             if current_hash != target_hash:
                 _log.warning(
                     "boss.userscript.communicate.page_mismatch",
+                    application_id=ctx.application_id,
+                    failure_code="page_binding_mismatch",
                     target_hash=target_hash,
                     current_hash=current_hash,
                 )
@@ -895,6 +956,8 @@ class UserscriptBossAdapter:
             if not immediate_probe and not continue_probe:
                 _log.warning(
                     "boss.userscript.communicate.selector_drift",
+                    application_id=ctx.application_id,
+                    failure_code="selector_drift",
                     immediate_visible=immediate_probe,
                     continue_visible=continue_probe,
                 )
@@ -935,6 +998,7 @@ class UserscriptBossAdapter:
                 if probe_result.success and probe_result.visible:
                     _log.info(
                         "boss.userscript.communicate.chat_already_open",
+                        application_id=ctx.application_id,
                     )
                     # chat_already_open — no action needed; the chat panel is
                     # already visible so we proceed directly to filling.
@@ -946,7 +1010,9 @@ class UserscriptBossAdapter:
                     except Exception as exc2:
                         _log.warning(
                             "boss.userscript.communicate.immediate_click_failed",
-                            error=str(exc2),
+                            application_id=ctx.application_id,
+                            failure_code="immediate_button_missing",
+                            error_type=type(exc2).__name__,
                         )
                         return CommunicationExecuteResult(
                             outcome=CommunicationOutcome.failed,
@@ -972,8 +1038,9 @@ class UserscriptBossAdapter:
                     fill_exc = exc
                     _log.warning(
                         "boss.userscript.communicate.fill_message_retry",
+                        application_id=ctx.application_id,
                         attempt=_attempt + 1,
-                        error=str(exc),
+                        error_type=type(exc).__name__,
                     )
                     # Brief pause before retrying — the chat panel may still
                     # be rendering after the 立即沟通 click.
@@ -981,7 +1048,9 @@ class UserscriptBossAdapter:
             if not fill_ok:
                 _log.warning(
                     "boss.userscript.communicate.fill_message_failed",
-                    error=str(fill_exc),
+                    application_id=ctx.application_id,
+                    failure_code="message_input_missing",
+                    error_type=type(fill_exc).__name__ if fill_exc else "unknown",
                 )
                 return CommunicationExecuteResult(
                     outcome=CommunicationOutcome.failed,
@@ -996,6 +1065,8 @@ class UserscriptBossAdapter:
             if post_fill_hash != target_hash:
                 _log.warning(
                     "boss.userscript.communicate.page_hash_changed",
+                    application_id=ctx.application_id,
+                    failure_code="page_binding_mismatch",
                     target_hash=target_hash,
                     post_fill_hash=post_fill_hash,
                 )
@@ -1014,7 +1085,9 @@ class UserscriptBossAdapter:
             except Exception as exc:
                 _log.warning(
                     "boss.userscript.communicate.send_failed",
-                    error=str(exc),
+                    application_id=ctx.application_id,
+                    failure_code="send_result_unknown",
+                    error_type=type(exc).__name__,
                 )
                 return CommunicationExecuteResult(
                     outcome=CommunicationOutcome.failed,
@@ -1058,7 +1131,12 @@ class UserscriptBossAdapter:
             classification = _classify_communication_markers(marker_counts)
             return self._communication_result_from_classification(classification, now)
         except RuntimeError as exc:
-            _log.warning("boss.userscript.communicate.runtime_error", error=str(exc))
+            _log.warning(
+                "boss.userscript.communicate.runtime_error",
+                application_id=ctx.application_id,
+                failure_code=communication_failure_code(CommunicationOutcome.unknown),
+                error_type=type(exc).__name__,
+            )
             return CommunicationExecuteResult(
                 outcome=CommunicationOutcome.unknown,
                 failure_code=communication_failure_code(CommunicationOutcome.unknown),

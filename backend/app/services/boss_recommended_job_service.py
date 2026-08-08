@@ -359,7 +359,10 @@ def inspect_current_job(
         _log.warning(
             "boss_recommended_job.upsert_failed",
             user_id=current_user.id,
-            error=str(exc),
+            agent_run_id=agent_run_id,
+            workflow_type=WORKFLOW_TYPE,
+            failure_code="upsert_failed",
+            error_type=type(exc).__name__,
         )
         return InspectResult(
             status=InspectStatus.read_failed,
@@ -409,9 +412,12 @@ def inspect_current_job(
     _log.info(
         "boss_recommended_job.inspect_ok",
         user_id=current_user.id,
+        agent_run_id=agent_run_id,
+        workflow_type=WORKFLOW_TYPE,
         job_id=job.id,
-        is_new_job=is_new_job,
+        page_url_hash=job.external_id,
         application_id=application.id if application else None,
+        is_new_job=is_new_job,
         is_new_application=is_new_application,
     )
 

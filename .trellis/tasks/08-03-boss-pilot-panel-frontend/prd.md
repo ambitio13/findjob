@@ -74,7 +74,7 @@ StrictMode 开发模式下 effect 重复触发导致的重复 API 调用。
 - [x] 半自动 loop 模式开关（inspect→match→prepare 自动，approve/execute 人工）
 - [x] 步骤进度可视化（Steps 组件）
 - [x] 挂载到 `ApplicationsPage`（仅 BOSS 平台应用显示）
-- [ ] 前端 lint / type-check 通过
+- [x] 前端 lint / type-check 通过
 
 ## Notes
 

@@ -23,6 +23,8 @@ from unittest.mock import patch
 import pytest
 
 from app.platforms.base import (
+    CommunicationExecuteContext,
+    CommunicationOutcome,
     FilledField,
     FilledPageState,
     FilledSubmissionSnapshot,
@@ -30,9 +32,11 @@ from app.platforms.base import (
     PrepareOutcome,
     SubmitContext,
     SubmitOutcome,
+    communication_failure_code,
     prepare_failure_code,
     submit_failure_code,
 )
+from app.platforms.boss.sanitizer import sanitize_diagnostic
 
 # ---------------------------------------------------------------------------
 # Fake Playwright objects
@@ -231,6 +235,56 @@ _SUCCESS_KEY = (
 )
 _SUBMIT_DUP_KEY = ".error-tip:has-text('已投递'), .tip:has-text('已经投递')"
 _PLATFORM_ERR_KEY = ".error-tip, .error-content, .upload-error"
+
+# Communicate selector keys (must match selectors.py values).
+# IMMEDIATE_COMMUNICATE_BUTTON / CONTINUE_COMMUNICATE_BUTTON are role locators
+# with value="button"; the fake page's get_by_role looks up by name, so we key
+# on the button's accessible name.
+_IMMEDIATE_KEY = "立即沟通"
+_CONTINUE_KEY = "继续沟通"
+# COMMUNICATION_MESSAGE_INPUT is a CSS selector — use its full value as the key.
+_MSG_INPUT_KEY = (
+    ".edit-area textarea,"
+    ".chat-input [contenteditable='true'],"
+    " .chat-footer [contenteditable='true'],"
+    " .chat-box [contenteditable='true'],"
+    " .input-wrap [contenteditable='true'],"
+    " .edit-area[contenteditable='true'],"
+    ".chat-input textarea,"
+    " .chat-box textarea,"
+    " .input-wrap textarea,"
+    " .chat-message textarea,"
+    ".chat-message input[type='text'],"
+    ".chat-input input[type='text'],"
+    ".chat-content [contenteditable='true'],"
+    " [class*='chat'] [contenteditable='true'],"
+    " [class*='chat'] textarea"
+)
+_SEND_KEY = (
+    ".chat-message .btn-send,"
+    ".chat-message [class*='send'],"
+    ".chat-input .btn-send,"
+    ".chat-input [class*='send'],"
+    ".chat-content .btn-send,"
+    ".chat-content [class*='send'],"
+    ".edit-area .btn-send,"
+    ".edit-area [class*='send'],"
+    ".chat-message [class*='btn']:has-text('发送'),"
+    ".chat-input [class*='btn']:has-text('发送'),"
+    ".chat-content [class*='btn']:has-text('发送'),"
+    " [class*='chat'] [class*='send']"
+)
+_COMM_SUCCESS_KEY = (
+    ".chat-message:has-text('已发送'), .message-status:has-text('已发送'), "
+    ".chat-content .message-item:not(.pending), "
+    ".chat-message:has-text('发送成功'), "
+    "[class*='message']:has-text('已发送')"
+)
+_COMM_DUP_KEY = (
+    ".btn-start:has-text('继续沟通'), .chat-operate:has-text('继续沟通'), "
+    "[class*='btn']:has-text('继续沟通'), "
+    "[class*='operate']:has-text('继续沟通')"
+)
 
 
 def _real_ctx(**overrides: object) -> PrepareContext:
@@ -859,3 +913,402 @@ async def test_cdp_mode_reuses_existing_page_not_new_page(
     assert result.outcome is PrepareOutcome.filled_preview
     # CDP mode must reuse the existing page — never call new_page.
     assert new_page_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Execute communication (CDP/Playwright fallback): safety invariants
+# ---------------------------------------------------------------------------
+
+
+def _comm_ctx(**overrides: object) -> CommunicationExecuteContext:
+    base: dict[str, object] = {
+        "application_id": "app-1",
+        "target_platform": "boss",
+        "target_resource": "https://www.zhipin.com/job/123",
+        "opening_message": "您好，我对这个岗位很感兴趣。",
+        "source_hash": "sha256:abc",
+    }
+    base.update(overrides)
+    return CommunicationExecuteContext(**base)  # type: ignore[arg-type]
+
+
+def _patch_runtime_with_factory(factory):
+    """Patch BossBrowserRuntime.__init__ to inject the fake playwright factory."""
+    return patch(
+        "app.platforms.boss.runtime.BossBrowserRuntime.__init__",
+        lambda self, *, profile_dir="", cdp_endpoint="", async_playwright=None: (
+            setattr(self, "_profile_dir", profile_dir),
+            setattr(self, "_cdp_endpoint", cdp_endpoint),
+            setattr(self, "_async_playwright", factory),
+            None,
+        )[-1],
+    )
+
+
+async def test_communicate_returns_unknown_when_no_session_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both session config unset → unknown + missing_session_config (not
+    login_required like prepare — communicate has no dry-run fallback)."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "")
+    monkeypatch.setenv("BOSS_CDP_ENDPOINT", "")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.unknown
+    assert result.failure_code == communication_failure_code(CommunicationOutcome.unknown)
+    assert result.diagnostic_reference == sanitize_diagnostic("missing_session_config")
+
+
+async def test_communicate_returns_unknown_on_page_mismatch_and_never_clicks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the current page hash differs from ctx.target_resource, return
+    unknown without clicking anything.
+
+    Uses CDP mode (which never calls ``page.goto``) so the fake page retains its
+    original URL — persistent mode would navigate to ``ctx.target_resource`` and
+    erase the mismatch.
+    """
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "")
+    monkeypatch.setenv("BOSS_CDP_ENDPOINT", "http://127.0.0.1:9222")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        immediate_locator = FakeLocator(visible=True, count=1)
+        locators = {_IMMEDIATE_KEY: immediate_locator}
+        # Page URL differs from ctx.target_resource (job/999 vs job/123).
+        factory, _page, _ctx = _make_fake_playwright(
+            locators, url="https://www.zhipin.com/job/999"
+        )
+        with patch(
+            "app.platforms.boss.runtime.BossBrowserRuntime.__init__",
+            lambda self, *, profile_dir="", cdp_endpoint="", async_playwright=None: (
+                setattr(self, "_profile_dir", profile_dir),
+                setattr(self, "_cdp_endpoint", "http://127.0.0.1:9222"),
+                setattr(self, "_async_playwright", factory),
+                None,
+            )[-1],
+        ):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.unknown
+    assert result.failure_code == communication_failure_code(CommunicationOutcome.unknown)
+    assert result.diagnostic_reference == sanitize_diagnostic("page_binding_mismatch")
+    # No click was performed — page mismatch is a pre-click hard stop.
+    assert immediate_locator.click_count == 0
+
+
+async def test_communicate_returns_duplicate_when_continue_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When 继续沟通 is visible but 立即沟通 is not, return duplicate (conversation
+    already exists) without clicking or sending."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "/tmp/fake-profile")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        continue_locator = FakeLocator(visible=True, count=1)
+        send_locator = FakeLocator(visible=True, count=1)
+        locators = {
+            _CONTINUE_KEY: continue_locator,
+            _SEND_KEY: send_locator,
+        }
+        factory, _page, _ctx = _make_fake_playwright(locators)
+        with _patch_runtime_with_factory(factory):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.duplicate
+    assert result.failure_code == communication_failure_code(CommunicationOutcome.duplicate)
+    # No click or send performed — duplicate is detected before clicking.
+    assert continue_locator.click_count == 0
+    assert send_locator.click_count == 0
+
+
+async def test_communicate_returns_failed_selector_drift_when_both_invisible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When both 立即沟通 and 继续沟通 are invisible, return failed +
+    selector_drift without clicking."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "/tmp/fake-profile")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        # No entry buttons in locators → both invisible (FakeLocator default).
+        factory, _page, _ctx = _make_fake_playwright({})
+        with _patch_runtime_with_factory(factory):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.failed
+    assert result.failure_code == "selector_drift"
+    assert result.diagnostic_reference == sanitize_diagnostic(
+        "selector_drift_immediate_communicate"
+    )
+
+
+async def test_communicate_happy_path_succeeds_with_one_click_one_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: immediate visible → click → fill → send → success marker
+    → succeeded. Asserts at most 1 immediate click + 1 send click."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "/tmp/fake-profile")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        immediate_locator = FakeLocator(visible=True, count=1)
+        message_locator = FakeLocator(visible=True, count=1)
+        send_locator = FakeLocator(visible=True, count=1)
+        success_locator = FakeLocator(count=1)
+        locators = {
+            _IMMEDIATE_KEY: immediate_locator,
+            _MSG_INPUT_KEY: message_locator,
+            _SEND_KEY: send_locator,
+            _COMM_SUCCESS_KEY: success_locator,
+        }
+        factory, _page, _ctx = _make_fake_playwright(locators)
+        with _patch_runtime_with_factory(factory):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.succeeded
+    assert result.failure_code is None
+    # Click budget: at most 1 immediate + 1 send.
+    assert immediate_locator.click_count == 1
+    assert send_locator.click_count == 1
+    # The opening message was filled into the chat input.
+    assert message_locator.fill_calls == ["您好，我对这个岗位很感兴趣。"]
+
+
+async def test_communicate_fill_failure_returns_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When filling the message input raises, return failed +
+    message_input_missing. The immediate button was clicked once; send is
+    never reached."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "/tmp/fake-profile")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        immediate_locator = FakeLocator(visible=True, count=1)
+        message_locator = FakeLocator(visible=True, count=1, fill_should_raise=True)
+        send_locator = FakeLocator(visible=True, count=1)
+        locators = {
+            _IMMEDIATE_KEY: immediate_locator,
+            _MSG_INPUT_KEY: message_locator,
+            _SEND_KEY: send_locator,
+        }
+        factory, _page, _ctx = _make_fake_playwright(locators)
+        with _patch_runtime_with_factory(factory):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.failed
+    assert result.failure_code == "message_input_missing"
+    assert send_locator.click_count == 0
+
+
+async def test_communicate_send_failure_returns_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When clicking the send button raises, return failed +
+    send_result_unknown."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "/tmp/fake-profile")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        immediate_locator = FakeLocator(visible=True, count=1)
+        message_locator = FakeLocator(visible=True, count=1)
+        send_locator = FakeLocator(visible=True, count=1, click_should_raise=True)
+        locators = {
+            _IMMEDIATE_KEY: immediate_locator,
+            _MSG_INPUT_KEY: message_locator,
+            _SEND_KEY: send_locator,
+        }
+        factory, _page, _ctx = _make_fake_playwright(locators)
+        with _patch_runtime_with_factory(factory):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.failed
+    assert result.failure_code == "send_result_unknown"
+
+
+async def test_communicate_post_send_unknown_returns_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the post-send page shows no success/duplicate/error markers, return
+    unknown (hard stop, no auto-retry)."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "/tmp/fake-profile")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        immediate_locator = FakeLocator(visible=True, count=1)
+        message_locator = FakeLocator(visible=True, count=1)
+        send_locator = FakeLocator(visible=True, count=1)
+        locators = {
+            _IMMEDIATE_KEY: immediate_locator,
+            _MSG_INPUT_KEY: message_locator,
+            _SEND_KEY: send_locator,
+            # No success/dup/error markers → classifier returns unknown.
+        }
+        factory, _page, _ctx = _make_fake_playwright(locators)
+        with _patch_runtime_with_factory(factory):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.unknown
+    assert result.failure_code == "send_result_unknown"
+
+
+async def test_communicate_post_send_duplicate_marker_returns_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the post-send page shows the communication duplicate marker, return
+    duplicate."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "/tmp/fake-profile")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        immediate_locator = FakeLocator(visible=True, count=1)
+        message_locator = FakeLocator(visible=True, count=1)
+        send_locator = FakeLocator(visible=True, count=1)
+        locators = {
+            _IMMEDIATE_KEY: immediate_locator,
+            _MSG_INPUT_KEY: message_locator,
+            _SEND_KEY: send_locator,
+            _COMM_DUP_KEY: FakeLocator(count=1),
+        }
+        factory, _page, _ctx = _make_fake_playwright(locators)
+        with _patch_runtime_with_factory(factory):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.duplicate
+    assert result.failure_code == communication_failure_code(CommunicationOutcome.duplicate)
+
+
+async def test_communicate_post_send_platform_error_returns_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the post-send page shows a platform error marker, return failed."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "/tmp/fake-profile")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        immediate_locator = FakeLocator(visible=True, count=1)
+        message_locator = FakeLocator(visible=True, count=1)
+        send_locator = FakeLocator(visible=True, count=1)
+        locators = {
+            _IMMEDIATE_KEY: immediate_locator,
+            _MSG_INPUT_KEY: message_locator,
+            _SEND_KEY: send_locator,
+            _PLATFORM_ERR_KEY: FakeLocator(count=1),
+        }
+        factory, _page, _ctx = _make_fake_playwright(locators)
+        with _patch_runtime_with_factory(factory):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.failed
+    assert result.failure_code == communication_failure_code(CommunicationOutcome.failed)
+
+
+async def test_communicate_cdp_does_not_close_user_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CDP mode communicate: leaves the user's Chrome context open (only
+    disconnects the CDP client)."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "")
+    monkeypatch.setenv("BOSS_CDP_ENDPOINT", "http://127.0.0.1:9222")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        locators = {
+            _IMMEDIATE_KEY: FakeLocator(visible=True, count=1),
+            _MSG_INPUT_KEY: FakeLocator(visible=True, count=1),
+            _SEND_KEY: FakeLocator(visible=True, count=1),
+            _COMM_SUCCESS_KEY: FakeLocator(count=1),
+        }
+        factory, _page, context = _make_fake_playwright(locators)
+        with patch(
+            "app.platforms.boss.runtime.BossBrowserRuntime.__init__",
+            lambda self, *, profile_dir="", cdp_endpoint="", async_playwright=None: (
+                setattr(self, "_profile_dir", profile_dir),
+                setattr(self, "_cdp_endpoint", "http://127.0.0.1:9222"),
+                setattr(self, "_async_playwright", factory),
+                None,
+            )[-1],
+        ):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    assert result.outcome is CommunicationOutcome.succeeded
+    # The user's Chrome context must NOT be closed in CDP mode.
+    assert context.closed is False
+
+
+async def test_communicate_no_secrets_in_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The communicate result must not contain raw URLs, cookies, tokens, or
+    profile paths."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("BOSS_SESSION_PROFILE_DIR", "/tmp/secret-profile-path")
+    get_settings.cache_clear()
+    adapter = _build_adapter()
+    try:
+        locators = {
+            _IMMEDIATE_KEY: FakeLocator(visible=True, count=1),
+            _MSG_INPUT_KEY: FakeLocator(visible=True, count=1),
+            _SEND_KEY: FakeLocator(visible=True, count=1),
+            _COMM_SUCCESS_KEY: FakeLocator(count=1),
+        }
+        factory, _page, _ctx = _make_fake_playwright(locators)
+        with _patch_runtime_with_factory(factory):
+            result = await adapter.execute_communication(_comm_ctx())
+    finally:
+        get_settings.cache_clear()
+
+    blob = repr(result.model_dump(mode="json"))
+    for forbidden in ("zhipin.com", "secret-profile-path", "cookie", "token", "<html"):
+        assert forbidden not in blob.lower(), f"communicate result leaked: {forbidden}"

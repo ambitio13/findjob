@@ -373,9 +373,12 @@ async def _execute_boss_match(
     except Exception as exc:
         _log.warning(
             "boss_match.model_call_failed",
-            run_id=run.id,
+            agent_run_id=run.id,
+            workflow_type=WORKFLOW_TYPE,
+            job_id=job_id,
+            user_id=current_user.id,
             provider=gateway.provider_name,
-            error=str(exc),
+            error_type=type(exc).__name__,
         )
         _fail_run(
             3,
@@ -408,7 +411,11 @@ async def _execute_boss_match(
     except BossMatchValidationError as exc:
         _log.warning(
             "boss_match.model_invalid",
-            run_id=run.id,
+            agent_run_id=run.id,
+            workflow_type=WORKFLOW_TYPE,
+            job_id=job_id,
+            user_id=current_user.id,
+            failure_code="model_invalid",
             kind=exc.kind,
             request_id=exc.request_id,
             provider=response.provider,

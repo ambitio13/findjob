@@ -109,6 +109,21 @@ cd frontend && pnpm build
 docker compose up --build
 ```
 
+## BOSS 半自动沟通链路（本地开发）
+
+BOSS inspect → match → prepare → approval → bridge → userscript → execute 链路的本地
+开发、排障与清理收敛为一键脚本与 runbook：
+
+```bash
+./scripts/dev-health.sh              # 健康检查（compose/backend/frontend/worker）
+./scripts/dev-logs.sh                # 查看最近日志（--grep PATTERN 过滤）
+./scripts/e2e-smoke.sh --skip-up     # BOSS bridge E2E smoke
+./scripts/clean-smoke-artifacts.sh   # 清理 smoke- 前缀残留（不碰生产 namespace）
+```
+
+完整故障地图、bridge 日志串接说明与清理规约见
+[docs/boss-local-dev-runbook.md](docs/boss-local-dev-runbook.md)。
+
 ## 架构要点
 
 - **后端分层**：路由（transport）→ 服务（domain）→ 仓库（persistence）。路由不
