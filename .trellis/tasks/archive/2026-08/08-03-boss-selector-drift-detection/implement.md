@@ -125,11 +125,11 @@ pytest app/tests/test_userscript_boss_adapter.py -v
 
 ## 验证清单
 
-- [ ] `check_visible` 探测在页面绑定验证之后执行
-- [ ] 两个入口按钮都不可见时返回 `failed` + `selector_drift`
-- [ ] `diagnostic_reference` 标注具体漂移选择器
-- [ ] 漂移时不发送任何 click 指令（安全）
-- [ ] 正常流程（立即沟通可见）不受影响
-- [ ] 现有 14 个 communicate 测试全部通过
-- [ ] ruff check + format clean
-- [ ] design.md 中的安全不变量分析确认
+- [x] `check_visible` 探测在页面绑定验证之后执行
+- [x] 两个入口按钮都不可见时返回 `failed` + `selector_drift`
+- [x] `diagnostic_reference` 标注具体漂移选择器
+- [x] 漂移时不发送任何 click 指令（安全）
+- [x] 正常流程（立即沟通可见）不受影响
+- [x] 现有 14 个 communicate 测试全部通过
+- [x] ruff check + format clean
+- [x] design.md 中的安全不变量分析确认
