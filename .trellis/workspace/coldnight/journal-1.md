@@ -941,3 +941,36 @@ Task A: 收尾 08-03-boss-userscript-selector-backend-dispatch — extra_selecto
 ### Next Steps
 
 - None - task complete
+
+
+## Session 22: Archive selector drift detection
+
+**Date**: 2026-08-08
+**Task**: Archive selector drift detection
+**Branch**: `wanzhen`
+
+### Summary
+
+Verified selector drift detection was already implemented and covered by the latest full validation pass, marked its implementation checklist complete, and archived the task after A/B hardening acceptance.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `931707e` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

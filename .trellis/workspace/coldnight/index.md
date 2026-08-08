@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 21
+- **Total Sessions**: 22
 - **Last Active**: 2026-08-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~943 | Active |
+| `journal-1.md` | ~976 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 22 | 2026-08-08 | Archive selector drift detection | `931707e` | `wanzhen` |
 | 21 | 2026-08-08 | BOSS selector-backend-dispatch 收尾 + E2E smoke 与测试隔离质量门 | `7496695`, `0ddfacb` | `wanzhen` |
 | 20 | 2026-08-03 | fix(boss): B1/B2/B3 — 沟通分类三连修 | `782bf09` | `wanzhen` |
 | 19 | 2026-08-03 | Fix P1/P2: :has-text() selector protocol + page binding + task metadata | `5496980` | `wanzhen` |
