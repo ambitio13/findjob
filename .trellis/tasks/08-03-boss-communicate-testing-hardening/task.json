@@ -27,7 +27,11 @@
     "08-03-boss-pilot-panel-frontend",
     "08-03-boss-recommended-list-batch-loop",
     "08-03-boss-real-adapter-communicate-fallback",
-    "08-03-boss-dry-run-gate"
+    "08-03-boss-dry-run-gate",
+    "08-08-boss-e2e-smoke-test-isolation",
+    "08-08-boss-devex-runbook-hardening",
+    "08-08-frontend-build-performance-budget",
+    "08-08-boss-observability-tracing-hardening"
   ],
   "parent": null,
   "relatedFiles": [],
