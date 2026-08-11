@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 23
-- **Last Active**: 2026-08-09
+- **Total Sessions**: 24
+- **Last Active**: 2026-08-11
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1009 | Active |
+| `journal-1.md` | ~1042 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 24 | 2026-08-11 | P0-P6 evolution acceptance | `8092e10` | `wanzhen` |
 | 23 | 2026-08-09 | BOSS pilot hardening and dev loop | `2a6a733` | `wanzhen` |
 | 22 | 2026-08-08 | Archive selector drift detection | `931707e` | `wanzhen` |
 | 21 | 2026-08-08 | BOSS selector-backend-dispatch 收尾 + E2E smoke 与测试隔离质量门 | `7496695`, `0ddfacb` | `wanzhen` |
