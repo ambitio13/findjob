@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "P0-P6 契约与不变量，后续改动必须遵守。"}
+{"file": ".trellis/spec/backend/authentication.md", "reason": "认证、所有权校验与人工审批门规约。"}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "API 契约规约（路由顺序、错误语义）。"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "ORM/迁移规约（alembic 单 head、量纲约定）。"}
+{"file": ".trellis/spec/guides/pre-implementation-checklist.md", "reason": "实施前检查清单。"}
+{"file": "backend/app/core/content_crypto.py", "reason": "整改新增：jd_raw 加密信封与密钥派生。"}
+{"file": "backend/app/db/types.py", "reason": "整改新增：EncryptedText 透明加密列类型。"}
+{"file": "backend/alembic/versions/0010_encrypt_jd_raw.py", "reason": "整改新增：存量明文 jd_raw 加密数据迁移。"}
+{"file": "backend/app/tests/test_content_crypto.py", "reason": "整改新增：加密落库端到端测试。"}

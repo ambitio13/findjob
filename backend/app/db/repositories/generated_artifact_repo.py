@@ -94,7 +94,7 @@ def list_for_application(
     by the readiness worker. We scope by ``job_id`` (indexed FK) first, then
     filter in Python on ``source_ids['application_id']`` so the query stays
     cheap and dialect-neutral. ``artifact_types`` optionally restricts to the
-    four readiness types (excluding e.g. ``jd_analysis``).
+    readiness types (excluding e.g. ``jd_analysis``).
     """
     candidate_limit = max(limit * 10, 200)
     base_filter = GeneratedArtifact.job_id == job_id
@@ -149,3 +149,36 @@ def list_for_job(
         .all()
     )
     return rows, total
+
+
+def latest_opening_prompt_versions_by_job(
+    db: Session,
+    user_id: str,
+    job_ids: list[str],
+) -> dict[str, str | None]:
+    """Map each ``job_id`` to its newest ``hr_opening_message`` prompt version.
+
+    Powers the funnel's opening-prompt calibration bucket (Phase 1): reply
+    rates grouped by prompt version answer "which opening prompt actually
+    works". Jobs without a generated opening are simply absent from the map.
+    """
+    if not job_ids:
+        return {}
+    rows = (
+        db.execute(
+            select(GeneratedArtifact)
+            .where(
+                GeneratedArtifact.artifact_type == "hr_opening_message",
+                GeneratedArtifact.user_id == user_id,
+                GeneratedArtifact.job_id.in_(job_ids),
+            )
+            .order_by(GeneratedArtifact.created_at.asc())
+        )
+        .scalars()
+        .all()
+    )
+    latest: dict[str, str | None] = {}
+    for row in rows:  # ascending scan: later rows overwrite — newest wins
+        if row.job_id is not None:
+            latest[row.job_id] = row.prompt_version
+    return latest

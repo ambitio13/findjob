@@ -19,10 +19,12 @@ parameters are consumed). ``functions`` registers the handlers by name.
 
 from __future__ import annotations
 
+from arq import cron
 from arq.worker import Function
 
 from app.core.config import get_settings
 from app.queue.handlers import (
+    daily_followup_scan,
     jd_paste_parsing,
     platform_guided_submit_prepare,
     readiness_generation,
@@ -92,6 +94,28 @@ def _functions() -> list[Function]:
             keep_result_forever=False,
             max_tries=_settings.queue_max_retries + 1,
         ),
+        # Scheduler handler (also registered in ``cron_jobs`` below); keeping
+        # it in ``functions`` too allows manual enqueue for ops/debugging.
+        Function(
+            name="daily_followup_scan",
+            coroutine=daily_followup_scan,
+            timeout_s=_settings.queue_job_timeout,
+            keep_result_s=3600,
+            keep_result_forever=False,
+            max_tries=2,
+        ),
+    ]
+
+
+def _cron_jobs() -> list:
+    """Scheduled jobs: the Phase 5 daily follow-up scan.
+
+    Runs at 09:00 every day; it only writes advisory suggestion rows and
+    threshold calibrations (no external effects), so a single extra try is
+    enough when an execution fails.
+    """
+    return [
+        cron(daily_followup_scan, name="daily_followup_scan", hour=9, minute=0),
     ]
 
 
@@ -104,6 +128,7 @@ class WorkerSettings:
     """
 
     functions = _functions()
+    cron_jobs = _cron_jobs()
     redis_settings = get_redis_settings()
     queue_name = f"{_settings.queue_namespace}:queue"
     max_jobs = 10

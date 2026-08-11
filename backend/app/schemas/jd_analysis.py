@@ -34,6 +34,20 @@ Recommendation = Literal[
     "not_enough_info",
 ]
 
+#: Known scam/quality red-flag categories the job-risk lens detects
+#: (Phase 3). ``other`` is the escape hatch for patterns outside this list.
+RedFlagType = Literal[
+    "training_loan",      # 培训贷话术
+    "training_fee",       # 岗前培训费/押金
+    "outsourcing_onsite", # 外包驻场
+    "inflated_salary",    # 薪资虚高（区间过宽/不切实际）
+    "long_term_listing",  # 常年挂单
+    "other",
+]
+
+#: Cap for evidence quotes so an artifact never becomes a full JD mirror.
+_EVIDENCE_QUOTE_MAX_LEN = 300
+
 
 class JdAnalysisRiskPoint(BaseModel):
     """A single risk point surfaced by the analysis."""
@@ -41,6 +55,53 @@ class JdAnalysisRiskPoint(BaseModel):
     title: str
     detail: str
     severity: Severity
+
+
+class JdRedFlag(BaseModel):
+    """One job-quality red flag with a JD original-text evidence quote.
+
+    ``evidence_quote`` must be a short verbatim excerpt from the JD (the
+    detail "岗位透视" panel renders it next to the conclusion); it is capped
+    so artifacts never mirror large JD chunks.
+    """
+
+    flag_type: RedFlagType
+    title: str
+    detail: str
+    severity: Severity
+    evidence_quote: str | None = Field(
+        default=None, max_length=_EVIDENCE_QUOTE_MAX_LEN
+    )
+
+
+class JdSalaryStructure(BaseModel):
+    """Structured salary parsing (Phase 3): range, period, and composition.
+
+    ``min_value``/``max_value`` are normalized to k/month where derivable;
+    ``caveats`` lists why the number may not be trustworthy (over-wide range,
+    "综合薪资" wording, etc.).
+    """
+
+    range_text: str | None = Field(default=None, description="JD 原文薪资表述。")
+    min_value: float | None = Field(default=None, ge=0, description="归一化下限(k/月)。")
+    max_value: float | None = Field(default=None, ge=0, description="归一化上限(k/月)。")
+    period: Literal["monthly", "yearly", "hourly", "daily", "unknown"] = "unknown"
+    composition: list[str] = Field(
+        default_factory=list, description="构成项（底薪/绩效/提成/补贴…）。"
+    )
+    caveats: list[str] = Field(
+        default_factory=list, description="薪资不可信/虚高的理由。"
+    )
+
+
+class JdStabilitySignal(BaseModel):
+    """One company-stability signal with optional JD evidence quote."""
+
+    polarity: Literal["positive", "negative", "unknown"]
+    signal: str
+    evidence_quote: str | None = Field(
+        default=None, max_length=_EVIDENCE_QUOTE_MAX_LEN
+    )
 
 
 class JdAnalysisEvidence(BaseModel):
@@ -79,6 +140,11 @@ class JdAnalysisModelOutput(BaseModel):
     skill_gaps: list[str]
     interview_preparation: list[str]
     recommendation: Recommendation
+    # Phase 3 job-risk lens. All optional so artifacts produced before the
+    # schema extension still validate (fields simply stay empty).
+    salary_structure: JdSalaryStructure | None = None
+    red_flags: list[JdRedFlag] = Field(default_factory=list)
+    stability_signals: list[JdStabilitySignal] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

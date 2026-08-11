@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models.models import JobAnalysis
+from app.db.models.models import JobAnalysis, JobPosting
 
 
 def create(
@@ -29,6 +29,7 @@ def create(
     salary_analysis: dict[str, Any] | None = None,
     growth_analysis: dict[str, Any] | None = None,
     stability_analysis: dict[str, Any] | None = None,
+    red_flags: list[dict[str, Any]] | None = None,
 ) -> JobAnalysis:
     """Insert a ``JobAnalysis`` row and return it (not yet committed)."""
     analysis = JobAnalysis(
@@ -40,6 +41,7 @@ def create(
         salary_analysis=salary_analysis,
         growth_analysis=growth_analysis,
         stability_analysis=stability_analysis,
+        red_flags=red_flags,
     )
     db.add(analysis)
     db.flush()
@@ -75,3 +77,35 @@ def list_for_job(
         .all()
     )
     return rows, total
+
+
+def latest_red_flags_by_job(
+    db: Session,
+    user_id: str,
+    job_ids: list[str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Map each ``job_id`` to its newest analysis' red-flag summary.
+
+    Powers the job-list risk-label column + ``has_red_flags`` filter
+    (Phase 3). Only analyses of jobs owned by ``user_id`` are considered;
+    ``job_ids=None`` scans all of the user's jobs (needed to compute the
+    filter id set before pagination). Jobs without any analysis — or whose
+    newest analysis has no flags — map to ``[]``. Newest wins via an
+    ascending scan (later rows overwrite), mirroring
+    ``generated_artifact_repo.latest_opening_prompt_versions_by_job``.
+    """
+    if job_ids is not None and not job_ids:
+        return {}
+    query = (
+        select(JobAnalysis)
+        .join(JobPosting, JobAnalysis.job_id == JobPosting.id)
+        .where(JobPosting.user_id == user_id)
+        .order_by(JobAnalysis.created_at.asc())
+    )
+    if job_ids is not None:
+        query = query.where(JobAnalysis.job_id.in_(job_ids))
+    rows = db.execute(query).scalars().all()
+    latest: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        latest[row.job_id] = row.red_flags or []
+    return latest

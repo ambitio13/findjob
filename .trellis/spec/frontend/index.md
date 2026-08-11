@@ -1,31 +1,39 @@
-# Frontend Guidelines Index
+# Frontend Development Guidelines
 
-Frontend code is expected to use React with Ant Design Pro for an operational
-job-search agent application.
+> Best practices for frontend development in this project.
 
-## Files
+---
 
-| File | Purpose | When to Read |
-| --- | --- | --- |
-| [directory-structure.md](./directory-structure.md) | React module layout | Starting frontend work |
-| [components.md](./components.md) | Component and Ant Design Pro rules | Building UI |
-| [table-detail-views.md](./table-detail-views.md) | Job/application list and detail patterns | Tables, records, dashboards |
-| [hooks.md](./hooks.md) | Custom hook and data-fetching conventions | Creating hooks |
-| [state-management.md](./state-management.md) | URL, server, form, and local state | State decisions |
-| [api-integration.md](./api-integration.md) | Backend API usage and async run handling | Calling backend APIs |
-| [authentication.md](./authentication.md) | Auth UI and permission-aware flows | Protected views |
-| [ai-sdk-integration.md](./ai-sdk-integration.md) | Agent UI, streaming, approvals, and generated artifacts | AI-facing UI |
-| [css-layout.md](./css-layout.md) | Layout, density, responsiveness | UI layout |
-| [type-safety.md](./type-safety.md) | TypeScript frontend rules | Type work |
-| [quality.md](./quality.md) | Frontend verification checklist | Before reporting frontend work done |
+## Overview
 
-## Core Frontend Rules
+This directory contains guidelines for frontend development. Fill in each file with your project's specific conventions.
 
-- Build the real application surface first: job tables, filters, detail views,
-  generated artifacts, approval flows, and run status.
-- Use Ant Design Pro components for dense operational workflows.
-- Do not present AI analysis as confirmed fact.
-- Keep user approval explicit before resume submission or HR messaging.
-- Preserve responsive layout for table-heavy pages; mobile can collapse into
-  searchable cards or detail-first flows.
+---
 
+## Guidelines Index
+
+| Guide | Description | Status |
+|-------|-------------|--------|
+| [Directory Structure](./directory-structure.md) | Module organization and file layout | To fill |
+| [Component Guidelines](./component-guidelines.md) | Component patterns, props, composition | To fill |
+| [Hook Guidelines](./hook-guidelines.md) | Custom hooks, data fetching patterns | To fill |
+| [State Management](./state-management.md) | Local state, global state, server state | To fill |
+| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
+| [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
+
+---
+
+## How to Fill These Guidelines
+
+For each guideline file:
+
+1. Document your project's **actual conventions** (not ideals)
+2. Include **code examples** from your codebase
+3. List **forbidden patterns** and why
+4. Add **common mistakes** your team has made
+
+The goal is to help AI assistants and new team members understand how YOUR project works.
+
+---
+
+**Language**: All documentation should be written in **English**.

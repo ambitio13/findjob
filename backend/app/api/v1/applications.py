@@ -17,7 +17,11 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db_session
 from app.db.models.models import UserProfile
-from app.db.repositories import agent_run_repo, generated_artifact_repo
+from app.db.repositories import (
+    agent_run_repo,
+    follow_up_suggestion_repo,
+    generated_artifact_repo,
+)
 from app.schemas.api import (
     ApplicationCreate,
     ApplicationListOut,
@@ -31,6 +35,13 @@ from app.schemas.application import (
     ApplicationFailureNextAction,
 )
 from app.schemas.application_action import ApplicationActionOut
+from app.schemas.followup import (
+    FollowUpScanOut,
+    FollowUpSuggestionListOut,
+    FollowUpSuggestionOut,
+    SuggestionStatus,
+)
+from app.schemas.outcome import OutcomeCreate, OutcomeListOut, OutcomeOut
 from app.schemas.platform_submission import (
     PlatformSubmissionAbortResponse,
     PlatformSubmissionPrepareRequest,
@@ -44,7 +55,7 @@ from app.schemas.readiness import (
     RunReadinessRunSummary,
     RunReadinessSubmitResponse,
 )
-from app.services import application_service
+from app.services import application_service, followup_service, outcome_service
 from app.services.platform_submission_service import (
     WORKFLOW_TYPE as PLATFORM_PREPARE_WORKFLOW_TYPE,
 )
@@ -119,6 +130,90 @@ def create_application(
     return _to_out(record, is_duplicate=not is_new)
 
 
+# --- Follow-up suggestions (Phase 5) ---------------------------------------
+# Registered BEFORE the ``/{application_id}`` routes so the static segments
+# win route matching. Suggestions are advisory only: acting on one always
+# re-enters the existing generation + approval flow.
+
+
+@router.get("/follow-up-suggestions", response_model=FollowUpSuggestionListOut)
+def list_follow_up_suggestions(
+    status: SuggestionStatus | None = Query(
+        None, description="Filter by suggestion status (defaults to all)."
+    ),
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> FollowUpSuggestionListOut:
+    """List the current user's follow-up suggestions, newest first."""
+    rows = follow_up_suggestion_repo.list_for_user(
+        db, current_user.id, status=status.value if status else None
+    )
+    return FollowUpSuggestionListOut(
+        items=[FollowUpSuggestionOut.model_validate(r) for r in rows]
+    )
+
+
+@router.post("/follow-up-scan", response_model=FollowUpScanOut)
+def run_follow_up_scan(
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> FollowUpScanOut:
+    """Run the follow-up scan for the current user right now.
+
+    The scheduler runs the same scan daily; this endpoint gives the user an
+    on-demand trigger. Creates advisory suggestions and (when enough outcome
+    evidence exists) a new match-threshold calibration.
+    """
+    created, threshold, calibrated_now = followup_service.run_follow_up_scan(
+        db, current_user
+    )
+    return FollowUpScanOut(
+        created=len(created),
+        suggestions=[FollowUpSuggestionOut.model_validate(r) for r in created],
+        active_threshold=threshold,
+        calibrated_now=calibrated_now,
+    )
+
+
+@router.post(
+    "/follow-up-suggestions/{suggestion_id}/dismiss",
+    response_model=FollowUpSuggestionOut,
+)
+def dismiss_follow_up_suggestion(
+    suggestion_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> FollowUpSuggestionOut:
+    """Dismiss a pending suggestion (the user disagrees or already handled it)."""
+    row = followup_service.resolve_suggestion(
+        db, current_user, suggestion_id, target=SuggestionStatus.dismissed
+    )
+    return FollowUpSuggestionOut.model_validate(row)
+
+
+@router.post(
+    "/follow-up-suggestions/{suggestion_id}/action",
+    response_model=FollowUpSuggestionOut,
+)
+def action_follow_up_suggestion(
+    suggestion_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> FollowUpSuggestionOut:
+    """Mark a pending suggestion as actioned.
+
+    The caller confirms they started acting on it (e.g. regenerated the
+    opening message). The endpoint itself performs no external action.
+    """
+    row = followup_service.resolve_suggestion(
+        db, current_user, suggestion_id, target=SuggestionStatus.actioned
+    )
+    return FollowUpSuggestionOut.model_validate(row)
+
+
+# --- Single-application routes ----------------------------------------------
+
+
 @router.get("/{application_id}", response_model=ApplicationOut)
 def get_application(
     application_id: str,
@@ -182,6 +277,43 @@ def append_timeline_event(
     return _to_out(record)
 
 
+@router.post(
+    "/{application_id}/outcomes",
+    response_model=OutcomeOut,
+    status_code=201,
+)
+def record_outcome(
+    application_id: str,
+    payload: OutcomeCreate,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> OutcomeOut:
+    """Record what actually happened after a submission (feedback loop).
+
+    Appends an outcome event (replied / rejected / interview / offer) and a
+    matching timeline entry. When the state machine allows it, the record's
+    status follows the outcome (``interview``/``offer`` → ``interviewing``,
+    ``rejected`` → ``rejected``); otherwise the outcome is stored as evidence
+    without forcing an invalid transition.
+
+    Returns 404 when the application does not exist or is not owned by the
+    current user.
+    """
+    outcome, _ = outcome_service.record_outcome(db, current_user, application_id, payload)
+    return OutcomeOut.model_validate(outcome)
+
+
+@router.get("/{application_id}/outcomes", response_model=OutcomeListOut)
+def list_outcomes(
+    application_id: str,
+    db: Session = Depends(get_db_session),
+    current_user: UserProfile = Depends(get_current_user),
+) -> OutcomeListOut:
+    """List outcome events for one application, oldest first."""
+    rows = outcome_service.list_outcomes(db, current_user, application_id)
+    return OutcomeListOut(items=[OutcomeOut.model_validate(r) for r in rows])
+
+
 @router.get("/{application_id}/artifacts", response_model=ReadinessArtifactListOut)
 def list_application_artifacts(
     application_id: str,
@@ -190,8 +322,9 @@ def list_application_artifacts(
 ) -> ReadinessArtifactListOut:
     """List persisted readiness artifacts for an application, newest first.
 
-    Returns the four readiness artifact types only (``hr_opening_message``,
-    ``resume_rewrite_snippet``, ``skill_gap_plan``, ``interview_prep``). The
+    Returns the readiness artifact types only (``hr_opening_message``,
+    ``resume_rewrite_snippet``, ``skill_gap_plan``, ``interview_prep``,
+    ``targeted_resume``). The
     binding to an application lives inside the artifact ``source_ids`` JSON
     (key ``application_id``); we scope by the application's ``job_id`` (indexed
     FK) first, then filter on that JSON key so the query stays cheap. JD

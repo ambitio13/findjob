@@ -565,6 +565,26 @@ async def _execute_jd_analysis(
     # only after this block do JobAnalysis / GeneratedArtifact exist.
     resume_id = str(context.resume.get("resume_id") or "")
 
+    # Phase 3 job-risk lens: the red-flag summary is sanitized down to
+    # type/title/severity — evidence quotes stay on the artifact only.
+    # NULL (not []) means "no flags" so the job-list filter stays cheap.
+    red_flag_summary: list[dict[str, Any]] | None = [
+        {"flag_type": f.flag_type, "title": f.title, "severity": f.severity}
+        for f in output.red_flags
+    ] or None
+
+    salary_analysis: dict[str, Any] = {"note": output.salary_note}
+    if output.salary_structure is not None:
+        salary_analysis["structure"] = output.salary_structure.model_dump()
+
+    stability_analysis: dict[str, Any] = {"note": output.stability_note}
+    if output.stability_signals:
+        # Quotes are stripped: the column keeps conclusions only.
+        stability_analysis["signals"] = [
+            {"polarity": s.polarity, "signal": s.signal}
+            for s in output.stability_signals
+        ]
+
     analysis = job_analysis_repo.create(
         db,
         job_id=job_id,
@@ -572,9 +592,10 @@ async def _execute_jd_analysis(
         match_score=float(output.match_score) if output.match_score is not None else None,
         risk_score=float(output.risk_score) if output.risk_score is not None else None,
         summary=_build_summary(output),
-        salary_analysis={"note": output.salary_note},
+        salary_analysis=salary_analysis,
         growth_analysis={"note": output.growth_note},
-        stability_analysis={"note": output.stability_note},
+        stability_analysis=stability_analysis,
+        red_flags=red_flag_summary,
     )
 
     source_ids = _build_source_ids(

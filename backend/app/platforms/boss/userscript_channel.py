@@ -75,6 +75,7 @@ OpKind = Literal[
     "fill_opening_message",
     "send_opening_message",
     "read_communication_result",
+    "scan_conversations",
     "probe_elements",
 ]
 
@@ -139,6 +140,11 @@ class InstructionResult:
     does **not** decide the classification — it only reports what it sees.
     This keeps the "backend owns classification" design invariant intact.
 
+    ``conversations`` is returned by the ``scan_conversations`` op (Phase 1
+    feedback loop). Each entry carries only a hashed conversation key and
+    status flags (``replied``/``read``/``unread``) — never chat text, never
+    contact names. Sanitized by the API layer before reaching the channel.
+
     ``page_id`` identifies which browser tab produced the result. The channel
     rejects results whose ``page_id`` does not match the instruction's
     ``page_id``, preventing a wrong tab from consuming another tab's
@@ -155,6 +161,7 @@ class InstructionResult:
     page_id: str | None = None
     jd: dict | None = None
     marker_counts: dict[str, int] | None = None
+    conversations: list[dict] | None = None
 
 
 @dataclass

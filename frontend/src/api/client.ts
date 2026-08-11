@@ -39,6 +39,15 @@ import type {
   MatchDecisionOut,
   CommunicatePrepareOut,
   CommunicateExecuteOut,
+  OutcomeCreate,
+  OutcomeOut,
+  OutcomeListOut,
+  FunnelMetricsOut,
+  FollowUpSuggestionOut,
+  FollowUpSuggestionListOut,
+  FollowUpScanOut,
+  MatchThresholdOut,
+  SuggestionStatus,
 } from "@/types";
 
 const baseURL = "/api/v1";
@@ -54,9 +63,19 @@ export async function getHealth(): Promise<HealthResponse> {
   return data;
 }
 
-export async function listJobs(page = 1, pageSize = 20): Promise<JobListOut> {
+export async function listJobs(
+  page = 1,
+  pageSize = 20,
+  hasRedFlags?: boolean | null,
+): Promise<JobListOut> {
   const { data } = await apiClient.get<JobListOut>("/jobs", {
-    params: { page, page_size: pageSize },
+    params: {
+      page,
+      page_size: pageSize,
+      ...(hasRedFlags !== undefined && hasRedFlags !== null
+        ? { has_red_flags: hasRedFlags }
+        : {}),
+    },
   });
   return data;
 }
@@ -106,12 +125,14 @@ export async function updateJob(
 export async function parseJobJd(
   rawJd: string,
   platform?: string,
+  sourceUrl?: string,
 ): Promise<JdParseSubmitResponse> {
   const { data } = await apiClient.post<JdParseSubmitResponse>(
     "/jobs/parse",
     {
       raw_jd: rawJd,
       ...(platform ? { platform } : {}),
+      ...(sourceUrl ? { source_url: sourceUrl } : {}),
     },
   );
   return data;
@@ -535,6 +556,96 @@ export async function executeCommunicate(
     // Execute waits for the userscript to click + send + read markers, which
     // can exceed the default 15s budget under background-tab throttling.
     { timeout: 120_000 },
+  );
+  return data;
+}
+
+// --- Application outcomes & funnel metrics (Phase 1 feedback loop) ---
+
+/**
+ * Record an outcome event (HR replied / rejected / interview / offer) on an
+ * application. The backend also drives the state machine when it allows the
+ * transition (e.g. ``submitted`` → ``interviewing``); otherwise the event is
+ * stored as evidence only. Evidence is a short summary — never chat content.
+ */
+export async function recordOutcome(
+  applicationId: string,
+  payload: OutcomeCreate,
+): Promise<OutcomeOut> {
+  const { data } = await apiClient.post<OutcomeOut>(
+    `/applications/${applicationId}/outcomes`,
+    payload,
+  );
+  return data;
+}
+
+/** List outcome events for an application (oldest first). */
+export async function listOutcomes(
+  applicationId: string,
+): Promise<OutcomeListOut> {
+  const { data } = await apiClient.get<OutcomeListOut>(
+    `/applications/${applicationId}/outcomes`,
+  );
+  return data;
+}
+
+/** User-scoped submission funnel: totals, rates, and match-score buckets. */
+export async function getFunnelMetrics(): Promise<FunnelMetricsOut> {
+  const { data } = await apiClient.get<FunnelMetricsOut>("/metrics/funnel");
+  return data;
+}
+
+// --- Follow-up suggestions & threshold calibration (Phase 5) ---
+
+/**
+ * List the current user's follow-up suggestions (newest first). Pass a
+ * status to filter; omit it to get every suggestion.
+ */
+export async function listFollowUpSuggestions(
+  status?: SuggestionStatus,
+): Promise<FollowUpSuggestionListOut> {
+  const { data } = await apiClient.get<FollowUpSuggestionListOut>(
+    "/applications/follow-up-suggestions",
+    { params: status ? { status } : {} },
+  );
+  return data;
+}
+
+/**
+ * Run the follow-up scan on demand (the scheduler runs it daily). Returns the
+ * newly created suggestions plus the active communicate-gate threshold.
+ */
+export async function runFollowUpScan(): Promise<FollowUpScanOut> {
+  const { data } = await apiClient.post<FollowUpScanOut>(
+    "/applications/follow-up-scan",
+  );
+  return data;
+}
+
+/** Dismiss a pending suggestion (no external effect). */
+export async function dismissFollowUpSuggestion(
+  suggestionId: string,
+): Promise<FollowUpSuggestionOut> {
+  const { data } = await apiClient.post<FollowUpSuggestionOut>(
+    `/applications/follow-up-suggestions/${suggestionId}/dismiss`,
+  );
+  return data;
+}
+
+/** Mark a pending suggestion as actioned (the user started acting on it). */
+export async function actionFollowUpSuggestion(
+  suggestionId: string,
+): Promise<FollowUpSuggestionOut> {
+  const { data } = await apiClient.post<FollowUpSuggestionOut>(
+    `/applications/follow-up-suggestions/${suggestionId}/action`,
+  );
+  return data;
+}
+
+/** The active communicate-gate threshold and whether it was calibrated. */
+export async function getMatchThresholdCalibration(): Promise<MatchThresholdOut> {
+  const { data } = await apiClient.get<MatchThresholdOut>(
+    "/metrics/match-threshold-calibration",
   );
   return data;
 }

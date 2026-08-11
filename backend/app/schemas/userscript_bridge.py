@@ -18,6 +18,7 @@ backend bridge endpoints. Security invariants:
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -55,7 +56,7 @@ class InstructionOut(BaseModel):
             "read_title, read_url, read_content, read_jd, "
             "click_immediate_communicate, fill_opening_message, "
             "send_opening_message, read_communication_result, "
-            "probe_elements."
+            "scan_conversations, probe_elements."
         )
     )
     selector_kind: str | None = Field(
@@ -132,6 +133,23 @@ class JDResultIn(BaseModel):
     page_url_hash: str | None = None
 
 
+class ConversationStatusIn(BaseModel):
+    """One desensitized conversation status entry from ``scan_conversations``.
+
+    Privacy contract (Phase 1 feedback loop): only a hashed conversation key
+    and coarse status flags cross the channel. Chat text, contact names, and
+    message previews must never appear here — the userscript hashes the key
+    client-side before posting.
+    """
+
+    conversation_key_hash: str = Field(
+        min_length=1, max_length=64, description="sha256 hash of the conversation key."
+    )
+    status: Literal["replied", "read", "unread", "unknown"] = Field(
+        description="Coarse conversation state observed on the chat list page."
+    )
+
+
 class ResultIn(BaseModel):
     """Result posted back by the userscript via ``POST /result``."""
 
@@ -172,6 +190,14 @@ class ResultIn(BaseModel):
             "classifies the outcome — the userscript does NOT classify."
         ),
     )
+    conversations: list[ConversationStatusIn] | None = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Desensitized conversation statuses, only for scan_conversations "
+            "results. Hashed keys + status flags only — never chat text."
+        ),
+    )
 
 
 class HeartbeatIn(BaseModel):
@@ -198,6 +224,7 @@ class AckResponse(BaseModel):
 __all__ = [
     "AckResponse",
     "BridgeStatusResponse",
+    "ConversationStatusIn",
     "HeartbeatIn",
     "InstructionOut",
     "JDResultIn",

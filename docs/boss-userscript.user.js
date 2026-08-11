@@ -56,6 +56,13 @@
   const BACKEND_BASE = "http://127.0.0.1:8000/api/v1";
   const BRIDGE = BACKEND_BASE + "/userscript-bridge";
 
+  // Shared bridge channel token (Phase 0 security guardrail). Must match the
+  // backend's BOSS_BRIDGE_CHANNEL_TOKEN when that is configured; leave as ""
+  // for local dev backends without a token. The token is only ever sent as
+  // the X-Bridge-Token header to the local backend — never logged, never in
+  // result payloads.
+  const BRIDGE_TOKEN = "";
+
   const HEARTBEAT_INTERVAL_MS = 5000; // backend CONNECTION_TIMEOUT_S is 15s
   const POLL_BACKOFF_MS = 1000; // pause between poll cycles on error
   const RESULT_POST_TIMEOUT_MS = 10000;
@@ -681,6 +688,73 @@
         };
         return result;
       }
+      if (ins.op === "scan_conversations") {
+        // READ-ONLY scan of the BOSS chat list (Phase 1 feedback loop).
+        // Observes which conversations got a reply / were read and returns
+        // DESSENSITIZED entries only: sha256-hashed conversation keys plus
+        // coarse status flags. Chat text, contact names, and message
+        // previews are never read or sent — only fixed status labels
+        // ("已读" / unread badges) are matched.
+        const itemSelectors = [
+          ".chat-item",
+          ".conversation-item",
+          "[class*='chat-item']",
+          "[class*='conversation-item']",
+        ];
+        let items = [];
+        for (const sel of itemSelectors) {
+          try {
+            items = Array.from(document.querySelectorAll(sel));
+          } catch (_e) {
+            items = [];
+          }
+          if (items.length > 0) break;
+        }
+        if (items.length === 0) {
+          result.success = false;
+          result.error = sanitizeError("chat_list_not_found");
+          return result;
+        }
+        const conversations = [];
+        for (const item of items.slice(0, 50)) {
+          // Conversation key: prefer a stable data attribute / link href.
+          // Never fall back to visible text (that would leak contact names).
+          const link = item.querySelector ? item.querySelector("a[href]") : null;
+          const key =
+            item.getAttribute("data-uid") ||
+            item.getAttribute("data-id") ||
+            item.id ||
+            (link ? link.getAttribute("href") : null);
+          if (!key) continue;
+          // Status classification from fixed labels / badges only.
+          let status = "unknown";
+          const hasUnreadBadge =
+            item.querySelector(".badge, [class*='badge'], [class*='unread']") !== null;
+          let labelText = "";
+          const statusEl = item.querySelector(
+            "[class*='status'], [class*='time'], [class*='read']"
+          );
+          if (statusEl && typeof statusEl.textContent === "string") {
+            // Fixed status label only — capped and never forwarded raw.
+            labelText = statusEl.textContent.trim().slice(0, 20);
+          }
+          if (hasUnreadBadge) {
+            // An unread badge means the other side sent a new message.
+            status = "replied";
+          } else if (labelText.includes("已读")) {
+            status = "read";
+          } else if (labelText.includes("未读")) {
+            status = "replied";
+          }
+          conversations.push({
+            conversation_key_hash: await sha256Short(key),
+            status: status,
+          });
+        }
+        result.conversations = conversations;
+        result.count = conversations.length;
+        return result;
+      }
 
       result.success = false;
       result.error = sanitizeError("unknown_op:" + ins.op);
@@ -705,11 +779,15 @@
   // --- HTTP helpers (GM_xmlhttpRequest bypasses CORS) ----------------------
 
   function gmFetch(url, options) {
+    const headers = options.headers || { "Content-Type": "application/json" };
+    if (BRIDGE_TOKEN) {
+      headers["X-Bridge-Token"] = BRIDGE_TOKEN;
+    }
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: options.method || "GET",
         url: url,
-        headers: options.headers || { "Content-Type": "application/json" },
+        headers: headers,
         data: options.body ? JSON.stringify(options.body) : undefined,
         timeout: options.timeout || 15000,
         onload(resp) {

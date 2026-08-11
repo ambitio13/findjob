@@ -45,6 +45,13 @@ import tempfile
 os.environ["APP_ENV"] = "test"
 os.environ["MODEL_PROVIDER"] = "fake"
 os.environ["RESUME_UPLOAD_DIR"] = tempfile.mkdtemp(prefix="resume_test_")
+# Rate limiting is disabled in tests: no Redis dependency and unlimited
+# request volume per test session (the limiter fails open anyway, but this
+# keeps behaviour deterministic).
+os.environ["RATE_LIMIT_ENABLED"] = "false"
+# Test-only auth secret so register/login can issue real signed tokens. Never
+# reused outside the throwaway test environment.
+os.environ["AUTH_SECRET_KEY"] = "test-auth-secret-not-for-production"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -148,10 +155,11 @@ def client() -> TestClient:
     with SessionLocal() as db:
         db.execute(
             text(
-                "TRUNCATE TABLE user_profiles, resumes, resume_versions, "
+                "TRUNCATE TABLE user_profiles, auth_users, resumes, resume_versions, "
                 "job_postings, job_analyses, generated_artifacts, "
-                "application_records, application_actions, agent_runs, "
-                "agent_steps, tool_calls "
+                "application_records, application_actions, application_outcomes, "
+                "follow_up_suggestions, threshold_calibrations, "
+                "agent_runs, agent_steps, tool_calls "
                 "RESTART IDENTITY CASCADE"
             )
         )

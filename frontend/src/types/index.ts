@@ -15,6 +15,13 @@ export interface PaginatedMeta {
   total: number;
 }
 
+/** Sanitized red-flag summary on job list rows (Phase 3 risk lens). */
+export interface RedFlagSummary {
+  flag_type: string;
+  title: string;
+  severity: string;
+}
+
 export interface JobOut {
   id: string;
   platform: string;
@@ -26,7 +33,11 @@ export interface JobOut {
   jd_raw: string;
   /** Structured parse draft stored in the ``jd_normalized`` JSON column. */
   jd_normalized: Record<string, unknown> | null;
+  /** Listing URL the JD was pasted from (any platform), if provided. */
+  source_url?: string | null;
   created_at: string | null;
+  /** Red flags from the newest JD analysis (empty = none / not analyzed). */
+  red_flags: RedFlagSummary[];
 }
 
 export interface JobListOut {
@@ -44,6 +55,8 @@ export interface JobCreate {
   platform?: string;
   /** Structured parse draft persisted alongside the manual fields. */
   jd_normalized?: Record<string, unknown> | null;
+  /** Listing URL the JD was pasted from (any platform). */
+  source_url?: string | null;
 }
 
 /**
@@ -403,6 +416,41 @@ export interface JdAnalysisRiskPoint {
   severity: JdAnalysisSeverity;
 }
 
+/** Job-quality red-flag categories (Phase 3 risk lens). */
+export type RedFlagType =
+  | "training_loan"
+  | "training_fee"
+  | "outsourcing_onsite"
+  | "inflated_salary"
+  | "long_term_listing"
+  | "other";
+
+/** One red flag with a JD original-text evidence quote. */
+export interface JdRedFlag {
+  flag_type: RedFlagType | string;
+  title: string;
+  detail: string;
+  severity: JdAnalysisSeverity;
+  evidence_quote?: string | null;
+}
+
+/** Structured salary parsing (range normalized to k/month where derivable). */
+export interface JdSalaryStructure {
+  range_text?: string | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  period?: "monthly" | "yearly" | "hourly" | "daily" | "unknown";
+  composition?: string[];
+  caveats?: string[];
+}
+
+/** One company-stability signal with optional JD evidence quote. */
+export interface JdStabilitySignal {
+  polarity: "positive" | "negative" | "unknown";
+  signal: string;
+  evidence_quote?: string | null;
+}
+
 export interface JdAnalysisEvidence {
   claim: string;
   source: JdAnalysisEvidenceSource;
@@ -428,6 +476,10 @@ export interface JdAnalysisModelOutput {
   skill_gaps: string[];
   interview_preparation: string[];
   recommendation: JdAnalysisRecommendation;
+  // Phase 3 job-risk lens. Optional: pre-extension artifacts omit them.
+  salary_structure?: JdSalaryStructure | null;
+  red_flags?: JdRedFlag[];
+  stability_signals?: JdStabilitySignal[];
 }
 
 /** Body of POST /api/v1/jobs/{job_id}/analyses. */
@@ -795,12 +847,13 @@ export interface ApplicationTimelineCreate {
   metadata?: Record<string, unknown>;
 }
 
-/** The four readiness artifact types the panel can generate. */
+/** The readiness artifact types the panel can generate. */
 export type ReadinessArtifactType =
   | "hr_opening_message"
   | "resume_rewrite_snippet"
   | "skill_gap_plan"
-  | "interview_prep";
+  | "interview_prep"
+  | "targeted_resume";
 
 /** Lightweight run summary returned immediately by the generate endpoint. */
 export interface RunReadinessRunSummary {
@@ -883,4 +936,115 @@ export interface CommunicatePrepareOut {
 export interface CommunicateExecuteOut {
   action: ApplicationActionOut;
   message: string;
+}
+
+// --- Application outcomes & funnel metrics (Phase 1 feedback loop) ---
+
+/** Outcome of a submission (mirrors backend ``OutcomeType`` enum). */
+export type OutcomeType = "replied" | "rejected" | "interview" | "offer";
+
+/** Provenance of an outcome event (mirrors backend ``OutcomeSource`` enum). */
+export type OutcomeSource = "manual" | "userscript_observed";
+
+/** Body of POST /applications/{id}/outcomes. */
+export interface OutcomeCreate {
+  outcome_type: OutcomeType;
+  occurred_at?: string | null;
+  source?: OutcomeSource;
+  /** Short human summary only — never chat content (privacy contract). */
+  evidence?: string | null;
+}
+
+/** One persisted outcome event (mirrors backend ``OutcomeOut``). */
+export interface OutcomeOut {
+  id: string;
+  application_id: string;
+  outcome_type: OutcomeType;
+  source: OutcomeSource;
+  occurred_at: string;
+  evidence: string | null;
+  created_at: string | null;
+}
+
+export interface OutcomeListOut {
+  items: OutcomeOut[];
+}
+
+/** Funnel metrics bucketed by the job's match score (calibration view). */
+export interface MatchScoreBucketOut {
+  bucket: string;
+  applications: number;
+  replied: number;
+  interviews: number;
+}
+
+/** Funnel metrics bucketed by the opening message's prompt version. */
+export interface OpeningPromptBucketOut {
+  prompt_version: string;
+  applications: number;
+  replied: number;
+  interviews: number;
+}
+
+/** User-scoped submission funnel (mirrors backend ``FunnelMetricsOut``). */
+export interface FunnelMetricsOut {
+  applications_total: number;
+  submitted: number;
+  with_reply: number;
+  interviews: number;
+  offers: number;
+  rejected: number;
+  /** replied+ among submitted; null when nothing was submitted yet. */
+  reply_rate: number | null;
+  interview_rate: number | null;
+  by_match_score: MatchScoreBucketOut[];
+  /** Bucketed by the latest opening-message prompt version per job. */
+  by_opening_prompt: OpeningPromptBucketOut[];
+}
+
+// --- Follow-up suggestions & threshold calibration (Phase 5) ---
+
+/** Follow-up suggestion category (mirrors backend ``SuggestionType``). */
+export type SuggestionType =
+  | "change_opening_message"
+  | "skill_gap_plan"
+  | "low_reply_rate_direction";
+
+/** Lifecycle of a suggestion (mirrors backend ``SuggestionStatus``). */
+export type SuggestionStatus = "pending" | "actioned" | "dismissed";
+
+/** One advisory follow-up suggestion (mirrors backend ``FollowUpSuggestionOut``). */
+export interface FollowUpSuggestionOut {
+  id: string;
+  application_id: string;
+  suggestion_type: SuggestionType;
+  title: string;
+  detail: string | null;
+  status: SuggestionStatus;
+  resolved_at: string | null;
+  created_at: string | null;
+}
+
+export interface FollowUpSuggestionListOut {
+  items: FollowUpSuggestionOut[];
+}
+
+/** Result of one follow-up scan (mirrors backend ``FollowUpScanOut``). */
+export interface FollowUpScanOut {
+  created: number;
+  suggestions: FollowUpSuggestionOut[];
+  /** Communicate-gate threshold in force after the scan. */
+  active_threshold: number;
+  calibrated_now: boolean;
+}
+
+/** Active communicate-gate threshold and provenance (backend ``MatchThresholdOut``). */
+export interface MatchThresholdOut {
+  threshold: number;
+  /** ``calibrated`` when derived from outcome data, ``default`` otherwise. */
+  source: "calibrated" | "default" | string;
+  method: string | null;
+  sample_count: number | null;
+  details: Record<string, unknown> | null;
+  calibrated_at: string | null;
 }

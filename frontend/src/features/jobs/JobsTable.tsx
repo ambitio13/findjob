@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { ProTable, type ActionType, type ProColumns } from "@ant-design/pro-components";
-import { Button, Tag, message } from "antd";
+import { Button, Segmented, Tag, message } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import type { AgentRunOut, JobOut } from "@/types";
 import {
@@ -9,6 +9,7 @@ import {
   listJobs,
 } from "@/api/client";
 import { JobCreateModal } from "@/features/jobs/JobCreateModal";
+import { RED_FLAG_COLOR, RED_FLAG_LABEL } from "@/features/jobs/redFlags";
 import { useNavigate } from "react-router-dom";
 import {
   ACTIVE_AGENT_RUN_STATUSES,
@@ -115,6 +116,11 @@ export function JobsTable() {
   const [currentJobs, setCurrentJobs] = useState<JobOut[]>([]);
   const { statusByJobId, hasActiveParse } = useParseStatus(currentJobs);
 
+  // Phase 3 risk-lens filter: null = all, true = only flagged, false = only
+  // clean. Changing it reloads the table (the filter runs before pagination
+  // server-side, so totals stay correct).
+  const [riskFilter, setRiskFilter] = useState<"all" | "flagged" | "clean">("all");
+
   // Auto-refresh the list while any parse run is active. We re-fire the
   // ProTable request on an interval; when all parses reach a terminal state
   // (hasActiveParse becomes false) the interval clears.
@@ -147,6 +153,29 @@ export function JobsTable() {
     { title: "城市", dataIndex: "location", width: 100 },
     { title: "薪资", dataIndex: "salary_range", width: 120 },
     { title: "方向", dataIndex: "direction", width: 100 },
+    {
+      title: "风险标签",
+      dataIndex: "red_flags",
+      width: 160,
+      search: false,
+      render: (_, record) => {
+        const flags = record.red_flags ?? [];
+        if (flags.length === 0) return <Tag color="green">无红旗</Tag>;
+        return (
+          <>
+            {flags.map((f) => (
+              <Tag
+                key={`${record.id}-${f.flag_type}-${f.title}`}
+                color={RED_FLAG_COLOR[f.severity] ?? "gold"}
+                title={f.title}
+              >
+                {RED_FLAG_LABEL[f.flag_type] ?? f.title}
+              </Tag>
+            ))}
+          </>
+        );
+      },
+    },
     {
       title: "解析状态",
       dataIndex: "jd_normalized",
@@ -192,7 +221,9 @@ export function JobsTable() {
           try {
             const page = params.current ?? 1;
             const pageSize = params.pageSize ?? 20;
-            const data = await listJobs(page, pageSize);
+            const hasRedFlags =
+              riskFilter === "all" ? null : riskFilter === "flagged";
+            const data = await listJobs(page, pageSize, hasRedFlags);
             setCurrentJobs(data.items);
             return {
               data: data.items,
@@ -204,7 +235,18 @@ export function JobsTable() {
             return { data: [], total: 0, success: false };
           }
         }}
+        params={{ riskFilter }}
         toolBarRender={() => [
+          <Segmented
+            key="riskFilter"
+            value={riskFilter}
+            onChange={(v) => setRiskFilter(v as typeof riskFilter)}
+            options={[
+              { label: "全部", value: "all" },
+              { label: "有红旗", value: "flagged" },
+              { label: "无红旗", value: "clean" },
+            ]}
+          />,
           <Button
             key="create"
             type="primary"

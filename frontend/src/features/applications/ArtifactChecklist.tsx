@@ -4,8 +4,10 @@ import {
   Button,
   Card,
   Empty,
+  Input,
   List,
   message,
+  Modal,
   Popconfirm,
   Select,
   Space,
@@ -41,6 +43,7 @@ const ARTIFACT_TYPES: ReadinessArtifactType[] = [
   "resume_rewrite_snippet",
   "skill_gap_plan",
   "interview_prep",
+  "targeted_resume",
 ];
 
 const WORKFLOW_LABEL = "生成";
@@ -71,13 +74,14 @@ interface Props {
 }
 
 /**
- * Checklist + generator for the four readiness artifact types.
+ * Checklist + generator for the readiness artifact types.
  *
  * Supports both single-type generation (user clicks one) and bulk
- * auto-generation (all four types triggered in parallel on mount when
+ * auto-generation (all types triggered in parallel on mount when
  * ``autoGenerate`` is ``true``). The 409 duplicate-active-run guard is silently
  * swallowed during auto-generation so a re-mount never blocks on an in-flight
- * run.
+ * run. Note ``targeted_resume`` fails fast (non-retryable) when the resume
+ * has no extracted facts — the backend refuses untraceable rewrites.
  *
  * Multiple concurrent runs are tracked via a ``Map<type, runId>``. A single
  * ``useAgentRunPolling`` instance polls the most-recently-enqueued run; on
@@ -385,16 +389,22 @@ function ArtifactRow({
       </Space>
       {artifact ? (
         <Space direction="vertical" size={2} style={{ width: "100%" }}>
-          <Paragraph
-            style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 13 }}
-            ellipsis={expanded ? false : { rows: 2, expandable: true, onExpand: () => setExpanded(true) }}
-          >
-            {formatContent(artifact.content)}
-          </Paragraph>
+          {type === "targeted_resume" ? (
+            <TargetedResumePreview artifact={artifact} />
+          ) : (
+            <Paragraph
+              style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 13 }}
+              ellipsis={expanded ? false : { rows: 2, expandable: true, onExpand: () => setExpanded(true) }}
+            >
+              {formatContent(artifact.content)}
+            </Paragraph>
+          )}
           <Space>
-            <Button size="small" onClick={() => setExpanded((v) => !v)}>
-              {expanded ? "收起" : "展开"}
-            </Button>
+            {type === "targeted_resume" ? null : (
+              <Button size="small" onClick={() => setExpanded((v) => !v)}>
+                {expanded ? "收起" : "展开"}
+              </Button>
+            )}
             <Popconfirm
               title={`重新生成 ${ARTIFACT_TYPE_LABEL[type]}？`}
               description="已有材料将被保留，新结果出现在列表顶部。"
@@ -427,7 +437,7 @@ function ArtifactRow({
 function formatContent(content: string): string {
   try {
     const parsed = JSON.parse(content) as Record<string, unknown>;
-    // Prefer human-readable fields common across the four output contracts.
+    // Prefer human-readable fields common across the output contracts.
     const candidates = ["message", "hook", "role_summary", "summary"];
     for (const key of candidates) {
       const v = parsed[key];
@@ -443,6 +453,181 @@ function formatContent(content: string): string {
   } catch {
     return content;
   }
+}
+
+// ---------------------------------------------------------------------------
+// targeted_resume preview: traceable bullets + editable one-page markdown
+// ---------------------------------------------------------------------------
+
+interface TargetedResumeBulletView {
+  section: string;
+  bullet: string;
+  matched_requirement: string;
+  source_fact_refs: string[];
+}
+
+interface TargetedResumeView {
+  headline: string;
+  targeted_bullets: TargetedResumeBulletView[];
+  matched_requirements: string[];
+  do_not_claim: string[];
+  one_page_markdown: string;
+}
+
+function parseTargetedResume(content: string): TargetedResumeView | null {
+  try {
+    const parsed = JSON.parse(content) as TargetedResumeView;
+    if (!parsed || !Array.isArray(parsed.targeted_bullets)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Render a one-page resume image from markdown via an offscreen canvas.
+ * Deliberately dependency-free: headings are bold, bullets get a marker,
+ * and the PNG is downloaded through a temporary object URL.
+ */
+function downloadResumeImage(markdown: string, filename: string) {
+  const lines = markdown.split("\n");
+  const lineHeight = 24;
+  const padding = 36;
+  const width = 860;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = lines.length * lineHeight + padding * 2;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#1f1f1f";
+  ctx.textBaseline = "top";
+  lines.forEach((rawLine, i) => {
+    const y = padding + i * lineHeight;
+    const isHeading = /^#{1,3}\s/.test(rawLine);
+    ctx.font = isHeading ? "bold 17px sans-serif" : "14px sans-serif";
+    const text = rawLine
+      .replace(/^#{1,3}\s+/, "")
+      .replace(/^[-*]\s+/, "• ");
+    ctx.fillText(text, padding, y, width - padding * 2);
+  });
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, "image/png");
+}
+
+/**
+ * Dedicated preview for ``targeted_resume``: shows the headline, every
+ * rewritten bullet with its JD match + traceable fact refs, the
+ * ``do_not_claim`` guard list, and copy/download/edit actions for the
+ * one-page markdown.
+ */
+function TargetedResumePreview({ artifact }: { artifact: ReadinessArtifactOut }) {
+  const view = useMemo(() => parseTargetedResume(artifact.content), [artifact.content]);
+  const [editOpen, setEditOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [applied, setApplied] = useState<string | null>(null);
+  const [messageApi, contextHolder] = message.useMessage();
+
+  if (!view) {
+    return (
+      <Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 13 }}>
+        {artifact.content}
+      </Paragraph>
+    );
+  }
+
+  const markdown = applied ?? view.one_page_markdown ?? "";
+
+  const copyMarkdown = async () => {
+    try {
+      await navigator.clipboard.writeText(markdown);
+      messageApi.success("已复制一页式简历 Markdown");
+    } catch {
+      messageApi.error("复制失败，请手动选择文本复制");
+    }
+  };
+
+  return (
+    <Space direction="vertical" size={4} style={{ width: "100%" }}>
+      {contextHolder}
+      <Text strong style={{ fontSize: 13 }}>
+        {view.headline}
+      </Text>
+      <List
+        size="small"
+        dataSource={view.targeted_bullets}
+        renderItem={(b) => (
+          <List.Item style={{ padding: "4px 0" }}>
+            <Space direction="vertical" size={0} style={{ width: "100%" }}>
+              <Text style={{ fontSize: 13 }}>
+                【{b.section}】{b.bullet}
+              </Text>
+              <Space size={4} wrap>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  匹配：{b.matched_requirement}
+                </Text>
+                {(b.source_fact_refs ?? []).map((ref) => (
+                  <Tag key={ref} color="blue" style={{ fontSize: 11 }}>
+                    溯源 {ref}
+                  </Tag>
+                ))}
+              </Space>
+            </Space>
+          </List.Item>
+        )}
+      />
+      {view.do_not_claim && view.do_not_claim.length > 0 ? (
+        <Text type="danger" style={{ fontSize: 12 }}>
+          不可声称：{view.do_not_claim.join("；")}
+        </Text>
+      ) : null}
+      <Space wrap>
+        <Button size="small" onClick={() => { setDraft(markdown); setEditOpen(true); }}>
+          编辑
+        </Button>
+        <Button size="small" type="primary" ghost onClick={() => void copyMarkdown()}>
+          复制一页简历
+        </Button>
+        <Button
+          size="small"
+          onClick={() => downloadResumeImage(markdown, "targeted-resume.png")}
+        >
+          下载图片
+        </Button>
+        {applied !== null ? (
+          <Button size="small" onClick={() => setApplied(null)}>
+            恢复生成版
+          </Button>
+        ) : null}
+      </Space>
+      <Modal
+        title="编辑一页式简历（仅本地修改，不影响已生成材料）"
+        open={editOpen}
+        onCancel={() => setEditOpen(false)}
+        onOk={() => {
+          setApplied(draft);
+          setEditOpen(false);
+        }}
+        okText="应用"
+        cancelText="取消"
+        width={720}
+      >
+        <Input.TextArea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          autoSize={{ minRows: 12, maxRows: 24 }}
+        />
+      </Modal>
+    </Space>
+  );
 }
 
 function formatTime(ts: string | null): string {

@@ -14,9 +14,13 @@ Two layers:
 2. :func:`apply_match_safety_gate` — takes the full
    ``MatchDecisionModelOutput`` and may downgrade ``communicate`` →
    ``needs_review`` when:
-   - ``score < 0.6`` (low confidence), or
+   - ``score < min_score`` (low confidence; defaults to
+     :data:`COMMUNICATE_MIN_SCORE`, Phase 5 may inject a per-user
+     statistically calibrated value), or
    - ``missing_requirements`` is non-empty, or
-   - ``opening_message`` fails :func:`validate_opening_message`.
+   - ``opening_message`` is missing (``None``) or fails
+     :func:`validate_opening_message` — a communicate decision without a
+     valid message has nothing lawful to send.
 
    ``skip`` and ``needs_review`` decisions pass through unchanged.
 
@@ -92,14 +96,20 @@ def validate_opening_message(msg: str | None) -> tuple[str | None, str | None]:
 
 def apply_match_safety_gate(
     output: MatchDecisionModelOutput,
+    *,
+    min_score: float = COMMUNICATE_MIN_SCORE,
 ) -> MatchDecisionModelOutput:
     """Apply deterministic backend safety rules to a validated match decision.
 
     May downgrade ``communicate`` → ``needs_review`` when:
 
-    - ``score < COMMUNICATE_MIN_SCORE`` (low confidence).
+    - ``score < min_score`` (low confidence). ``min_score`` defaults to
+      :data:`COMMUNICATE_MIN_SCORE`; callers may inject a per-user
+      calibrated threshold (Phase 5) — the gate logic itself never changes.
     - ``missing_requirements`` is non-empty (key fields unverified).
-    - ``opening_message`` fails :func:`validate_opening_message`.
+    - ``opening_message`` is missing (``None``) or fails
+      :func:`validate_opening_message` — communicating without a valid
+      message is never allowed.
 
     ``skip`` and ``needs_review`` decisions pass through unchanged. When the
     decision is downgraded, ``opening_message`` is set to ``None`` so no
@@ -112,7 +122,7 @@ def apply_match_safety_gate(
         return output
 
     # --- Low-confidence gate ---
-    if output.score < COMMUNICATE_MIN_SCORE:
+    if output.score < min_score:
         return MatchDecisionModelOutput(
             decision=MatchDecision.needs_review,
             score=output.score,
@@ -134,9 +144,10 @@ def apply_match_safety_gate(
         )
 
     # --- Opening-message validation gate ---
+    # A communicate decision without a usable message (None, empty, or
+    # invalid) cannot proceed — there would be nothing lawful to send.
     cleaned_msg, _error = validate_opening_message(output.opening_message)
-    if cleaned_msg is None and output.opening_message is not None:
-        # The model returned a message but it failed validation — downgrade.
+    if cleaned_msg is None:
         return MatchDecisionModelOutput(
             decision=MatchDecision.needs_review,
             score=output.score,

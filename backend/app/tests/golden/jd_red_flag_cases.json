@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "description": "Golden set of annotated JD excerpts for the Phase 3 job-risk lens (red flags). Each case pairs a JD excerpt with the human-labeled red flag(s) a correct analysis should surface. Today these keep the annotation vocabulary consistent with the JdRedFlag schema; the model-quality comparison runs once a real (non-Fake) provider is wired into the eval harness.",
+  "cases": [
+    {
+      "id": "training_loan_pitch",
+      "jd_excerpt": "无经验亦可入职，入职前需参加我司实训营，实训费用可从入职后工资分期扣除。",
+      "expected_red_flags": [
+        { "flag_type": "training_loan", "severity": "high" }
+      ]
+    },
+    {
+      "id": "upfront_training_fee",
+      "jd_excerpt": "岗前培训为期两周，需缴纳培训押金 3000 元，考核通过后退还。",
+      "expected_red_flags": [
+        { "flag_type": "training_fee", "severity": "high" }
+      ]
+    },
+    {
+      "id": "outsourcing_onsite",
+      "jd_excerpt": "录用后派驻甲方现场办公，劳动关系与外包公司签订。",
+      "expected_red_flags": [
+        { "flag_type": "outsourcing_onsite", "severity": "medium" }
+      ]
+    },
+    {
+      "id": "inflated_salary_range",
+      "jd_excerpt": "综合薪资 8k-40k，上不封顶，多劳多得。",
+      "expected_red_flags": [
+        { "flag_type": "inflated_salary", "severity": "medium" }
+      ]
+    },
+    {
+      "id": "clean_jd_no_flags",
+      "jd_excerpt": "负责后端服务设计与开发，要求 3 年以上 Python 经验，薪资 20k-30k/月。",
+      "expected_red_flags": []
+    }
+  ]
+}

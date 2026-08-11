@@ -1,7 +1,7 @@
 """Prompt module for the readiness artifact generation workflow.
 
-Builds the chat messages passed to ``ModelGateway.chat`` for each of the four
-readiness artifact types. The system template is shared; the user message
+Builds the chat messages passed to ``ModelGateway.chat`` for each readiness
+artifact type. The system template is shared; the user message
 varies by ``artifact_type`` so the model knows which output schema to produce.
 
 Context-size guards cap the resume raw text (~12k chars) and JD text (~8k
@@ -68,7 +68,68 @@ _SCHEMA_LINES: dict[str, list[str]] = {
         '  "questions_to_ask_interviewer": string[]',
         "}",
     ],
+    ReadinessArtifactType.targeted_resume.value: [
+        "Output JSON schema (field names are exact):",
+        "{",
+        '  "headline": string (一行求职定位语),',
+        '  "targeted_bullets": [',
+        "    {",
+        '      "section": string (简历板块名),',
+        '      "bullet": string (按JD改写后的条目),',
+        '      "matched_requirement": string (对应的JD要求/关键词),',
+        '      "source_fact_refs": string[] (引用的简历事实编号，至少一个，如 ["P1","S2"])',
+        "    }",
+        "  ],",
+        '  "matched_requirements": string[],',
+        '  "do_not_claim": string[],',
+        '  "one_page_markdown": string (一页式简历Markdown全文)',
+        "}",
+        "Traceability rules (违反任何一条都会导致结果被拒绝):",
+        "- 每条 targeted_bullets 的 source_fact_refs 必须非空，且只能引用",
+        "  '## NUMBERED RESUME FACTS' 中出现过的编号。",
+        "- 严禁编造简历中不存在的经历、技能或数据；无法支撑的诉求放入 do_not_claim。",
+        "- one_page_markdown 只能由 targeted_bullets 与编号事实中的信息组成。",
+    ],
 }
+
+#: Prefix used to number each resume-fact section so the model can cite stable
+#: fact IDs (e.g. ``E1`` education, ``W2`` work experience) in
+#: ``targeted_resume.source_fact_refs``. Order here is the numbering order.
+_FACT_SECTION_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("education", "E"),
+    ("work_experience", "W"),
+    ("projects", "P"),
+    ("skills", "S"),
+    ("strengths", "ST"),
+    ("highlights", "H"),
+)
+
+
+def _fact_to_text(section: str, item: object) -> str:
+    """Flatten one resume-fact item into a single compact text line."""
+    if isinstance(item, dict):
+        parts = [str(v) for v in item.values() if v not in (None, "", [])]
+        return f"{section}: " + " | ".join(parts)
+    return f"{section}: {item}"
+
+
+def enumerate_resume_facts(facts: dict[str, Any] | None) -> dict[str, str]:
+    """Assign stable IDs to extracted resume facts: ``{"E1": text, ...}``.
+
+    The same mapping is used by the prompt builder (so the model sees the IDs)
+    and by the executor's traceability validation (so refs can be resolved).
+    Returns an empty dict when no structured facts were extracted — in that
+    case ``targeted_resume`` generation must fail validation rather than
+    produce untraceable rewrites.
+    """
+    numbered: dict[str, str] = {}
+    for section, prefix in _FACT_SECTION_PREFIXES:
+        items = (facts or {}).get(section)
+        if not isinstance(items, list):
+            continue
+        for idx, item in enumerate(items, start=1):
+            numbered[f"{prefix}{idx}"] = _fact_to_text(section, item)
+    return numbered
 
 
 @dataclass
@@ -182,6 +243,22 @@ def build_readiness_messages(
         "Tailor it specifically to the candidate's resume and the job description below."
     )
 
+    # For targeted_resume the model must cite numbered fact IDs; expose the
+    # numbered list explicitly so prompt and validation share one source of truth.
+    numbered_facts_section: list[str] = []
+    if context.artifact_type == ReadinessArtifactType.targeted_resume.value:
+        numbered = enumerate_resume_facts(resume_facts)
+        numbered_facts_section = ["", "## NUMBERED RESUME FACTS"]
+        if numbered:
+            numbered_facts_section.extend(
+                f"- [{fact_id}] {text}" for fact_id, text in numbered.items()
+            )
+        else:
+            numbered_facts_section.append(
+                "(no structured resume facts available — you MUST refuse to "
+                "invent any content)"
+            )
+
     user_content = "\n".join(
         [
             f"## TASK\n{artifact_instruction}",
@@ -191,6 +268,7 @@ def build_readiness_messages(
             "",
             "## RESUME",
             *resume_lines,
+            *numbered_facts_section,
             "",
             "## JOB DESCRIPTION",
             *job_lines,

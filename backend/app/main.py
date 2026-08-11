@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.rate_limit import RateLimitMiddleware
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
@@ -27,6 +28,9 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    # Phase 0 guardrail: per-IP fixed-window limits (auth / model / global).
+    # Fails open when Redis is unavailable.
+    app.add_middleware(RateLimitMiddleware)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
     return app

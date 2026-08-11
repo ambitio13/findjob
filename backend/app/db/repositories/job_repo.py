@@ -28,6 +28,7 @@ def create(
     salary_range: str | None = None,
     direction: str | None = None,
     jd_normalized: dict[str, Any] | None = None,
+    source_url: str | None = None,
 ) -> JobPosting:
     """Insert a ``JobPosting`` row and return it (not yet committed)."""
     job = JobPosting(
@@ -40,6 +41,7 @@ def create(
         direction=direction,
         jd_raw=jd_raw,
         jd_normalized=jd_normalized,
+        source_url=source_url,
     )
     db.add(job)
     db.flush()
@@ -83,6 +85,7 @@ def update(db: Session, job: JobPosting, **fields: Any) -> JobPosting:
         "external_id",
         "jd_raw",
         "jd_normalized",
+        "source_url",
     }
     for key, value in fields.items():
         if key in editable:
@@ -129,9 +132,23 @@ def list_for_user(
     *,
     page: int = 1,
     page_size: int = 20,
+    id_filter: set[str] | None = None,
+    exclude_ids: set[str] | None = None,
 ) -> tuple[list[JobPosting], int]:
-    """Return ``(rows, total)`` of jobs owned by ``user_id``, newest first."""
+    """Return ``(rows, total)`` of jobs owned by ``user_id``, newest first.
+
+    ``id_filter`` restricts to the given ids (empty set ⇒ empty result, so
+    callers can express "no matches" without a special case); ``exclude_ids``
+    drops the given ids. Both power the job-list red-flag filter (Phase 3)
+    while keeping pagination counts correct.
+    """
     base_filter = JobPosting.user_id == user_id
+    if id_filter is not None:
+        if not id_filter:
+            return [], 0
+        base_filter = base_filter & JobPosting.id.in_(id_filter)
+    if exclude_ids:
+        base_filter = base_filter & JobPosting.id.not_in(exclude_ids)
     total = db.execute(select(func.count()).select_from(JobPosting).where(base_filter)).scalar_one()
     rows = (
         db.execute(

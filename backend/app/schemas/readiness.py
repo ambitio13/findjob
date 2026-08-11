@@ -24,7 +24,7 @@ from app.schemas.common import BaseSchema
 
 
 class ReadinessArtifactType(StrEnum):
-    """The four readiness artifact types that can be generated for an application.
+    """The readiness artifact types that can be generated for an application.
 
     Stored on ``GeneratedArtifact.artifact_type`` and used in the API path.
     """
@@ -33,6 +33,7 @@ class ReadinessArtifactType(StrEnum):
     resume_rewrite_snippet = "resume_rewrite_snippet"
     skill_gap_plan = "skill_gap_plan"
     interview_prep = "interview_prep"
+    targeted_resume = "targeted_resume"
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +90,52 @@ class InterviewPrepOutput(BaseModel):
     answer_points: list[str] = Field(default_factory=list)
     portfolio_talking_points: list[str] = Field(default_factory=list)
     questions_to_ask_interviewer: list[str] = Field(default_factory=list)
+
+
+class TargetedResumeBullet(BaseModel):
+    """One JD-targeted resume bullet with mandatory fact provenance.
+
+    ``source_fact_refs`` is the traceability contract: every bullet must cite
+    at least one numbered resume fact ID (e.g. ``"P1"``, ``"W2"``) that was
+    shown in the prompt. The executor rejects the whole output when any ref
+    cannot be resolved against the extracted resume facts — this is the hard
+    anti-hallucination gate for ``targeted_resume``.
+    """
+
+    section: str = Field(description="简历板块名（如 项目经历/工作经历/技能）。")
+    bullet: str = Field(description="按 JD 关键词重排/改写后的条目正文。")
+    matched_requirement: str = Field(
+        description="该条目对应的 JD 要求或关键词。",
+    )
+    source_fact_refs: list[str] = Field(
+        min_length=1,
+        description="引用的简历事实编号（prompt 中编号列表的 ID），至少一个。",
+    )
+
+
+class TargetedResumeOutput(BaseModel):
+    """Validated structured output for ``targeted_resume``.
+
+    A one-page resume re-tailored to the JD. Every rewritten bullet is
+    traceable to extracted resume facts via ``source_fact_refs``; the model
+    must never invent experience. ``do_not_claim`` lists claims the resume
+    does NOT support, and ``one_page_markdown`` is the copy-ready page.
+    """
+
+    headline: str = Field(description="一行求职定位语（针对该岗位）。")
+    targeted_bullets: list[TargetedResumeBullet] = Field(
+        min_length=1,
+        description="按 JD 重排/改写的简历条目，每条必须溯源。",
+    )
+    matched_requirements: list[str] = Field(
+        default_factory=list,
+        description="简历已满足的 JD 要求。",
+    )
+    do_not_claim: list[str] = Field(
+        default_factory=list,
+        description="简历无支撑、不可声称的能力或经历。",
+    )
+    one_page_markdown: str = Field(description="一页式简历 Markdown 全文。")
 
 
 # ---------------------------------------------------------------------------

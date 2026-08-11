@@ -55,6 +55,7 @@ from app.db.models.models import (
 from app.db.repositories import agent_run_repo, generated_artifact_repo, resume_repo
 from app.db.repositories.agent_run_repo import AgentRun
 from app.models_gateway.base import ModelGateway
+from app.services import followup_service
 
 _log = get_logger("app.services.boss_match_service")
 
@@ -432,9 +433,12 @@ async def _execute_boss_match(
 
     # Apply the deterministic backend safety gate. This may downgrade
     # ``communicate`` → ``needs_review`` but never produces a ``communicate``
-    # decision from a non-communicate one.
+    # decision from a non-communicate one. The low-confidence bound is the
+    # user's calibrated threshold when Phase 5 has derived one from outcome
+    # data; otherwise the module default applies.
     raw_decision = model_output.decision
-    gated_output = apply_match_safety_gate(model_output)
+    min_score = followup_service.active_match_threshold(db, current_user.id)
+    gated_output = apply_match_safety_gate(model_output, min_score=min_score)
     safety_downgraded = gated_output.decision != raw_decision
 
     agent_run_repo.add_step(

@@ -595,3 +595,26 @@ async def platform_guided_submit_prepare(
         )
         fail_run(payload.agent_run_id, error="platform guided submit prepare failed")
         return "failed"
+
+
+async def daily_followup_scan(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Scheduler handler: run the Phase 5 follow-up scan for every user.
+
+    Registered both as an arq cron job (daily) and as a regular ``Function``
+    so it can be enqueued manually. Unlike workflow handlers it carries no
+    payload and no ``AgentRun`` — it is pure bookkeeping over outcome data
+    (advisory suggestions + threshold calibration) and never triggers
+    external effects.
+    """
+    _ = ctx
+    # Local import keeps the queue module import-cheap for unrelated workers.
+    from app.services import followup_service
+
+    with SessionLocal() as db:
+        total_created = followup_service.scan_all_users(db)
+    _log.info(
+        "queue.daily_followup_scan_completed",
+        queue_namespace=_queue_namespace(),
+        total_created=total_created,
+    )
+    return {"created": total_created}

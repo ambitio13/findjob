@@ -13,6 +13,7 @@ run fully offline. All other prompts get the original echo behavior.
 from __future__ import annotations
 
 import json
+import re
 
 from app.models_gateway.base import (
     ChatRequest,
@@ -105,9 +106,12 @@ class FakeModelGateway(ModelGateway):
 
         if _is_readiness_prompt(request.messages):
             artifact_type = _detect_readiness_artifact_type(request.messages)
-            fake_output = _READINESS_FAKE_OUTPUTS.get(
-                artifact_type, _READINESS_FAKE_OUTPUTS["hr_opening_message"]
-            )
+            if artifact_type == "targeted_resume":
+                fake_output = _targeted_resume_fake_output(request.messages)
+            else:
+                fake_output = _READINESS_FAKE_OUTPUTS.get(
+                    artifact_type, _READINESS_FAKE_OUTPUTS["hr_opening_message"]
+                )
             content = json.dumps(fake_output, ensure_ascii=False)
             usage = ChatUsage(
                 prompt_tokens=len(content) + sum(len(m.content) for m in request.messages),
@@ -239,6 +243,7 @@ def _detect_readiness_artifact_type(messages: list) -> str:
     """
     for msg in messages:
         for at in (
+            "targeted_resume",
             "hr_opening_message",
             "resume_rewrite_snippet",
             "skill_gap_plan",
@@ -272,6 +277,32 @@ _JD_ANALYSIS_FAKE_OUTPUT = {
     "skill_gaps": ["Kafka"],
     "interview_preparation": ["Review Kafka basics"],
     "recommendation": "possible_match",
+    # Phase 3 job-risk lens: deterministic so E2E tests can assert the
+    # red-flag summary persisted on JobAnalysis.red_flags.
+    "salary_structure": {
+        "range_text": "25k-40k",
+        "min_value": 25.0,
+        "max_value": 40.0,
+        "period": "monthly",
+        "composition": ["底薪", "绩效"],
+        "caveats": [],
+    },
+    "red_flags": [
+        {
+            "flag_type": "inflated_salary",
+            "title": "薪资区间过宽",
+            "detail": "25k-40k 区间跨度大，实际 offer 可能贴近下限。",
+            "severity": "low",
+            "evidence_quote": "25k-40k",
+        },
+    ],
+    "stability_signals": [
+        {
+            "polarity": "unknown",
+            "signal": "JD 未描述团队规模与汇报线。",
+            "evidence_quote": None,
+        },
+    ],
 }
 
 
@@ -356,6 +387,58 @@ _READINESS_FAKE_OUTPUTS = {
         "questions_to_ask_interviewer": ["团队的CI/CD流程是怎样的", "技术栈未来规划"],
     },
 }
+
+
+#: Matches the numbered resume-fact lines the targeted_resume prompt injects
+#: (``- [E1] education: ...``). Only these list lines are harvested — schema
+#: examples elsewhere in the prompt are deliberately ignored.
+_TARGETED_RESUME_FACT_REF_RE = re.compile(r"^- \[([A-Z]+\d+)\] ", re.MULTILINE)
+
+
+def _targeted_resume_fake_output(messages: list) -> dict:
+    """Build a deterministic ``targeted_resume`` payload.
+
+    Fact refs are harvested from the ``## NUMBERED RESUME FACTS`` lines the
+    prompt builder injected, so the output passes the executor's
+    traceability gate whenever structured facts exist. When no numbered
+    facts are present the bullet deliberately cites a nonexistent ID so the
+    rejection path runs exactly as it would for a hallucinating provider.
+    """
+    fact_ids: list[str] = []
+    for msg in messages:
+        fact_ids.extend(_TARGETED_RESUME_FACT_REF_RE.findall(msg.content))
+
+    bullets = [
+        {
+            "section": "项目经历",
+            "bullet": "主导后端核心服务开发，按 JD 关键词重排突出匹配点（fake）",
+            "matched_requirement": "后端 API 设计与实现",
+            "source_fact_refs": [fact_ids[0]] if fact_ids else ["E1"],
+        },
+    ]
+    if len(fact_ids) > 1:
+        bullets.append(
+            {
+                "section": "技能",
+                "bullet": "具备岗位要求的后端技术栈（fake）",
+                "matched_requirement": "后端技术栈要求",
+                "source_fact_refs": [fact_ids[1]],
+            },
+        )
+
+    bullet_lines = "\n".join(
+        f"- {b['bullet']}（来源：{'/'.join(b['source_fact_refs'])}）" for b in bullets
+    )
+    return {
+        "headline": "后端工程师 · 针对该岗位的定制简历（fake）",
+        "targeted_bullets": bullets,
+        "matched_requirements": ["后端 API 设计与实现"],
+        "do_not_claim": ["Kafka 深度经验"],
+        "one_page_markdown": (
+            "# 定制简历（fake）\n\n后端工程师 · 针对该岗位的定制简历\n\n"
+            f"## 核心经历\n{bullet_lines}\n"
+        ),
+    }
 
 
 # Deterministic, schema-valid boss match decision payloads. One per scenario,

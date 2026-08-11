@@ -111,4 +111,5 @@ export const ARTIFACT_TYPE_LABEL: Record<string, string> = {
   resume_rewrite_snippet: "简历改写片段",
   skill_gap_plan: "技能差距计划",
   interview_prep: "面试准备",
+  targeted_resume: "针对性简历",
 };

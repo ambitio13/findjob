@@ -25,10 +25,32 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from app.db.base import Base, TimestampMixin
+from app.db.types import EncryptedText
 
 
 def _uuid() -> str:
     return uuid.uuid4().hex
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+
+class AuthUser(Base, TimestampMixin):
+    """A login-capable user (username + PBKDF2 password hash).
+
+    ``id`` doubles as the ``UserProfile.id`` the request is attributed to, so
+    the auth identity and the profile row share one stable key. The password
+    hash never leaves this table; logs and API responses must never carry it.
+    """
+
+    __tablename__ = "auth_users"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    username: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
 
 
 # ---------------------------------------------------------------------------
@@ -109,8 +131,13 @@ class JobPosting(Base, TimestampMixin):
     salary_range: Mapped[str | None] = mapped_column(String(128), nullable=True)
     direction: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    jd_raw: Mapped[str] = mapped_column(Text, nullable=False)
+    # Raw JD text is user-supplied long content: encrypted at rest via
+    # EncryptedText (plaintext is never persisted; see app/core/content_crypto).
+    jd_raw: Mapped[str] = mapped_column(EncryptedText, nullable=False)
     jd_normalized: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Phase 4 multi-platform entry: the listing URL the user pasted the JD
+    # from (any platform). Pure provenance metadata, never fetched by us.
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     analyses: Mapped[list[JobAnalysis]] = relationship(back_populates="job")
     applications: Mapped[list[ApplicationRecord]] = relationship(back_populates="job")
@@ -131,6 +158,11 @@ class JobAnalysis(Base, TimestampMixin):
     growth_analysis: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     stability_analysis: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Phase 3 job-risk lens: sanitized red-flag summary
+    # ([{"flag_type","title","severity"}]). NULL = no flags (so the job list
+    # can filter with a dialect-neutral ``IS NOT NULL``). Evidence quotes stay
+    # on the GeneratedArtifact, never here.
+    red_flags: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
 
     job: Mapped[JobPosting] = relationship(back_populates="analyses")
 
@@ -152,7 +184,7 @@ class GeneratedArtifact(Base, TimestampMixin):
     agent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     # One of: jd_analysis, hr_opening_message, resume_rewrite_snippet,
-    # skill_gap_plan, interview_prep
+    # skill_gap_plan, interview_prep, targeted_resume
     artifact_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     source_ids: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -185,6 +217,9 @@ class ApplicationRecord(Base, TimestampMixin):
 
     job: Mapped[JobPosting] = relationship(back_populates="applications")
     actions: Mapped[list[ApplicationAction]] = relationship(
+        back_populates="application", cascade="all, delete-orphan"
+    )
+    outcomes: Mapped[list[ApplicationOutcome]] = relationship(
         back_populates="application", cascade="all, delete-orphan"
     )
 
@@ -247,6 +282,95 @@ class ApplicationAction(Base, TimestampMixin):
     external_result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     application: Mapped[ApplicationRecord] = relationship(back_populates="actions")
+
+
+# ---------------------------------------------------------------------------
+# Application outcomes (feedback loop, Phase 1)
+# ---------------------------------------------------------------------------
+
+
+class ApplicationOutcome(Base, TimestampMixin):
+    """An append-only outcome event observed for an application.
+
+    Outcomes close the feedback loop: HR replied / rejected / interview
+    scheduled / offer. They are recorded manually by the user today; a later
+    userscript read-only scan may add ``userscript_observed`` events. Multiple
+    rows per application are allowed (outcomes evolve over time); queries use
+    the latest relevant row per type.
+
+    ``evidence`` stores a short sanitized summary only — never chat content,
+    cookies, or platform session data.
+    """
+
+    __tablename__ = "application_outcomes"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    application_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("application_records.id"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("user_profiles.id"), nullable=False, index=True
+    )
+    # ``replied | rejected | interview | offer``
+    outcome_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # ``manual | userscript_observed``
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    application: Mapped[ApplicationRecord] = relationship(back_populates="outcomes")
+
+
+# ---------------------------------------------------------------------------
+# Follow-up suggestions + threshold calibration (Phase 5 feedback loop)
+# ---------------------------------------------------------------------------
+
+
+class FollowUpSuggestion(Base, TimestampMixin):
+    """An advisory follow-up suggestion produced by the daily scan.
+
+    Suggestions are evidence-driven nudges (e.g. "submitted 3 days ago with
+    no reply → try a different opening message"). They are advisory only:
+    acting on a suggestion always re-enters the existing generation +
+    approval boundary, so a suggestion row never triggers external effects.
+    """
+
+    __tablename__ = "follow_up_suggestions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("user_profiles.id"), nullable=False, index=True
+    )
+    application_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("application_records.id"), nullable=False, index=True
+    )
+    # ``change_opening_message | skill_gap_plan | low_reply_rate_direction``
+    suggestion_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ``pending | actioned | dismissed``
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ThresholdCalibration(Base, TimestampMixin):
+    """An append-only match-threshold calibration derived from outcome data.
+
+    The newest row per user is the active ``COMMUNICATE_MIN_SCORE``; the
+    module default applies until enough evidence exists. ``details`` keeps the
+    statistics (sample counts, raw quantile) so a calibration can be audited.
+    """
+
+    __tablename__ = "threshold_calibrations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("user_profiles.id"), nullable=False, index=True
+    )
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    method: Mapped[str] = mapped_column(String(64), nullable=False, default="quantile_p25")
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 # ---------------------------------------------------------------------------

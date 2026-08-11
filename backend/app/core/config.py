@@ -25,10 +25,29 @@ class Settings(BaseSettings):
     app_env: Literal["local", "test", "prod"] = "local"
     api_v1_prefix: str = "/api/v1"
 
-    # --- Current user (MVP only; no auth) ---
-    # When no ``X-User-Id`` header is present, requests are attributed to this
-    # fixed development user. Exposed on Settings so tests can override it.
+    # --- Authentication (Phase 0 security guardrail) ---
+    # ``auth_secret_key`` signs access tokens. It MUST be set in prod; when
+    # empty (local/test) token issuance is disabled and requests fall back to
+    # the legacy ``X-User-Id`` / demo-user resolution.
+    auth_secret_key: str = ""
+    auth_token_ttl_minutes: int = 720  # 12h
+    # Optional invite code gating registration (single-tenant deployments).
+    # Empty string disables the gate.
+    auth_invite_code: str = ""
+
+    # --- Current user (legacy dev fallback; no auth) ---
+    # When no ``X-User-Id`` header is present AND no bearer token is provided,
+    # requests in non-prod environments are attributed to this fixed
+    # development user. In prod this fallback is never used.
     demo_user_id: str = "demo_user"
+
+    # --- Rate limiting (Phase 0 security guardrail) ---
+    # Redis-backed fixed-window counters. The limiter fails open when Redis is
+    # unavailable so an outage cannot take down reads.
+    rate_limit_enabled: bool = True
+    rate_limit_global_per_minute: int = 300
+    rate_limit_model_per_minute: int = 30
+    rate_limit_auth_per_minute: int = 10
 
     # --- Resume upload (MVP local storage) ---
     # Directory for persisted resume files. In docker this is a named volume
@@ -82,6 +101,12 @@ class Settings(BaseSettings):
     # Like the other BOSS config values, this is **process config** — never a
     # request payload, queue payload, or database value.
     boss_userscript_bridge_enabled: bool = False
+    # Shared-secret channel token for the userscript bridge endpoints. When
+    # set, every bridge request must carry a matching ``X-Bridge-Token``
+    # header. When empty the bridge stays open in local/test (legacy
+    # behaviour) but is refused in prod. Process config only — never a
+    # request payload, queue payload, or database value.
+    boss_bridge_channel_token: str = ""
 
     @property
     def effective_provider(self) -> Literal["deepseek", "openai", "fake"]:

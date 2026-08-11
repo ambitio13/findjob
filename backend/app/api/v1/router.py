@@ -8,11 +8,14 @@ from app.api.v1 import (
     agent_runs,
     applications,
     approval_actions,
+    auth,
     boss_communicate,
+    boss_conversations,
     boss_match,
     boss_recommended_jobs,
     health,
     jobs,
+    metrics,
     resumes,
     users,
     userscript_bridge,
@@ -20,13 +23,16 @@ from app.api.v1 import (
 
 api_router = APIRouter()
 api_router.include_router(health.router)
+api_router.include_router(auth.router)
 api_router.include_router(users.router)
 api_router.include_router(resumes.router)
 api_router.include_router(jobs.router)
 api_router.include_router(applications.router)
 api_router.include_router(approval_actions.router)
 api_router.include_router(agent_runs.router)
+api_router.include_router(metrics.router)
 api_router.include_router(userscript_bridge.router)
 api_router.include_router(boss_recommended_jobs.router)
 api_router.include_router(boss_match.router)
 api_router.include_router(boss_communicate.router)
+api_router.include_router(boss_conversations.router)

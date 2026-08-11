@@ -17,7 +17,14 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_db_session
 from app.db.models.models import JobPosting, UserProfile
 from app.db.repositories import agent_run_repo, generated_artifact_repo, job_analysis_repo, job_repo
-from app.schemas.api import JobCreate, JobListOut, JobOut, JobUpdate, PaginatedMeta
+from app.schemas.api import (
+    JobCreate,
+    JobListOut,
+    JobOut,
+    JobUpdate,
+    PaginatedMeta,
+    RedFlagSummaryOut,
+)
 from app.schemas.jd_analysis import (
     GeneratedArtifactOut,
     JdAnalysisModelOutput,
@@ -38,7 +45,16 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 #: the PATCH endpoint to filter ``JobUpdate.model_fields_set`` so only
 #: client-supplied keys reach the repository.
 _EDITABLE_JOB_FIELDS = frozenset(
-    {"company", "title", "location", "salary_range", "direction", "platform", "jd_raw"}
+    {
+        "company",
+        "title",
+        "location",
+        "salary_range",
+        "direction",
+        "platform",
+        "jd_raw",
+        "source_url",
+    }
 )
 
 
@@ -46,13 +62,59 @@ _EDITABLE_JOB_FIELDS = frozenset(
 def list_jobs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    has_red_flags: bool | None = Query(
+        default=None,
+        description="风险透视筛选：true 只看最新分析有红旗的岗位，false 只看无红旗的。",
+    ),
     db: Session = Depends(get_db_session),
     current_user: UserProfile = Depends(get_current_user),
 ) -> JobListOut:
-    rows, total = job_repo.list_for_user(db, current_user.id, page=page, page_size=page_size)
+    """List the user's jobs with the newest analysis' red-flag labels.
+
+    ``has_red_flags`` filters before pagination (so ``meta.total`` stays
+    correct): the flagged-id set is derived from each job's newest
+    ``JobAnalysis.red_flags`` summary.
+    """
+    flags_by_job: dict[str, list[dict]] = {}
+    id_filter: set[str] | None = None
+    exclude_ids: set[str] | None = None
+    if has_red_flags is not None:
+        flags_by_job = job_analysis_repo.latest_red_flags_by_job(db, current_user.id)
+        flagged = {job_id for job_id, flags in flags_by_job.items() if flags}
+        if has_red_flags:
+            id_filter = flagged
+        else:
+            exclude_ids = flagged
+
+    rows, total = job_repo.list_for_user(
+        db,
+        current_user.id,
+        page=page,
+        page_size=page_size,
+        id_filter=id_filter,
+        exclude_ids=exclude_ids,
+    )
+
+    # Lazily hydrate labels only when the filter did not already load them.
+    if has_red_flags is None and rows:
+        flags_by_job = job_analysis_repo.latest_red_flags_by_job(
+            db, current_user.id, [r.id for r in rows]
+        )
+
+    items = [
+        JobOut.model_validate(r).model_copy(
+            update={
+                "red_flags": [
+                    RedFlagSummaryOut.model_validate(f)
+                    for f in flags_by_job.get(r.id, [])
+                ]
+            }
+        )
+        for r in rows
+    ]
     return JobListOut(
         meta=PaginatedMeta(page=page, page_size=page_size, total=total),
-        items=[JobOut.model_validate(r) for r in rows],
+        items=items,
     )
 
 
@@ -73,6 +135,7 @@ def create_job(
         salary_range=payload.salary_range,
         direction=payload.direction,
         jd_normalized=payload.jd_normalized,
+        source_url=payload.source_url,
     )
     db.commit()
     db.refresh(job)
@@ -177,6 +240,7 @@ async def parse_job_jd(
         title=_PARSE_INFLIGHT_PLACEHOLDER,
         jd_raw=payload.raw_jd,
         platform=platform,
+        source_url=payload.source_url,
     )
 
     # 2. Create the durable AgentRun in queued state *before* enqueue so

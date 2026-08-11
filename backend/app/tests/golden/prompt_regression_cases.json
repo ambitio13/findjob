@@ -1,0 +1,315 @@
+{
+  "schema_version": 1,
+  "description": "Golden set for the deterministic match safety gate (Phase 6 prompt-regression). Each case annotates a raw model output and the expected gated decision, so any change to the guard/gate logic or the threshold that alters behavior surfaces in CI. Cases run offline against the pure function apply_match_safety_gate (no model, no network).",
+  "cases": [
+    {
+      "id": "communicate_passes_clean",
+      "description": "High-confidence communicate with a valid opening message passes the gate unchanged.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.87,
+        "reasons": ["五年后端经验匹配岗位要求"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，我有五年 Python 后端经验，与该岗位要求高度匹配，期待进一步沟通。"
+      },
+      "expected": {
+        "decision": "communicate",
+        "opening_message_present": true
+      }
+    },
+    {
+      "id": "low_score_downgraded",
+      "description": "Below the default 0.6 threshold, communicate is downgraded and the message dropped.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.42,
+        "reasons": ["经验略不足"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，我对贵司岗位很感兴趣，希望能有机会沟通。"
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "boundary_score_passes",
+      "description": "A score exactly at the threshold is NOT low-confidence (strict < comparison).",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.6,
+        "reasons": ["刚好达标"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，我的技能与岗位要求相符，期待与您进一步交流。"
+      },
+      "expected": {
+        "decision": "communicate",
+        "opening_message_present": true
+      }
+    },
+    {
+      "id": "missing_requirements_downgraded",
+      "description": "Unverified key fields force needs_review even at high confidence.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.9,
+        "reasons": ["整体匹配"],
+        "risks": [],
+        "missing_requirements": ["工作年限未确认", "期望薪资未确认"],
+        "opening_message": "您好，我的背景与该岗位契合，希望进一步沟通。"
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "message_too_short_downgraded",
+      "description": "An opening message under 10 characters fails validation and downgrades.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.85,
+        "reasons": ["匹配"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，感兴趣"
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "message_phone_pii_downgraded",
+      "description": "A phone number in the opening message is PII and downgrades the decision.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.85,
+        "reasons": ["匹配"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，我对岗位很感兴趣，可拨打 13812345678 联系我。"
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "message_email_pii_downgraded",
+      "description": "An email address in the opening message is PII and downgrades the decision.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.85,
+        "reasons": ["匹配"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，岗位与我匹配，请发邮件到 dev@example.com 详聊。"
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "message_excessive_punctuation_downgraded",
+      "description": "Excessive punctuation fails the tone check and downgrades.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.85,
+        "reasons": ["匹配"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，我对这个岗位非常感兴趣！！！！期待沟通。"
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "skip_passes_through",
+      "description": "A skip decision is never upgraded or altered by the gate.",
+      "model_output": {
+        "decision": "skip",
+        "score": 0.2,
+        "reasons": ["岗位方向不符"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": null
+      },
+      "expected": {
+        "decision": "skip",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "needs_review_passes_through",
+      "description": "A needs_review decision passes through unchanged.",
+      "model_output": {
+        "decision": "needs_review",
+        "score": 0.55,
+        "reasons": ["信息不足，需人工确认"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": null
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "calibrated_threshold_downgrades",
+      "description": "An injected (Phase 5 calibrated) threshold of 0.7 downgrades a 0.65 score that the default 0.6 would pass.",
+      "min_score": 0.7,
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.65,
+        "reasons": ["中等匹配"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，我的经验与岗位较为匹配，期待进一步沟通。"
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "calibrated_threshold_passes",
+      "description": "Above the injected calibrated threshold the decision passes.",
+      "min_score": 0.7,
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.78,
+        "reasons": ["匹配度高"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，我的技能与该岗位高度匹配，期待与您进一步交流。"
+      },
+      "expected": {
+        "decision": "communicate",
+        "opening_message_present": true
+      }
+    },
+    {
+      "id": "id_card_pii_downgraded",
+      "description": "An ID-card-like number in the opening message is PII and downgrades.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.85,
+        "reasons": ["匹配"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，岗位匹配，我的证件号是 110101199003074518，请查收。"
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "empty_message_string_downgraded",
+      "description": "An empty-string opening message (model returned \"\" instead of null) downgrades.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.85,
+        "reasons": ["匹配"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "   "
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "communicate_without_message_downgraded",
+      "description": "communicate with a null message is downgraded: a communicate decision without a valid message has nothing lawful to send.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.82,
+        "reasons": ["匹配，开场白稍后生成"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": null
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "message_whitespace_stripped",
+      "description": "A valid message keeps the decision and is returned stripped.",
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.8,
+        "reasons": ["匹配"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "  您好，我对贵司岗位很感兴趣，期待进一步沟通。  "
+      },
+      "expected": {
+        "decision": "communicate",
+        "opening_message_present": true,
+        "opening_message": "您好，我对贵司岗位很感兴趣，期待进一步沟通。"
+      }
+    },
+    {
+      "id": "skip_with_high_score_untouched",
+      "description": "Even a high-scoring skip never gains a message or changes decision.",
+      "model_output": {
+        "decision": "skip",
+        "score": 0.95,
+        "reasons": ["城市不符，主动跳过"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": null
+      },
+      "expected": {
+        "decision": "skip",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "relaxed_threshold_still_guards_pii",
+      "description": "A relaxed calibrated threshold (0.4) passes low scores but PII still downgrades.",
+      "min_score": 0.4,
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.45,
+        "reasons": ["弱匹配但值得尝试"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，感兴趣，加我微信邮箱 hr_test@company.cn 详聊。"
+      },
+      "expected": {
+        "decision": "needs_review",
+        "opening_message_present": false
+      }
+    },
+    {
+      "id": "relaxed_threshold_passes_low_score",
+      "description": "With a relaxed calibrated threshold 0.4 a clean 0.45 communicate passes.",
+      "min_score": 0.4,
+      "model_output": {
+        "decision": "communicate",
+        "score": 0.45,
+        "reasons": ["弱匹配但值得尝试"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": "您好，虽然部分要求未覆盖，但我学习能力强，期待沟通。"
+      },
+      "expected": {
+        "decision": "communicate",
+        "opening_message_present": true
+      }
+    }
+  ]
+}

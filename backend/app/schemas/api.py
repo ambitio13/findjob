@@ -37,6 +37,8 @@ class JobCreate(BaseModel):
     jd_raw: str
     platform: str = "manual"
     jd_normalized: dict[str, Any] | None = None
+    #: Listing URL the JD was pasted from (any platform). Provenance only.
+    source_url: str | None = Field(default=None, max_length=2048)
 
 
 class JobUpdate(BaseModel):
@@ -54,6 +56,19 @@ class JobUpdate(BaseModel):
     direction: str | None = None
     platform: str | None = None
     jd_raw: str | None = None
+    source_url: str | None = Field(default=None, max_length=2048)
+
+
+class RedFlagSummaryOut(BaseModel):
+    """Sanitized red-flag summary surfaced on job list rows (Phase 3).
+
+    Evidence quotes are intentionally absent — they live on the analysis
+    artifact and are rendered by the detail "岗位透视" panel only.
+    """
+
+    flag_type: str
+    title: str
+    severity: str
 
 
 class JobOut(BaseSchema):
@@ -66,7 +81,10 @@ class JobOut(BaseSchema):
     direction: str | None = None
     jd_raw: str
     jd_normalized: dict[str, Any] | None = None
+    source_url: str | None = None
     created_at: datetime | None = None
+    #: Red flags from the newest JD analysis (empty = none / not analyzed).
+    red_flags: list[RedFlagSummaryOut] = Field(default_factory=list)
 
 
 class JobListOut(BaseModel):

@@ -1,27 +1,51 @@
 # State Management
 
-## State Ownership
+> How state is managed in this project.
 
-- Backend state: users, resumes, jobs, applications, agent runs, generated
-  artifacts, approvals, and audit data.
-- URL state: table filters, selected tab, pagination, sort, and selected record
-  when shareable.
-- Form state: unsaved edits to profile, search preferences, HR messages, and
-  generated resume content.
-- Local component state: open/closed panels, temporary selection, and visual
-  controls.
+---
 
-## Rules
+## Overview
 
-- Do not store durable workflow state only in React state.
-- Do not treat AI streaming text as final output until the backend confirms the
-  generated artifact was saved.
-- Keep approval modals backed by a specific action ID and artifact version.
-- Cache server reads through the selected data-fetching library once the
-  frontend stack is initialized.
+<!--
+Document your project's state management conventions here.
 
-## Status Machines
+Questions to answer:
+- What state management solution do you use?
+- How is local vs global state decided?
+- How do you handle server state?
+- What are the patterns for derived state?
+-->
 
-Represent user-facing status with finite values. Avoid ad hoc display text as
-state.
+(To be filled by the team)
 
+---
+
+## State Categories
+
+<!-- Local state, global state, server state, URL state -->
+
+(To be filled by the team)
+
+---
+
+## When to Use Global State
+
+<!-- Criteria for promoting state to global -->
+
+(To be filled by the team)
+
+---
+
+## Server State
+
+<!-- How server data is cached and synchronized -->
+
+(To be filled by the team)
+
+---
+
+## Common Mistakes
+
+<!-- State management mistakes your team has made -->
+
+(To be filled by the team)

@@ -1,40 +1,51 @@
 # Error Handling
 
-## API Errors
+> How errors are handled in this project.
 
-Return structured errors from API boundaries. Include a stable error code,
-human-readable message, and request ID. Do not leak stack traces, prompts,
-credentials, or raw platform payloads to clients.
+---
 
-Use clear categories:
+## Overview
 
-- validation error;
-- authentication or authorization error;
-- not found;
-- conflict or duplicate action;
-- external platform failure;
-- LLM/provider failure;
-- rate limit or quota;
-- internal server error.
+<!--
+Document your project's error handling conventions here.
 
-## Agent and Tool Errors
+Questions to answer:
+- What error types do you define?
+- How are errors propagated?
+- How are errors logged?
+- How are errors returned to clients?
+-->
 
-Agent execution should preserve a failure trail:
+(To be filled by the team)
 
-- planner step that produced the action;
-- tool name and input schema version;
-- validation result;
-- external response category;
-- retry count;
-- final state.
+---
 
-If a tool repeatedly fails, stop the loop, mark the step failed, and either
-re-plan with a bounded retry count or ask the user for input. Do not let an
-agent call the same failing tool indefinitely.
+## Error Types
 
-## User Cancellation
+<!-- Custom error classes/types -->
 
-Long-running job-search and platform-operation tasks must support cancellation.
-On cancellation, persist the last completed step and mark unfinished side effects
-as not executed.
+(To be filled by the team)
 
+---
+
+## Error Handling Patterns
+
+<!-- Try-catch patterns, error propagation -->
+
+(To be filled by the team)
+
+---
+
+## API Error Responses
+
+<!-- Standard error response format -->
+
+(To be filled by the team)
+
+---
+
+## Common Mistakes
+
+<!-- Error handling mistakes your team has made -->
+
+(To be filled by the team)

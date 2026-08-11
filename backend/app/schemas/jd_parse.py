@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.api import JobOut
 from app.schemas.jd_paste_facts import JdPasteFactsModelOutput
@@ -27,6 +27,9 @@ class JdParseRequest(BaseModel):
 
     raw_jd: str
     platform: str | None = None
+    #: Optional listing URL the JD was pasted from (any platform).
+    #: Provenance metadata only — the backend never fetches it.
+    source_url: str | None = Field(default=None, max_length=2048)
 
     @field_validator("raw_jd")
     @classmethod

@@ -6,6 +6,7 @@ raw query code (per ``.trellis/spec/backend/database.md`` Repository Rules).
 
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -21,6 +22,16 @@ _DEFAULT_DISPLAY_NAME = "演示用户"
 def get(db: Session, user_id: str) -> UserProfile | None:
     """Return the profile for ``user_id`` or ``None`` if it does not exist."""
     return db.get(UserProfile, user_id)
+
+
+def list_all(db: Session) -> list[UserProfile]:
+    """Return every profile row (scheduler input).
+
+    Only the daily follow-up scan uses this: it must visit every user because
+    the scan runs outside any request scope. The population is a single
+    job-seeker deployment, so the un-paged read is intentional.
+    """
+    return db.execute(select(UserProfile).order_by(UserProfile.created_at.asc())).scalars().all()
 
 
 def ensure_default(db: Session, user_id: str) -> UserProfile:

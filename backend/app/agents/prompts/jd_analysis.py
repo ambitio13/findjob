@@ -18,7 +18,7 @@ from typing import Any
 from app.agents.prompts.templates.loader import load_prompt_template
 from app.models_gateway.base import ChatMessage
 
-PROMPT_VERSION = "jd-analysis-v2"
+PROMPT_VERSION = "jd-analysis-v3"
 SYSTEM_PROMPT_TEMPLATE = "jd_analysis_system.md"
 
 # Conservative MVP caps. Resume text tends to be denser than JD text, so the
@@ -152,8 +152,37 @@ def build_jd_analysis_messages(
         '  "risk_score": integer(0-100)|null,',
         '  "skill_gaps": string[],',
         '  "interview_preparation": string[],',
-        ('  "recommendation": "strong_match"|"possible_match"|"weak_match"|"not_enough_info"'),
+        ('  "recommendation": "strong_match"|"possible_match"|"weak_match"|"not_enough_info",'),
+        '  "salary_structure": {',
+        '    "range_text": string|null (JD原文薪资表述),',
+        '    "min_value": number|null (归一化下限k/月),',
+        '    "max_value": number|null (归一化上限k/月),',
+        '    "period": "monthly"|"yearly"|"hourly"|"daily"|"unknown",',
+        '    "composition": string[] (底薪/绩效/提成/补贴等构成),',
+        '    "caveats": string[] (薪资虚高或不可信的理由，可为空)',
+        '  }|null,',
+        '  "red_flags": [{',
+        '    "flag_type": "training_loan"|"training_fee"|"outsourcing_onsite"',
+        '|"inflated_salary"|"long_term_listing"|"other",',
+        '    "title": string,',
+        '    "detail": string,',
+        '    "severity": "low"|"medium"|"high",',
+        '    "evidence_quote": string|null (JD原文短引文，≤300字)',
+        '  }],',
+        '  "stability_signals": [{',
+        '    "polarity": "positive"|"negative"|"unknown",',
+        '    "signal": string,',
+        '    "evidence_quote": string|null (JD原文短引文，≤300字)',
+        '  }]',
         "}",
+        "",
+        "Job-risk lens rules (岗位风险透视):",
+        "- red_flags 只报告 JD 文本中有实际依据的问题；每条尽量附 evidence_quote",
+        "  （从 JD 原文截取，禁止改写/编造）。无依据就返回空列表。",
+        "- 重点识别：培训贷/岗前培训费或押金话术、外包驻场、薪资区间过宽或",
+        "  与经验要求不匹配的虚高、常年挂单迹象（如\"长期招聘\"表述）。",
+        "- salary_structure 只在 JD 提及薪资时填写；无法归一化的数值置 null。",
+        "- stability_signals 反映公司稳定性线索（如外包性质、团队描述缺失）。",
     ]
 
     user_content = "\n".join(

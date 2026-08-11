@@ -336,6 +336,24 @@ class UserscriptBossPage:
             return None
         return result.marker_counts
 
+    # --- Conversation status scan (read-only, Phase 1 feedback loop) -----
+
+    async def scan_conversation_statuses(self) -> list[dict] | None:
+        """Read conversation reply/read statuses from the BOSS chat list.
+
+        This is a **read-only** DOM scan (no clicks, no fills) — one order of
+        magnitude safer than interaction ops. The userscript returns only
+        hashed conversation keys plus coarse status flags (``replied`` /
+        ``read`` / ``unread`` / ``unknown``); chat text never crosses the
+        channel (privacy contract, mirrors ``read_communication_result``).
+
+        Returns the desensitized entries, or ``None`` if the scan failed.
+        """
+        result = await self._send(make_instruction("scan_conversations"))
+        if not result.success:
+            return None
+        return result.conversations
+
     # --- Internal --------------------------------------------------------
 
     async def _send(self, instruction: Instruction) -> InstructionResult:

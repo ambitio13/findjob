@@ -29,7 +29,6 @@ from app.queue.runtime import (
     _queue_name,
     _redis_settings_from_url,
     enqueue_workflow,
-    get_redis_settings,
 )
 
 # ---------------------------------------------------------------------------
@@ -45,8 +44,9 @@ def test_queue_settings_have_defaults() -> None:
 
 
 def test_redis_settings_derived_from_redis_url() -> None:
-    settings = get_redis_settings()
-    # The default redis_url is redis://localhost:6379/0.
+    # Parse the default URL shape directly so the derivation is independent
+    # of the REDIS_URL configured for the test environment.
+    settings = _redis_settings_from_url("redis://localhost:6379/0")
     assert settings.host == "localhost"
     assert settings.port == 6379
     assert settings.database == 0

@@ -95,6 +95,24 @@ def list_for_user(
     return rows, total
 
 
+def list_all_for_user(db: Session, user_id: str) -> list[ApplicationRecord]:
+    """Return every application owned by ``user_id`` (metrics input).
+
+    Unpaged by design: funnel metrics need the full population. A single
+    job-seeker's application count is small (order of hundreds), so this is
+    never a hot-path concern.
+    """
+    return (
+        db.execute(
+            select(ApplicationRecord)
+            .where(ApplicationRecord.user_id == user_id)
+            .order_by(ApplicationRecord.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+
+
 def find_duplicate(
     db: Session,
     *,

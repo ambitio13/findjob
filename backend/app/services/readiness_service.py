@@ -35,6 +35,7 @@ from typing import Any
 from app.agents.prompts.readiness import (
     PROMPT_VERSION,
     ReadinessContext,
+    enumerate_resume_facts,
 )
 from app.agents.readiness_executor import (
     ReadinessExecution,
@@ -560,8 +561,15 @@ async def _execute_readiness_generation(
     )
 
     # Step 4 — validate_model_output.
+    # targeted_resume additionally requires every rewritten bullet to trace
+    # back to a numbered resume fact shown in the prompt (anti-hallucination
+    # gate). The valid IDs come from the same enumeration the prompt builder
+    # used, so prompt and validation share one source of truth.
+    valid_fact_ids = set(enumerate_resume_facts(context.resume.get("facts") or {}))
     try:
-        output = executor.validate(response, artifact_type)
+        output = executor.validate(
+            response, artifact_type, valid_fact_ids=valid_fact_ids
+        )
     except ReadinessValidationError as exc:
         _log.warning(
             "readiness.model_invalid",
@@ -571,6 +579,10 @@ async def _execute_readiness_generation(
             request_id=exc.request_id,
             provider=response.provider,
         )
+        # Missing resume facts can never be fixed by retrying — the user must
+        # run resume fact extraction first. Unresolvable refs (model invented
+        # content) are retryable since a fresh model call may succeed.
+        traceability_no_facts = exc.kind == "traceability" and not valid_fact_ids
         _fail(
             4,
             _STEP_VALIDATE_MODEL_OUTPUT,
@@ -580,11 +592,23 @@ async def _execute_readiness_generation(
                 "kind": exc.kind,
                 "request_id": exc.request_id,
             },
-            category=ApplicationFailureCategory.validation,
-            code="invalid_model_output",
+            category=(
+                ApplicationFailureCategory.data
+                if traceability_no_facts
+                else ApplicationFailureCategory.validation
+            ),
+            code=(
+                "resume_facts_missing"
+                if traceability_no_facts
+                else "invalid_model_output"
+            ),
             message="model returned invalid output",
-            retryable=True,
-            next_action=ApplicationFailureNextAction.retry,
+            retryable=not traceability_no_facts,
+            next_action=(
+                ApplicationFailureNextAction.edit_source
+                if traceability_no_facts
+                else ApplicationFailureNextAction.retry
+            ),
         )
         return failed_execution()
 

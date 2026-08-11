@@ -31,7 +31,10 @@ import {
 import { ApplicationActionsPanel } from "@/features/applications/ApplicationActionsPanel";
 import { ArtifactChecklist } from "@/features/applications/ArtifactChecklist";
 import { FailurePanel } from "@/features/applications/FailurePanel";
+import { FollowUpSuggestionsPanel } from "@/features/applications/FollowUpSuggestionsPanel";
 import { GuidedSubmitPanel } from "@/features/applications/GuidedSubmitPanel";
+import { ManualSubmitPanel } from "@/features/applications/ManualSubmitPanel";
+import { OutcomePanel } from "@/features/applications/OutcomePanel";
 import { RecommendedJobPilotPanel } from "@/features/applications/RecommendedJobPilotPanel";
 import { ReadinessSummary } from "@/features/applications/ReadinessSummary";
 import { SourceSnapshotPanel } from "@/features/applications/SourceSnapshotPanel";
@@ -303,6 +306,7 @@ export function ApplicationsPage() {
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {contextHolder}
       <BossInspectEntry onInspected={handleInspected} />
+      <FollowUpSuggestionsPanel />
       <Card title="投递记录">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           {loading && applications.length === 0 ? (
@@ -528,6 +532,11 @@ function ApplicationDetail({
         }}
       />
 
+      {/* 3b. Generate-and-copy path (Phase 4): platform-agnostic delivery —
+          copy the opening message / targeted resume and paste by hand. Never
+          depends on the userscript bridge. */}
+      <ManualSubmitPanel artifacts={artifacts} />
+
       {/* 4. Failure panel */}
       {failure ? (
         <FailurePanel
@@ -624,6 +633,9 @@ function ApplicationDetail({
           </Text>
         ) : null}
       </Card>
+
+      {/* 6b. Outcome marking (Phase 1 feedback loop): one-click 已回复/被拒/约面 */}
+      <OutcomePanel applicationId={app.id} onAfterChange={load} />
 
       {/* 7. Guided platform-submit panel (prepare → approve → submit). */}
       <GuidedSubmitPanel application={app} onAfterChange={load} />

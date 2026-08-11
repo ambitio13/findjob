@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { ModalForm, ProFormText, ProFormTextArea } from "@ant-design/pro-components";
+import {
+  ModalForm,
+  ProFormText,
+  ProFormTextArea,
+} from "@ant-design/pro-components";
 import { Alert, Button, Space, message } from "antd";
 import { apiErrorMessage, createJob, parseJobJd } from "@/api/client";
 import type { JobCreate } from "@/types";
@@ -32,6 +36,9 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
   const [parsing, setParsing] = useState(false);
   const [manualMode, setManualMode] = useState(false);
   const [rawJd, setRawJd] = useState("");
+  // Optional listing URL the JD was pasted from (any platform). Provenance
+  // only — the backend never fetches it.
+  const [sourceUrl, setSourceUrl] = useState("");
   const [messageApi, contextHolder] = message.useMessage();
 
   const handleParse = async () => {
@@ -41,7 +48,7 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
     }
     setParsing(true);
     try {
-      const res = await parseJobJd(rawJd);
+      const res = await parseJobJd(rawJd, undefined, sourceUrl.trim() || undefined);
       // The backend created the job up front and enqueued the parse. Close the
       // modal immediately — the job list will show the new row with a "解析中"
       // status and refresh as the worker writes back the parsed draft.
@@ -51,6 +58,7 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
       onCreated();
       // Reset local state for the next open.
       setRawJd("");
+      setSourceUrl("");
       setParsing(false);
     } catch (err) {
       setParsing(false);
@@ -62,6 +70,7 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
     setParsing(false);
     setManualMode(false);
     setRawJd("");
+    setSourceUrl("");
   };
 
   const handleSkipParse = () => {
@@ -101,6 +110,7 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
             ...values,
             jd_raw: rawJd,
             platform: values.platform ?? "manual",
+            source_url: values.source_url ?? null,
           });
           onCreated();
           handleReset();
@@ -124,6 +134,14 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
             fieldProps={{
               autoSize: { minRows: 6, maxRows: 16 },
               onChange: (e) => setRawJd(e.target.value),
+            }}
+          />
+          <ProFormText
+            name="source_url_input"
+            label="职位链接（可选）"
+            placeholder="粘贴任意平台的职位链接，仅作来源记录"
+            fieldProps={{
+              onChange: (e) => setSourceUrl(e.target.value),
             }}
           />
           <Space>
@@ -155,6 +173,11 @@ export function JobCreateModal({ open, onClose, onCreated }: Props) {
           <ProFormText name="salary_range" label="薪资范围" />
           <ProFormText name="direction" label="方向" />
           <ProFormText name="platform" label="平台" />
+          <ProFormText
+            name="source_url"
+            label="职位链接（可选）"
+            placeholder="粘贴任意平台的职位链接，仅作来源记录"
+          />
           <ProFormTextArea
             name="jd_raw_input"
             label="JD 原文"

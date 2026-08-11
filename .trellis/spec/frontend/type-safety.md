@@ -1,31 +1,51 @@
-# Frontend Type Safety
+# Type Safety
 
-## Rules
+> Type safety patterns in this project.
 
-- Do not use `any` in new frontend code.
-- Import backend-generated types once contract generation exists.
-- Keep status values as unions or enums, not display strings.
-- Treat optional API fields carefully; missing salary, location, or risk score
-  must not crash table rendering.
-- Validate user-edited generated artifacts before sending them back to the
-  backend.
+---
 
-## Domain Types
+## Overview
 
-Frontend code should use the same domain vocabulary as the backend:
+<!--
+Document your project's type safety conventions here.
 
-- `ResumeVersion`
-- `JobPosting`
-- `JobAnalysis`
-- `ApplicationRecord`
-- `GeneratedArtifact`
-- `HrMessageDraft`
-- `AgentRun`
-- `ToolCall`
-- `ApprovalRequest`
+Questions to answer:
+- What type system do you use?
+- How are types organized?
+- What validation library do you use?
+- How do you handle type inference?
+-->
 
-## Display Mapping
+(To be filled by the team)
 
-Map backend values to display labels in one place per domain. Do not scatter
-label/color mappings across table columns, detail panels, and modals.
+---
 
+## Type Organization
+
+<!-- Where types are defined, shared types vs local types -->
+
+(To be filled by the team)
+
+---
+
+## Validation
+
+<!-- Runtime validation patterns (Zod, Yup, io-ts, etc.) -->
+
+(To be filled by the team)
+
+---
+
+## Common Patterns
+
+<!-- Type utilities, generics, type guards -->
+
+(To be filled by the team)
+
+---
+
+## Forbidden Patterns
+
+<!-- any, type assertions, etc. -->
+
+(To be filled by the team)

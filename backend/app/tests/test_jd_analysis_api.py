@@ -508,7 +508,7 @@ async def test_handler_success_marks_run_succeeded_and_persists_outputs() -> Non
         )
         assert artifact is not None
         assert artifact.artifact_type == "jd_analysis"
-        assert artifact.prompt_version == "jd-analysis-v2"
+        assert artifact.prompt_version == "jd-analysis-v3"
         assert artifact.source_ids["job_id"] == ids["job_id"]
         assert artifact.source_ids["resume_version_id"] == ids["resume_version_id"]
         assert artifact.source_ids["resume_id"] == ids["resume_id"]
@@ -998,7 +998,7 @@ async def test_stale_source_fails_run_without_model_call_or_artifact(
             resume_version_id=version.id,
             resume_version_no=version.version_no,
             profile_updated_at=user.updated_at,
-            prompt_versions={"jd_analysis": "jd-analysis-v2"},
+            prompt_versions={"jd_analysis": "jd-analysis-v3"},
         )
         stale_hash = snapshot.source_hash
 

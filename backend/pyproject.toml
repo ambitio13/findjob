@@ -21,6 +21,8 @@ dependencies = [
     # Async-native Redis-backed queue runtime. Used by the worker process to
     # execute model-backed workflows outside the FastAPI request lifecycle.
     "arq>=0.26",
+    # Fernet envelope for content-at-rest encryption (job_postings.jd_raw).
+    "cryptography>=43",
 ]
 
 [project.optional-dependencies]

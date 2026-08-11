@@ -1,10 +1,21 @@
 """Userscript bridge HTTP endpoints.
 
 These endpoints are the communication channel between the Tampermonkey
-userscript (running inside the BOSS page) and the backend adapter. They are
-**unauthenticated** — the userscript cannot send ``X-User-Id``. Security is
-enforced at the instruction/result layer (see
-``.trellis/spec/backend/authentication.md`` §Bridge Channel Security).
+userscript (running inside the BOSS page) and the backend adapter. They carry
+no *user* authentication — the userscript cannot send ``X-User-Id``. Security
+is enforced at two layers instead (see
+``.trellis/spec/backend/authentication.md`` §Bridge Channel Security):
+
+- **Channel token** (Phase 0): when ``BOSS_BRIDGE_CHANNEL_TOKEN`` is set,
+  every data-plane endpoint (``next-instruction`` / ``result`` / ``heartbeat``
+  / ``probe``) requires a matching ``X-Bridge-Token`` header. The userscript
+  reads the token from its own config block, so it never crosses the channel
+  in a request body. In prod a missing token refuses the data plane outright
+  (503). ``GET /status`` stays open: the frontend needs it for the connection
+  indicator and it exposes only connection metadata, never instruction or
+  result payloads.
+- **Instruction/result sanitization**: operations-only instructions,
+  sanitized results, in-memory queue.
 
 Four endpoints:
 
@@ -19,9 +30,12 @@ The channel is a process-local singleton (see
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response, status
+import hmac
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.platforms.boss.sanitizer import (
     _COOKIE_PATTERN,
@@ -49,6 +63,38 @@ _log = get_logger("app.api.v1.userscript_bridge")
 router = APIRouter(prefix="/userscript-bridge", tags=["userscript-bridge"])
 
 
+def require_bridge_token(
+    x_bridge_token: str | None = Header(alias="X-Bridge-Token", default=None),
+) -> None:
+    """Guard the bridge data plane with the shared channel token.
+
+    Rules:
+
+    - ``BOSS_BRIDGE_CHANNEL_TOKEN`` set → the request header must match
+      (constant-time compare), otherwise 401.
+    - Token unset in ``prod`` → the data plane is refused entirely (503);
+      an open bridge in prod is never acceptable.
+    - Token unset in ``local``/``test`` → legacy open behaviour, so existing
+      userscripts and tests keep working unchanged.
+    """
+    settings = get_settings()
+    expected = settings.boss_bridge_channel_token
+    if not expected:
+        if settings.app_env == "prod":
+            _log.error("boss.bridge.data_plane_refused", reason="channel_token_not_configured")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"reason": "bridge_channel_token_not_configured"},
+            )
+        return
+    if not x_bridge_token or not hmac.compare_digest(x_bridge_token, expected):
+        _log.warning("boss.bridge.token_rejected")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"reason": "bridge_token_invalid"},
+        )
+
+
 @router.get("/status", response_model=BridgeStatusResponse)
 def get_status() -> BridgeStatusResponse:
     """Return the current bridge connection status."""
@@ -68,6 +114,7 @@ def get_status() -> BridgeStatusResponse:
     "/next-instruction",
     response_model=InstructionOut,
     responses={204: {"description": "No instruction available"}},
+    dependencies=[Depends(require_bridge_token)],
 )
 async def get_next_instruction(
     response: Response,
@@ -104,7 +151,7 @@ async def get_next_instruction(
     )
 
 
-@router.post("/result", response_model=AckResponse)
+@router.post("/result", response_model=AckResponse, dependencies=[Depends(require_bridge_token)])
 def post_result(body: ResultIn) -> AckResponse:
     """Post back the result of a completed instruction.
 
@@ -145,6 +192,11 @@ def post_result(body: ResultIn) -> AckResponse:
             page_id=body.page_id,
             jd=sanitized_jd,
             marker_counts=body.marker_counts,
+            # scan_conversations results: already desensitized by the schema
+            # (hashed keys + coarse status flags, capped at 50 entries).
+            conversations=[c.model_dump() for c in body.conversations]
+            if body.conversations
+            else None,
         )
     )
     if not accepted:
@@ -156,7 +208,9 @@ def post_result(body: ResultIn) -> AckResponse:
     return AckResponse(ok=True)
 
 
-@router.post("/heartbeat", response_model=AckResponse)
+@router.post(
+    "/heartbeat", response_model=AckResponse, dependencies=[Depends(require_bridge_token)]
+)
 def post_heartbeat(body: HeartbeatIn) -> AckResponse:
     """Record a heartbeat from the userscript.
 
@@ -236,19 +290,41 @@ class ProbeResponse(BaseModel):
     instruction_page_id: str | None = None
 
 
-@router.post("/probe", response_model=ProbeResponse)
+#: Probe is a selector-debugging surface, not a product feature. To keep the
+#: data plane minimal it is disabled entirely in prod and restricted to
+#: non-content-extracting operations everywhere (``read_content`` can read
+#: arbitrary page body text and is never allowed through probe).
+_PROBE_ALLOWED_OPS = frozenset(
+    {"count", "check_visible", "read_title", "read_url", "read_jd", "probe_elements"}
+)
+
+
+@router.post("/probe", response_model=ProbeResponse, dependencies=[Depends(require_bridge_token)])
 async def probe(body: ProbeRequest) -> ProbeResponse:
     """Send a diagnostic instruction to the userscript and return the raw result.
 
-    This endpoint is for P0-2 verification only — it lets us probe the real BOSS
-    DOM to find the correct CSS selector for the chat message input. It will be
-    removed after the selector is confirmed.
+    This endpoint is for selector verification only — it lets us probe the
+    real BOSS DOM to find the correct CSS selectors. It is disabled in prod
+    and limited to a non-content op whitelist (see
+    :data:`_PROBE_ALLOWED_OPS`).
 
     When *page_id* is provided, the instruction is bound to that specific tab.
     This is the Stage 7 multi-tab safety test: we send an instruction bound to
     Tab-A's page_id while Tab-B is the active page. The userscript on Tab-A
     should pick it up; Tab-B should skip it.
     """
+    settings = get_settings()
+    if settings.app_env == "prod":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"reason": "probe_disabled_in_prod"},
+        )
+    if body.op not in _PROBE_ALLOWED_OPS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"reason": "probe_op_not_allowed", "op": body.op},
+        )
+
     ch = get_channel()
     if not ch.is_connected():
         return ProbeResponse(success=False, error="bridge_not_connected")

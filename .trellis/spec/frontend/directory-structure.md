@@ -1,46 +1,54 @@
-# Frontend Directory Structure
+# Directory Structure
 
-The frontend source tree does not exist yet. Use this structure when creating
-the React application unless later code establishes a different local pattern.
+> How frontend code is organized in this project.
 
-```text
-frontend/
-  src/
-    app/
-      routes/
-      providers/
-    pages/
-      dashboard/
-      resumes/
-      jobs/
-      applications/
-      interview-prep/
-    features/
-      profile/
-      resumes/
-      jobs/
-      applications/
-      agent-runs/
-    components/
-      common/
-      layout/
-    api/
-      client.ts
-      types/
-    hooks/
-    styles/
-    test/
+---
+
+## Overview
+
+<!--
+Document your project's frontend directory structure here.
+
+Questions to answer:
+- Where do components live?
+- How are features/modules organized?
+- Where are shared utilities?
+- How are assets organized?
+-->
+
+(To be filled by the team)
+
+---
+
+## Directory Layout
+
+```
+<!-- Replace with your actual structure -->
+src/
+├── ...
+└── ...
 ```
 
-## Placement Rules
+---
 
-- Put route-level screens under `pages/` or the chosen router's route folder.
-- Put domain UI under `features/{domain}/`.
-- Put reusable shell, empty states, loading states, and feedback components under
-  `components/`.
-- Put API client code and generated types under `api/`.
-- Put hooks near the domain that owns them unless they are truly shared.
+## Module Organization
 
-Avoid scattering job, resume, application, and agent-run logic across generic
-utility folders.
+<!-- How should new features be organized? -->
 
+(To be filled by the team)
+
+---
+
+## Naming Conventions
+
+<!-- File and folder naming rules -->
+
+(To be filled by the team)
+
+---
+
+## Examples
+
+<!-- Link to well-organized modules as examples -->
+
+(To be filled by the team)

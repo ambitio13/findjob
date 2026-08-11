@@ -32,6 +32,7 @@ from app.schemas.readiness import (
     ReadinessArtifactType,
     ResumeRewriteSnippetOutput,
     SkillGapPlanOutput,
+    TargetedResumeOutput,
 )
 
 _log = get_logger("app.agents.readiness_executor")
@@ -42,6 +43,7 @@ _OUTPUT_MODELS: dict[str, type[BaseModel]] = {
     ReadinessArtifactType.resume_rewrite_snippet.value: ResumeRewriteSnippetOutput,
     ReadinessArtifactType.skill_gap_plan.value: SkillGapPlanOutput,
     ReadinessArtifactType.interview_prep.value: InterviewPrepOutput,
+    ReadinessArtifactType.targeted_resume.value: TargetedResumeOutput,
 }
 
 
@@ -99,11 +101,21 @@ class ReadinessExecutor:
         request = ChatRequest(messages=messages, temperature=0.1)
         return await self._gateway.chat(request)
 
-    def validate(self, response: ChatResponse, artifact_type: str) -> BaseModel:
+    def validate(
+        self,
+        response: ChatResponse,
+        artifact_type: str,
+        *,
+        valid_fact_ids: set[str] | None = None,
+    ) -> BaseModel:
         """Parse + schema-validate the model output (validate_model_output).
 
-        Raises :class:`ReadinessValidationError` (kind ``"json"`` or
-        ``"schema"``) on failure.
+        Raises :class:`ReadinessValidationError` (kind ``"json"``, ``"schema"``,
+        or ``"traceability"``) on failure. For ``targeted_resume`` the
+        additional traceability gate requires every bullet's
+        ``source_fact_refs`` to resolve against ``valid_fact_ids`` (the IDs
+        shown in the prompt); unresolvable refs mean the model invented
+        content, so the whole output is rejected.
         """
         try:
             parsed = json.loads(response.content)
@@ -131,7 +143,7 @@ class ReadinessExecutor:
             )
 
         try:
-            return model_cls.model_validate(parsed)
+            output = model_cls.model_validate(parsed)
         except ValidationError as exc:
             _log.warning(
                 "readiness.schema_validation_failed",
@@ -146,6 +158,57 @@ class ReadinessExecutor:
                 "model output failed schema validation",
                 request_id=response.request_id,
             ) from exc
+
+        if artifact_type == ReadinessArtifactType.targeted_resume.value:
+            self._validate_traceability(
+                output,  # type: ignore[arg-type]
+                valid_fact_ids=valid_fact_ids,
+                request_id=response.request_id,
+            )
+        return output
+
+    @staticmethod
+    def _validate_traceability(
+        output: TargetedResumeOutput,
+        *,
+        valid_fact_ids: set[str] | None,
+        request_id: str | None,
+    ) -> None:
+        """Reject targeted_resume outputs whose bullets cannot be traced back.
+
+        Rules: resume facts must exist (otherwise nothing is traceable), and
+        every bullet's ``source_fact_refs`` must be non-empty and only contain
+        IDs present in ``valid_fact_ids``. Any violation raises
+        :class:`ReadinessValidationError` with kind ``"traceability"`` so the
+        orchestrator fails the run without persisting an artifact.
+        """
+        known = valid_fact_ids or set()
+        if not known:
+            _log.warning(
+                "readiness.traceability_no_facts",
+                request_id=request_id,
+            )
+            raise ReadinessValidationError(
+                "traceability",
+                "resume facts not extracted; targeted resume requires "
+                "traceable source facts",
+                request_id=request_id,
+            )
+        for idx, bullet in enumerate(output.targeted_bullets):
+            unknown = [ref for ref in bullet.source_fact_refs if ref not in known]
+            if unknown:
+                _log.warning(
+                    "readiness.traceability_unresolved_refs",
+                    request_id=request_id,
+                    bullet_index=idx,
+                    unknown_refs=unknown,
+                )
+                raise ReadinessValidationError(
+                    "traceability",
+                    f"targeted bullet {idx} cites unknown resume fact refs: "
+                    f"{', '.join(unknown)}",
+                    request_id=request_id,
+                )
 
 
 def usage_to_dict(usage: object | None) -> dict[str, int | None] | None:

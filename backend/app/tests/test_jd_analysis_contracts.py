@@ -239,7 +239,7 @@ def _make_context(
 
 
 def test_prompt_version_constant() -> None:
-    assert PROMPT_VERSION == "jd-analysis-v2"
+    assert PROMPT_VERSION == "jd-analysis-v3"
 
 
 def test_build_messages_returns_system_and_user() -> None:

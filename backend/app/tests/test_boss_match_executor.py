@@ -501,12 +501,12 @@ def test_safety_gate_does_not_mutate_input() -> None:
     assert gated.opening_message is None
 
 
-def test_safety_gate_communicate_none_opening_message_passes() -> None:
-    """communicate with None opening_message passes the gate (model didn't provide one).
+def test_safety_gate_communicate_none_opening_message_downgraded() -> None:
+    """communicate with a None opening_message is downgraded.
 
-    The opening-message gate only rejects when the model returned a non-None
-    message that fails validation. A None message with a high score is allowed
-    (the frontend will prompt the user to write one).
+    A communicate decision without a valid message has nothing lawful to
+    send, so the gate downgrades it to needs_review (the user can then
+    review and provide a message through the normal approval flow).
     """
     output = MatchDecisionModelOutput(
         decision=MatchDecision.communicate,
@@ -517,7 +517,7 @@ def test_safety_gate_communicate_none_opening_message_passes() -> None:
         opening_message=None,
     )
     gated = apply_match_safety_gate(output)
-    assert gated.decision == MatchDecision.communicate
+    assert gated.decision == MatchDecision.needs_review
     assert gated.opening_message is None
 
 

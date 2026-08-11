@@ -35,6 +35,7 @@ import {
 } from "@/features/agent-runs/status";
 import { useAgentRunPolling } from "@/features/agent-runs/useAgentRunPolling";
 import { AgentRunStatusTag } from "@/features/agent-runs/AgentRunStatusTag";
+import { RED_FLAG_COLOR, RED_FLAG_LABEL } from "@/features/jobs/redFlags";
 import {
   asyncRunFailureMessage,
   asyncRunSuccessMessage,
@@ -43,6 +44,7 @@ import type {
   AgentRunDetailOut,
   AgentRunOut,
   AgentStepOut,
+  JdAnalysisModelOutput,
   JobOut,
   JobAnalysisDetailOut,
   ResumeOut,
@@ -368,6 +370,13 @@ export function JobDetailPage() {
     [runs],
   );
 
+  // Phase 3 risk lens: the newest run's structured output drives the
+  // "岗位透视" panel (runs are newest-first from the API).
+  const latestStructured = useMemo<JdAnalysisModelOutput | null>(
+    () => runViews.find((v) => v.detail?.structured)?.detail?.structured ?? null,
+    [runViews],
+  );
+
   if (loading) return <Spin />;
   if (error || !job) {
     return <Alert type="error" message="加载失败" description={error ?? undefined} />;
@@ -500,6 +509,17 @@ export function JobDetailPage() {
               <Descriptions.Item label="城市">{job.location ?? "-"}</Descriptions.Item>
               <Descriptions.Item label="薪资">{job.salary_range ?? "-"}</Descriptions.Item>
               <Descriptions.Item label="方向">{job.direction ?? "-"}</Descriptions.Item>
+              {job.source_url ? (
+                <Descriptions.Item label="职位链接" span={2}>
+                  <a
+                    href={job.source_url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    {job.source_url}
+                  </a>
+                </Descriptions.Item>
+              ) : null}
             </Descriptions>
             {(job.company === "(解析中…)" || job.title === "(解析中…)") && (
               <Alert
@@ -538,6 +558,8 @@ export function JobDetailPage() {
       </Card>
 
       <JdNormalizedCard jdNormalized={job.jd_normalized} />
+
+      <JobRiskLensPanel structured={latestStructured} />
 
       <Card title="JD 分析">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -1183,4 +1205,169 @@ function asExtractionInfo(
     provider: typeof v.provider === "string" ? v.provider : undefined,
     model: typeof v.model === "string" ? v.model : undefined,
   };
+}
+
+/** Chinese label for salary-structure period. */
+const PERIOD_SUFFIX: Record<string, string> = {
+  monthly: "K/月",
+  yearly: "K/年",
+  hourly: "/小时",
+  daily: "/天",
+  unknown: "",
+};
+
+/** Tag color + label for a stability signal polarity. */
+const POLARITY_META: Record<string, { label: string; color: string }> = {
+  positive: { label: "正向", color: "green" },
+  negative: { label: "负向", color: "red" },
+  unknown: { label: "未知", color: "default" },
+};
+
+/** Verbatim JD evidence quote, rendered as a muted blockquote. */
+function EvidenceQuote({ quote }: { quote: string }) {
+  return (
+    <div
+      style={{
+        borderLeft: "3px solid #d9d9d9",
+        paddingLeft: 8,
+        marginTop: 4,
+        color: "rgba(0, 0, 0, 0.45)",
+        whiteSpace: "pre-wrap",
+      }}
+    >
+      「{quote}」
+    </div>
+  );
+}
+
+/**
+ * Phase 3 risk lens panel: renders the newest analysis' red flags, salary
+ * structure and stability signals, each conclusion carrying its verbatim JD
+ * evidence quote. Driven purely by the persisted structured output.
+ */
+function JobRiskLensPanel({
+  structured,
+}: {
+  structured: JdAnalysisModelOutput | null;
+}) {
+  if (!structured) {
+    return (
+      <Card title="岗位透视">
+        <Empty description="先运行一次 JD 分析，这里会展示风险红旗、薪资结构与稳定性信号" />
+      </Card>
+    );
+  }
+
+  const redFlags = structured.red_flags ?? [];
+  const salary = structured.salary_structure ?? null;
+  const signals = structured.stability_signals ?? [];
+
+  // Analyses produced by older prompt versions carry none of the lens fields.
+  if (redFlags.length === 0 && !salary && signals.length === 0) {
+    return (
+      <Card title="岗位透视">
+        <Alert
+          type="info"
+          showIcon
+          message="该次分析未包含风险透视字段"
+          description="分析可能由旧版本 prompt 产出，重新运行一次 JD 分析即可补齐。"
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card title="岗位透视">
+      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        <div>
+          <Text strong>风险红旗</Text>
+          {redFlags.length === 0 ? (
+            <div style={{ marginTop: 4 }}>
+              <Tag color="green">未发现红旗</Tag>
+            </div>
+          ) : (
+            <List
+              size="small"
+              dataSource={redFlags}
+              renderItem={(flag) => (
+                <List.Item>
+                  <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                    <Space wrap>
+                      <Tag color={RED_FLAG_COLOR[flag.severity] ?? "gold"}>
+                        {flag.severity}
+                      </Tag>
+                      <Tag>{RED_FLAG_LABEL[flag.flag_type] ?? flag.flag_type}</Tag>
+                      <Text strong>{flag.title}</Text>
+                    </Space>
+                    <Text type="secondary">{flag.detail}</Text>
+                    {flag.evidence_quote ? (
+                      <EvidenceQuote quote={flag.evidence_quote} />
+                    ) : null}
+                  </Space>
+                </List.Item>
+              )}
+            />
+          )}
+        </div>
+
+        {salary ? (
+          <div>
+            <Text strong>薪资结构</Text>
+            <Descriptions column={1} size="small" style={{ marginTop: 4 }}>
+              {salary.range_text ? (
+                <Descriptions.Item label="原文">
+                  {salary.range_text}
+                </Descriptions.Item>
+              ) : null}
+              {salary.min_value != null || salary.max_value != null ? (
+                <Descriptions.Item label="区间">
+                  {salary.min_value ?? "?"} – {salary.max_value ?? "?"}
+                  {PERIOD_SUFFIX[salary.period ?? "unknown"] ?? ""}
+                </Descriptions.Item>
+              ) : null}
+              {salary.composition && salary.composition.length > 0 ? (
+                <Descriptions.Item label="构成">
+                  {salary.composition.join("；")}
+                </Descriptions.Item>
+              ) : null}
+              {salary.caveats && salary.caveats.length > 0 ? (
+                <Descriptions.Item label="注意事项">
+                  {salary.caveats.join("；")}
+                </Descriptions.Item>
+              ) : null}
+            </Descriptions>
+          </div>
+        ) : null}
+
+        {signals.length > 0 ? (
+          <div>
+            <Text strong>稳定性信号</Text>
+            <List
+              size="small"
+              dataSource={signals}
+              renderItem={(signal) => (
+                <List.Item>
+                  <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                    <Space>
+                      <Tag color={POLARITY_META[signal.polarity]?.color ?? "default"}>
+                        {POLARITY_META[signal.polarity]?.label ?? signal.polarity}
+                      </Tag>
+                      <Text>{signal.signal}</Text>
+                    </Space>
+                    {signal.evidence_quote ? (
+                      <EvidenceQuote quote={signal.evidence_quote} />
+                    ) : null}
+                  </Space>
+                </List.Item>
+              )}
+            />
+          </div>
+        ) : null}
+
+        <Text type="secondary">
+          引文为 JD 原文片段，结论为模型草稿，请结合 JD 原文自行判断。
+        </Text>
+      </Space>
+    </Card>
+  );
 }
