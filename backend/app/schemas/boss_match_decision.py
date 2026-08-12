@@ -71,6 +71,13 @@ class MatchDecisionOut(BaseSchema):
     ``message`` carries a human-readable explanation when the safety gate
     downgraded the decision (e.g. ``"low confidence, downgraded to
     needs_review"``).
+
+    ``draft_opening_message`` is the **pre-gate** model opening message,
+    returned only when the safety gate downgraded the decision and the model
+    produced a message. It lets the human-review UI prefill the draft the user
+    edits. The persisted artifact stores only the post-gate output; this field
+    is response-only and never persisted. ``None`` when no downgrade happened
+    or the model produced no message.
     """
 
     decision: MatchDecision
@@ -83,6 +90,7 @@ class MatchDecisionOut(BaseSchema):
     agent_run_id: str | None = None
     artifact_id: str | None = None
     message: str | None = None
+    draft_opening_message: str | None = None
 
 
 __all__ = [

@@ -31,7 +31,8 @@
     "08-08-boss-e2e-smoke-test-isolation",
     "08-08-boss-devex-runbook-hardening",
     "08-08-frontend-build-performance-budget",
-    "08-08-boss-observability-tracing-hardening"
+    "08-08-boss-observability-tracing-hardening",
+    "08-13-boss-recommended-discovery-pipeline"
   ],
   "parent": null,
   "relatedFiles": [],

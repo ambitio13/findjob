@@ -37,8 +37,15 @@ import type {
   BridgeStatusResponse,
   InspectJobOut,
   MatchDecisionOut,
+  HumanReviewOverride,
   CommunicatePrepareOut,
   CommunicateExecuteOut,
+  BatchLoopRequest,
+  BatchLoopStatusOut,
+  BatchLoopPauseOut,
+  DiscoveryRequest,
+  DiscoveryStatusOut,
+  DiscoveryPauseOut,
   OutcomeCreate,
   OutcomeOut,
   OutcomeListOut,
@@ -519,20 +526,27 @@ export async function matchJob(
 /**
  * Draft a ``boss_immediate_communicate`` action in ``approval_required`` status.
  *
- * Calls ``POST /boss/recommended-jobs/{jobId}/communicate/prepare``. No browser
+ * Calls `POST /boss/recommended-jobs/{jobId}/communicate/prepare`. No browser
  * side effect — this only reads the persisted match artifact and creates an
  * ApplicationAction row.
+ *
+ * `humanReview` is optional and only honored when the match artifact's decision
+ * is `needs_review` (the explicit human-review override path out of the
+ * safety-gate downgrade). Carrying it with a `communicate` or `skip` decision
+ * is a 422 from the backend.
  */
 export async function prepareCommunicate(
   jobId: string,
   resumeVersionId: string,
   matchArtifactId: string,
+  humanReview?: HumanReviewOverride,
 ): Promise<CommunicatePrepareOut> {
   const { data } = await apiClient.post<CommunicatePrepareOut>(
     `/boss/recommended-jobs/${jobId}/communicate/prepare`,
     {
       resume_version_id: resumeVersionId,
       match_artifact_id: matchArtifactId,
+      ...(humanReview ? { human_review: humanReview } : {}),
     },
   );
   return data;
@@ -556,6 +570,172 @@ export async function executeCommunicate(
     // Execute waits for the userscript to click + send + read markers, which
     // can exceed the default 15s budget under background-tab throttling.
     { timeout: 120_000 },
+  );
+  return data;
+}
+
+// --- BOSS recommended-job batch loop ---
+//
+// These functions drive the batch mode panel, which serially processes the
+// recommended-jobs list (inspect → match → prepare per job), stopping at
+// approval_required or needs_review. The batch never auto-approves or
+// auto-executes in prepare_only mode.
+
+/**
+ * Start (or resume) a batch loop over the user's recommended jobs.
+ *
+ * Calls ``POST /boss/recommended-jobs/batch-loop``. Serially processes up to
+ * ``limit`` jobs, stopping at ``approval_required`` or ``needs_review``. In
+ * ``prepare_only`` mode (the default) the loop never auto-approves.
+ *
+ * ``mode=auto_execute`` is rejected with HTTP 422 by the backend until the
+ * dry-run gate passes (10 consecutive incident-free runs + 2 duplicate
+ * detections).
+ *
+ * The request can take significantly longer than 15s when many jobs are
+ * processed serially, so we use a generous timeout.
+ */
+export async function startBatchLoop(
+  payload: BatchLoopRequest,
+): Promise<BatchLoopStatusOut> {
+  const { data } = await apiClient.post<BatchLoopStatusOut>(
+    "/boss/recommended-jobs/batch-loop",
+    payload,
+    // Serial processing of up to ``limit`` jobs (each involving a model call)
+    // can take several minutes. Use a 5-minute timeout.
+    { timeout: 300_000 },
+  );
+  return data;
+}
+
+/**
+ * Poll the status of a batch run.
+ *
+ * Calls ``GET /boss/recommended-jobs/batch-loop/{runId}``. Returns the full
+ * per-item progress. Cross-user access returns 404.
+ */
+export async function getBatchLoopStatus(
+  runId: string,
+): Promise<BatchLoopStatusOut> {
+  const { data } = await apiClient.get<BatchLoopStatusOut>(
+    `/boss/recommended-jobs/batch-loop/${runId}`,
+  );
+  return data;
+}
+
+/**
+ * Pause a running batch loop.
+ *
+ * Calls ``POST /boss/recommended-jobs/batch-loop/{runId}/pause``. Since
+ * processing is synchronous, pause takes effect between items. Already-terminal
+ * runs are a no-op.
+ */
+export async function pauseBatchLoop(
+  runId: string,
+): Promise<BatchLoopPauseOut> {
+  const { data } = await apiClient.post<BatchLoopPauseOut>(
+    `/boss/recommended-jobs/batch-loop/${runId}/pause`,
+  );
+  return data;
+}
+
+/**
+ * Resume a paused batch loop.
+ *
+ * Calls ``POST /boss/recommended-jobs/batch-loop/{runId}/resume``. Continues
+ * processing remaining ``pending`` items. Non-paused runs are a no-op.
+ */
+export async function resumeBatchLoop(
+  runId: string,
+): Promise<BatchLoopStatusOut> {
+  const { data } = await apiClient.post<BatchLoopStatusOut>(
+    `/boss/recommended-jobs/batch-loop/${runId}/resume`,
+    // Resume processes remaining items serially — same timeout as start.
+    { timeout: 300_000 },
+  );
+  return data;
+}
+
+// --- BOSS recommended-job discovery pipeline ---
+//
+// These functions drive the RecommendedDiscoveryPanel, which orchestrates the
+// zero-navigation serial discovery pipeline on the BOSS recommended list page
+// (/web/geek/jobs). The pipeline scans visible cards, clicks each one to
+// switch the inline detail pane (no page navigation), reads the JD, upserts
+// it, runs match, and prepares a communicate action when appropriate.
+
+/**
+ * Start (or resume) a discovery run on the BOSS recommended list page.
+ *
+ * Calls ``POST /boss/recommended-jobs/discovery``. The pipeline serially
+ * processes up to ``limit`` candidates: scan → open → read → upsert →
+ * match → prepare. In ``prepare_only`` mode (the default) the pipeline never
+ * auto-approves or auto-executes.
+ *
+ * ``mode=auto_execute`` is rejected by the backend until the dry-run gate
+ * passes.
+ *
+ * The request can take significantly longer than 15s when many candidates are
+ * processed serially (each involving a model call), so we use a generous
+ * timeout.
+ */
+export async function startDiscovery(
+  payload: DiscoveryRequest,
+): Promise<DiscoveryStatusOut> {
+  const { data } = await apiClient.post<DiscoveryStatusOut>(
+    "/boss/recommended-jobs/discovery",
+    payload,
+    // Serial processing of up to ``limit`` candidates (each involving scan +
+    // click + read + model call) can take several minutes.
+    { timeout: 300_000 },
+  );
+  return data;
+}
+
+/**
+ * Poll the status of a discovery run.
+ *
+ * Calls ``GET /boss/recommended-jobs/discovery/{runId}``. Returns the full
+ * per-item progress. Cross-user access returns 404.
+ */
+export async function getDiscoveryStatus(
+  runId: string,
+): Promise<DiscoveryStatusOut> {
+  const { data } = await apiClient.get<DiscoveryStatusOut>(
+    `/boss/recommended-jobs/discovery/${runId}`,
+  );
+  return data;
+}
+
+/**
+ * Pause a running discovery run.
+ *
+ * Calls ``POST /boss/recommended-jobs/discovery/{runId}/pause``. Since
+ * processing is synchronous, pause takes effect between items. Already-terminal
+ * runs are a no-op. In v0.1 pause is crash-recovery only.
+ */
+export async function pauseDiscovery(
+  runId: string,
+): Promise<DiscoveryPauseOut> {
+  const { data } = await apiClient.post<DiscoveryPauseOut>(
+    `/boss/recommended-jobs/discovery/${runId}/pause`,
+  );
+  return data;
+}
+
+/**
+ * Resume a paused discovery run.
+ *
+ * Calls ``POST /boss/recommended-jobs/discovery/{runId}/resume``. Continues
+ * processing remaining ``pending`` items. Non-paused runs are a no-op.
+ */
+export async function resumeDiscovery(
+  runId: string,
+): Promise<DiscoveryStatusOut> {
+  const { data } = await apiClient.post<DiscoveryStatusOut>(
+    `/boss/recommended-jobs/discovery/${runId}/resume`,
+    // Resume processes remaining items serially — same timeout as start.
+    { timeout: 300_000 },
   );
   return data;
 }

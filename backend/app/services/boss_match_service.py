@@ -238,7 +238,7 @@ async def run_boss_match_decision(
     job_id: str,
     resume_version_id: str,
     gateway: ModelGateway,
-) -> tuple[AgentRun, GeneratedArtifact, BossMatchExecution, bool]:
+) -> tuple[AgentRun, GeneratedArtifact, BossMatchExecution, bool, str | None]:
     """Drive the BOSS match-decision workflow end to end.
 
     Fixed steps:
@@ -257,9 +257,13 @@ async def run_boss_match_decision(
        as succeeded.
     6. ``complete_run`` — finalize run status and metadata.
 
-    Returns ``(agent_run, artifact, execution, safety_downgraded)`` on success.
-    ``safety_downgraded`` is ``True`` when the safety gate changed the decision
-    (e.g. ``communicate`` → ``needs_review``).
+    Returns ``(agent_run, artifact, execution, safety_downgraded,
+    raw_opening_message)`` on success. ``safety_downgraded`` is ``True`` when
+    the safety gate changed the decision (e.g. ``communicate`` →
+    ``needs_review``). ``raw_opening_message`` is the pre-gate model opening
+    message when the gate downgraded (so the human-review UI can prefill the
+    draft), or ``None`` when no downgrade happened or the model produced no
+    message.
     """
     started_at = datetime.now(UTC)
 
@@ -275,7 +279,7 @@ async def run_boss_match_decision(
     )
 
     try:
-        execution, safety_downgraded = await _execute_boss_match(
+        execution, safety_downgraded, raw_opening_message = await _execute_boss_match(
             db=db,
             run=run,
             current_user=current_user,
@@ -300,7 +304,7 @@ async def run_boss_match_decision(
         )
     db.refresh(run)
     db.refresh(artifact)
-    return run, artifact, execution, safety_downgraded
+    return run, artifact, execution, safety_downgraded, raw_opening_message
 
 
 async def _execute_boss_match(
@@ -311,11 +315,15 @@ async def _execute_boss_match(
     resume_version_id: str,
     context: BossMatchContext,
     gateway: ModelGateway,
-) -> tuple[BossMatchExecution, bool]:
+) -> tuple[BossMatchExecution, bool, str | None]:
     """Drive the fixed-step boss match orchestration using an existing run.
 
-    Returns ``(execution, safety_downgraded)``. On failure persists a sanitized
-    failed step + run and raises HTTP 502.
+    Returns ``(execution, safety_downgraded, raw_opening_message)``. On failure
+    persists a sanitized failed step + run and raises HTTP 502.
+
+    ``raw_opening_message`` is the pre-gate model ``opening_message`` when the
+    safety gate downgraded the decision (for the human-review draft), otherwise
+    ``None``.
     """
     executor = BossMatchExecutor(gateway)
 
@@ -441,6 +449,15 @@ async def _execute_boss_match(
     gated_output = apply_match_safety_gate(model_output, min_score=min_score)
     safety_downgraded = gated_output.decision != raw_decision
 
+    # Capture the pre-gate opening message when the safety gate downgraded, so
+    # the human-review UI can prefill the draft (PRD R2). The persisted artifact
+    # still stores only the post-gate output (opening_message=None on
+    # downgrade) — this draft is returned in the API response only, never
+    # persisted.
+    raw_opening_message: str | None = None
+    if safety_downgraded:
+        raw_opening_message = model_output.opening_message
+
     agent_run_repo.add_step(
         db,
         run_id=run.id,
@@ -543,7 +560,7 @@ async def _execute_boss_match(
     )
 
     db.commit()
-    return execution, safety_downgraded
+    return execution, safety_downgraded, raw_opening_message
 
 
 __all__ = [

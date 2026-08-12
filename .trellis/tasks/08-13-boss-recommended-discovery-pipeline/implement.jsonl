@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "Discovery must preserve approval boundary, userscript privacy, human-review override, and prepare-only batch-loop invariants."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Long-running discovery needs explicit state transitions, durable progress, and user control over external actions."}
+{"file": ".trellis/spec/shared/typescript.md", "reason": "Frontend contracts and discovery state machines should use aligned typed schema names."}
+{"file": "docs/manual-boss-pilot.md", "reason": "Userscript bridge is the recommended real-page path and defines manual pilot safety expectations."}
+{"file": "docs/boss-anti-automation-findings.md", "reason": "Discovery design must avoid CDP/browser automation paths that BOSS detects."}
+{"file": "docs/boss-local-dev-runbook.md", "reason": "Local bridge diagnostics, logs, wrong-tab handling, and smoke workflow apply to discovery."}
+{"file": ".trellis/tasks/08-03-boss-recommended-list-batch-loop/design.md", "reason": "Existing caller-supplied job-id batch-loop is the downstream workflow to reuse, not duplicate."}
+{"file": ".trellis/tasks/08-12-human-review-override/prd.md", "reason": "Blocked decisions can hand off to human review, but automatic discovery must not submit overrides."}
+{"file": ".trellis/tasks/08-13-boss-recommended-discovery-pipeline/probe-evidence.md", "reason": "Real-page DOM evidence: zero-navigation master-detail layout, selector profiles, forbidden click/collect lists, no communicated badges."}

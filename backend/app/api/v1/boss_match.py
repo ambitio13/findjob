@@ -66,12 +66,14 @@ async def match_job_endpoint(
     score is low, requirements are missing, or the opening message fails
     length/PII/tone validation.
     """
-    run, artifact, execution, safety_downgraded = await run_boss_match_decision(
-        db,
-        current_user,
-        job_id=job_id,
-        resume_version_id=payload.resume_version_id,
-        gateway=gateway,
+    run, artifact, execution, safety_downgraded, raw_opening_message = (
+        await run_boss_match_decision(
+            db,
+            current_user,
+            job_id=job_id,
+            resume_version_id=payload.resume_version_id,
+            gateway=gateway,
+        )
     )
 
     output = execution.output
@@ -92,4 +94,5 @@ async def match_job_endpoint(
         agent_run_id=run.id,
         artifact_id=artifact.id,
         message=message,
+        draft_opening_message=raw_opening_message,
     )

@@ -41,6 +41,7 @@ from app.platforms.boss.sanitizer import (
     _COOKIE_PATTERN,
     _SECRET_PATTERNS,
     sanitize_jd_result,
+    sanitize_job_candidates,
 )
 from app.platforms.boss.userscript_channel import (
     InstructionResult,
@@ -148,6 +149,9 @@ async def get_next_instruction(
         max_text_chars=instruction.max_text_chars,
         selector_profile=instruction.selector_profile,
         extra_selectors=instruction.extra_selectors,
+        job_key=instruction.job_key,
+        expected_title=instruction.expected_title,
+        max_items=instruction.max_items,
     )
 
 
@@ -197,6 +201,13 @@ def post_result(body: ResultIn) -> AckResponse:
             conversations=[c.model_dump() for c in body.conversations]
             if body.conversations
             else None,
+            # scan_visible_jobs results: sanitize each candidate via a strict
+            # whitelist (job_key/rank/title/company/salary/location/tags).
+            job_candidates=sanitize_job_candidates(
+                [c.model_dump() for c in body.job_candidates]
+                if body.job_candidates
+                else None
+            ),
         )
     )
     if not accepted:

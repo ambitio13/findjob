@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BOSS Userscript — 发现流水线 Discovery Ops 测试 (D1-D10)</title>
+  <style>
+    :root {
+      --pass: #16a34a;
+      --pass-bg: #dcfce7;
+      --fail: #dc2626;
+      --fail-bg: #fee2e2;
+      --info: #475569;
+      --border: #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px 20px 60px;
+      color: #1e293b;
+      line-height: 1.6;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 4px; }
+    h2 { font-size: 1.1rem; margin: 28px 0 8px; color: #334155; }
+    .subtitle { color: var(--info); font-size: 0.9rem; margin-bottom: 20px; }
+    #summary {
+      font-size: 1.15rem;
+      font-weight: 600;
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      display: inline-block;
+    }
+    #summary.all-pass { background: var(--pass-bg); color: var(--pass); }
+    #summary.has-fail { background: var(--fail-bg); color: var(--fail); }
+    .test-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      background: #fff;
+    }
+    .test-card.pass { border-left: 4px solid var(--pass); }
+    .test-card.fail { border-left: 4px solid var(--fail); }
+    .test-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .badge {
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 2px 10px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge.pass { background: var(--pass-bg); color: var(--pass); }
+    .badge.fail { background: var(--fail-bg); color: var(--fail); }
+    .test-title { font-weight: 600; }
+    .test-desc { font-size: 0.85rem; color: var(--info); margin-bottom: 8px; }
+    .test-row {
+      font-family: "SF Mono", "Fira Code", Consolas, monospace;
+      font-size: 0.82rem;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+    .test-row .label { color: var(--info); min-width: 70px; }
+    .test-row .val { color: #0f172a; word-break: break-all; }
+    .mismatch { color: var(--fail); font-weight: 600; }
+    .match { color: var(--pass); font-weight: 600; }
+    .source-link { font-size: 0.85rem; color: var(--info); margin-top: 28px; }
+    .hidden-dom { display: none; }
+    code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <h1>BOSS Userscript — 发现流水线 Discovery Ops 测试</h1>
+  <p class="subtitle">
+    D1-D10 · 零依赖 · 浏览器打开即运行 ·
+    源码来自 <code>docs/boss-userscript.user.js</code>（scan / open / wait / read pane）
+  </p>
+  <div id="summary">运行中…</div>
+
+  <!--
+    ============================================================
+    被测函数：从 docs/boss-userscript.user.js 复制的 discovery 相关逻辑。
+    修改此处必须同步修改 userscript，否则测试无意义。
+    ============================================================
+  -->
+  <script>
+    "use strict";
+
+    // ---- 工具函数（从 userscript 复制）----
+
+    function sanitizeJdField(text, maxLen) {
+      if (!text) return null;
+      var s = String(text).replace(/[\t\r\n]+/g, " ").trim();
+      if (s.length > (maxLen || 200)) s = s.slice(0, (maxLen || 200));
+      return s || null;
+    }
+
+    function stripHtml(text) {
+      if (!text) return "";
+      return String(text).replace(/<[^>]*>/g, "");
+    }
+
+    function isElementVisible(el) {
+      if (!el) return false;
+      var style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      var rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }
+
+    // ---- extractBossRecommendedPaneV1（从 userscript 第 315-378 行复制）----
+
+    function extractBossRecommendedPaneV1(maxTextChars) {
+      var budget = maxTextChars || 8000;
+      var jd = {
+        title: null,
+        company: null,
+        location: null,
+        salary: null,
+        experience: null,
+        education: null,
+        skills: [],
+        description: null,
+        source_kind: "boss_recommended_job",
+        page_url_hash: null,
+      };
+
+      var pane = document.querySelector(".job-detail-container");
+      if (!pane) return jd;
+
+      var headerInfo = pane.querySelector(".job-header-info");
+      jd.title = sanitizeJdField(
+        headerInfo ? headerInfo.innerText : null,
+        200,
+      );
+      var salaryEl = headerInfo
+        ? headerInfo.querySelector("[class*=salary]")
+        : null;
+      jd.salary = sanitizeJdField(
+        salaryEl ? salaryEl.innerText : null,
+        100,
+      );
+
+      var descEl = pane.querySelector(".job-detail-body p.desc");
+      if (descEl) {
+        jd.description = sanitizeJdField(
+          stripHtml(descEl.innerText),
+          budget,
+        );
+      }
+
+      var tagEls = pane.querySelectorAll(
+        ".job-detail-body ul.job-label-list li",
+      );
+      var tags = [];
+      tagEls.forEach(function (el) {
+        var t = sanitizeJdField(el.innerText, 60);
+        if (t && tags.length < 30) tags.push(t);
+      });
+      jd.skills = tags;
+
+      var addrEl = pane.querySelector(".job-detail-body .job-address");
+      if (addrEl) {
+        jd.location = sanitizeJdField(addrEl.innerText, 100);
+      }
+
+      jd.company = null;
+      return jd;
+    }
+
+    // ---- scan_visible_jobs 逻辑（从 userscript 第 611-697 行精简复制）----
+
+    function scanVisibleJobs(maxItems) {
+      var cardEls = document.querySelectorAll("div.job-card-wrap");
+      if (cardEls.length === 0) {
+        return { success: false, error: "not_recommended_list_page" };
+      }
+
+      var candidates = [];
+      var cache = {};
+      for (var ci = 0; ci < cardEls.length && candidates.length < maxItems; ci++) {
+        var card = cardEls[ci];
+        if (!isElementVisible(card)) continue;
+
+        var nameLink = card.querySelector("a.job-name");
+        if (!nameLink) continue;
+        var href = nameLink.getAttribute("href") || "";
+        var pathOnly = href.split("?")[0].split("#")[0];
+        if (!pathOnly) continue;
+        // 使用简单 hash 代替 sha256（测试环境无 crypto.subtle）
+        var jobKey = "sha256:" + btoa(pathOnly).slice(0, 16);
+
+        var titleEl = card.querySelector(".job-name");
+        var salaryEl = card.querySelector(".job-salary");
+        var companyEl = card.querySelector("[class*=company]");
+        var areaEl = card.querySelector("[class*=area]");
+        var tagEls2 = card.querySelectorAll(".tag-list li");
+
+        var tags = [];
+        tagEls2.forEach(function (el) {
+          var t = sanitizeJdField(el.innerText, 60);
+          if (t && tags.length < 30) tags.push(t);
+        });
+
+        var candidate = {
+          job_key: jobKey,
+          rank: candidates.length + 1,
+          title: sanitizeJdField(titleEl ? titleEl.innerText : null, 200),
+          company: sanitizeJdField(companyEl ? companyEl.innerText : null, 200),
+          salary: sanitizeJdField(salaryEl ? salaryEl.innerText : null, 100),
+          location: sanitizeJdField(areaEl ? areaEl.innerText : null, 100),
+          tags: tags.length > 0 ? tags : null,
+        };
+        candidates.push(candidate);
+        cache[jobKey] = card;
+      }
+
+      return { success: true, job_candidates: candidates, count: candidates.length, _cache: cache };
+    }
+
+    // ---- open_job_by_key 逻辑（从 userscript 第 699-754 行精简复制）----
+
+    function openJobByKey(cache, jobKey) {
+      if (!jobKey) return { success: false, error: "missing_job_key" };
+      var cardEl = cache[jobKey];
+      if (!cardEl) return { success: false, error: "candidate_not_found" };
+      if (!cardEl.classList || !cardEl.classList.contains("job-card-wrap")) {
+        return { success: false, error: "candidate_not_found" };
+      }
+
+      // 检查卡片内是否有禁点元素被暴露
+      var forbidden = cardEl.querySelector(
+        "a.job-name, a.more-job-btn, .op-btn-chat, .op-btn-like"
+      );
+      // 注意：a.job-name 存在于卡片内是正常的，但我们只点 root，不点它
+      // 此处仅验证 click 目标是 root
+
+      var urlBefore = window.location.href;
+      try {
+        cardEl.click();
+      } catch (e) {
+        return { success: false, error: "click_failed" };
+      }
+
+      if (window.location.href !== urlBefore) {
+        return { success: false, error: "unexpected_navigation" };
+      }
+      return { success: true };
+    }
+
+    // ---- wait_job_detail_ready 逻辑（从 userscript 第 756-796 行精简复制）----
+
+    function waitJobDetailReady(expectedTitle) {
+      if (!expectedTitle) {
+        return { success: false, error: "missing_expected_title" };
+      }
+
+      var pane = document.querySelector(".job-detail-container");
+      if (!pane) {
+        return { success: false, error: "detail_not_ready" };
+      }
+      var headerInfo = pane.querySelector(".job-header-info");
+      if (!headerInfo || typeof headerInfo.innerText !== "string") {
+        return { success: false, error: "detail_not_ready" };
+      }
+      if (!headerInfo.innerText.includes(expectedTitle)) {
+        return { success: false, error: "detail_not_ready" };
+      }
+      return { success: true };
+    }
+
+    // 暴露到 window
+    window.extractBossRecommendedPaneV1 = extractBossRecommendedPaneV1;
+    window.scanVisibleJobs = scanVisibleJobs;
+    window.openJobByKey = openJobByKey;
+    window.waitJobDetailReady = waitJobDetailReady;
+  </script>
+
+  <h2>测试结果</h2>
+  <div id="results"></div>
+
+  <p class="source-link">
+    函数源码：<code>docs/boss-userscript.user.js</code> ·
+    用例设计：<code>.trellis/tasks/08-13-boss-recommended-discovery-pipeline/implement.md</code>
+  </p>
+
+  <script>
+    "use strict";
+    (function () {
+      var results = document.getElementById("results");
+      var passCount = 0;
+      var total = 0;
+
+      function addTest(name, title, desc, setup, run) {
+        total++;
+        var card = document.createElement("div");
+        card.className = "test-card";
+        card.id = "test-" + name;
+
+        var head = document.createElement("div");
+        head.className = "test-head";
+        var badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = "…";
+        var titleEl = document.createElement("span");
+        titleEl.className = "test-title";
+        titleEl.textContent = name + " · " + title;
+        head.appendChild(badge);
+        head.appendChild(titleEl);
+        card.appendChild(head);
+
+        var descEl = document.createElement("div");
+        descEl.className = "test-desc";
+        descEl.textContent = desc;
+        card.appendChild(descEl);
+
+        var container = document.createElement("div");
+        container.className = "hidden-dom";
+        document.body.appendChild(container);
+
+        var passed = false;
+        var expected, actual, detail;
+        try {
+          setup(container);
+          var res = run(container);
+          expected = res.expected;
+          actual = res.actual;
+          detail = res.detail;
+          passed = JSON.stringify(expected) === JSON.stringify(actual);
+        } catch (e) {
+          actual = "EXCEPTION: " + (e && e.message ? e.message : String(e));
+          expected = "(no exception)";
+          passed = false;
+        }
+
+        document.body.removeChild(container);
+
+        if (passed) {
+          passCount++;
+          badge.classList.add("pass");
+          badge.textContent = "PASS";
+          card.classList.add("pass");
+        } else {
+          badge.classList.add("fail");
+          badge.textContent = "FAIL";
+          card.classList.add("fail");
+        }
+
+        if (detail) {
+          var dRow = document.createElement("div");
+          dRow.className = "test-row";
+          dRow.innerHTML =
+            '<span class="label">detail</span><span class="val"></span>';
+          dRow.querySelector(".val").textContent = detail;
+          card.appendChild(dRow);
+        }
+
+        var expRow = document.createElement("div");
+        expRow.className = "test-row";
+        expRow.innerHTML =
+          '<span class="label">expected</span><span class="val ' +
+          (passed ? "match" : "mismatch") + '"></span>';
+        expRow.querySelector(".val").textContent = JSON.stringify(expected);
+        card.appendChild(expRow);
+
+        var actRow = document.createElement("div");
+        actRow.className = "test-row";
+        actRow.innerHTML =
+          '<span class="label">actual</span><span class="val ' +
+          (passed ? "match" : "mismatch") + '"></span>';
+        actRow.querySelector(".val").textContent = JSON.stringify(actual);
+        card.appendChild(actRow);
+
+        results.appendChild(card);
+      }
+
+      // ---- 辅助：构造 fake 推荐列表卡片 DOM ----
+
+      function makeCard(container, opts) {
+        opts = opts || {};
+        var card = document.createElement("div");
+        card.className = "job-card-wrap";
+        card.style.display = "block";
+
+        var nameLink = document.createElement("a");
+        nameLink.className = "job-name";
+        nameLink.setAttribute("href", opts.href || "/job_detail?jobId=123");
+        nameLink.textContent = opts.title || "Python 工程师";
+        card.appendChild(nameLink);
+
+        var salary = document.createElement("span");
+        salary.className = "job-salary";
+        salary.textContent = opts.salary || "20-35K";
+        card.appendChild(salary);
+
+        var company = document.createElement("span");
+        company.className = "company-name";
+        company.textContent = opts.company || "Acme";
+        card.appendChild(company);
+
+        var area = document.createElement("span");
+        area.className = "job-area";
+        area.textContent = opts.location || "北京";
+        card.appendChild(area);
+
+        if (opts.tags) {
+          var tagList = document.createElement("ul");
+          tagList.className = "tag-list";
+          opts.tags.forEach(function (t) {
+            var li = document.createElement("li");
+            li.textContent = t;
+            tagList.appendChild(li);
+          });
+          card.appendChild(tagList);
+        }
+
+        // 禁点元素存在于卡片内，但只点 root
+        if (opts.withForbidden !== false) {
+          var chatBtn = document.createElement("a");
+          chatBtn.className = "op-btn-chat";
+          chatBtn.textContent = "立即沟通";
+          card.appendChild(chatBtn);
+        }
+
+        container.appendChild(card);
+        return card;
+      }
+
+      // ---- 辅助：构造 fake detail pane DOM ----
+
+      function makePane(container, opts) {
+        opts = opts || {};
+        var pane = document.createElement("div");
+        pane.className = "job-detail-container";
+
+        var header = document.createElement("div");
+        header.className = "job-detail-header";
+        var headerInfo = document.createElement("div");
+        headerInfo.className = "job-header-info";
+        headerInfo.textContent = opts.title || "Python 工程师";
+        if (opts.salary) {
+          var salaryEl = document.createElement("span");
+          salaryEl.className = "job-salary-text";
+          salaryEl.textContent = opts.salary;
+          headerInfo.appendChild(salaryEl);
+        }
+        header.appendChild(headerInfo);
+        pane.appendChild(header);
+
+        var body = document.createElement("div");
+        body.className = "job-detail-body";
+        var desc = document.createElement("p");
+        desc.className = "desc";
+        desc.textContent = opts.description || "负责后端 API 开发。";
+        body.appendChild(desc);
+
+        if (opts.skills) {
+          var labelList = document.createElement("ul");
+          labelList.className = "job-label-list";
+          opts.skills.forEach(function (s) {
+            var li = document.createElement("li");
+            li.textContent = s;
+            labelList.appendChild(li);
+          });
+          body.appendChild(labelList);
+        }
+
+        var addr = document.createElement("div");
+        addr.className = "job-address";
+        addr.textContent = opts.location || "北京";
+        body.appendChild(addr);
+
+        // 禁采元素存在但不应被读取
+        var bossInfo = document.createElement("div");
+        bossInfo.className = "job-boss-info";
+        bossInfo.textContent = "李四 · CEO";
+        body.appendChild(bossInfo);
+
+        pane.appendChild(body);
+        container.appendChild(pane);
+        return pane;
+      }
+
+      // ============================================================
+      // D1: scan_visible_jobs — 正常扫描返回候选列表
+      // ============================================================
+      addTest(
+        "D1", "scan_visible_jobs 正常扫描",
+        "2 张可见卡片，应返回 2 个候选（含 job_key/title/salary/company）",
+        function (c) {
+          makeCard(c, { title: "Python 工程师", href: "/job_detail?jobId=1", salary: "20-35K" });
+          makeCard(c, { title: "Java 工程师", href: "/job_detail?jobId=2", salary: "15-25K" });
+        },
+        function () {
+          var res = scanVisibleJobs(10);
+          return {
+            expected: { success: true, count: 2 },
+            actual: { success: res.success, count: res.count },
+            detail: "candidates=" + JSON.stringify(res.job_candidates ? res.job_candidates.map(function (c) { return c.title; }) : []),
+          };
+        }
+      );
+
+      // ============================================================
+      // D2: scan_visible_jobs — 无卡片返回 not_recommended_list_page
+      // ============================================================
+      addTest(
+        "D2", "scan_visible_jobs 无卡片 → not_recommended_list_page",
+        "页面无 div.job-card-wrap，应返回 success=false + error=not_recommended_list_page",
+        function (c) {
+          var div = document.createElement("div");
+          div.textContent = "not the list page";
+          c.appendChild(div);
+        },
+        function () {
+          var res = scanVisibleJobs(10);
+          return {
+            expected: { success: false, error: "not_recommended_list_page" },
+            actual: { success: res.success, error: res.error },
+          };
+        }
+      );
+
+      // ============================================================
+      // D3: scan_visible_jobs — limit 截断
+      // ============================================================
+      addTest(
+        "D3", "scan_visible_jobs limit=2 截断",
+        "3 张卡片但 maxItems=2，应只返回 2 个候选",
+        function (c) {
+          makeCard(c, { title: "A", href: "/job_detail?jobId=a" });
+          makeCard(c, { title: "B", href: "/job_detail?jobId=b" });
+          makeCard(c, { title: "C", href: "/job_detail?jobId=c" });
+        },
+        function () {
+          var res = scanVisibleJobs(2);
+          return {
+            expected: { success: true, count: 2 },
+            actual: { success: res.success, count: res.count },
+          };
+        }
+      );
+
+      // ============================================================
+      // D4: scan_visible_jobs — 不可见卡片被跳过
+      // ============================================================
+      addTest(
+        "D4", "scan_visible_jobs 跳过不可见卡片",
+        "2 张卡片但第一张 display:none，应只返回 1 个候选",
+        function (c) {
+          var hidden = makeCard(c, { title: "Hidden", href: "/job_detail?jobId=h" });
+          hidden.style.display = "none";
+          makeCard(c, { title: "Visible", href: "/job_detail?jobId=v" });
+        },
+        function () {
+          var res = scanVisibleJobs(10);
+          return {
+            expected: { success: true, count: 1 },
+            actual: { success: res.success, count: res.count },
+          };
+        }
+      );
+
+      // ============================================================
+      // D5: open_job_by_key — 正常点击 root，URL 不变
+      // ============================================================
+      addTest(
+        "D5", "open_job_by_key 正常点击 root",
+        "缓存中的卡片被点击，URL 不变 → success=true",
+        function (c) {
+          makeCard(c, { title: "Test", href: "/job_detail?jobId=t" });
+        },
+        function () {
+          var scanRes = scanVisibleJobs(10);
+          var key = scanRes.job_candidates[0].job_key;
+          var res = openJobByKey(scanRes._cache, key);
+          return {
+            expected: { success: true },
+            actual: { success: res.success },
+          };
+        }
+      );
+
+      // ============================================================
+      // D6: open_job_by_key — 不存在的 key → candidate_not_found
+      // ============================================================
+      addTest(
+        "D6", "open_job_by_key 不存在 key → candidate_not_found",
+        "传入不存在的 job_key，应返回 success=false + error=candidate_not_found",
+        function (c) {
+          makeCard(c, { title: "Test", href: "/job_detail?jobId=t" });
+        },
+        function () {
+          var scanRes = scanVisibleJobs(10);
+          var res = openJobByKey(scanRes._cache, "sha256:nonexistent");
+          return {
+            expected: { success: false, error: "candidate_not_found" },
+            actual: { success: res.success, error: res.error },
+          };
+        }
+      );
+
+      // ============================================================
+      // D7: open_job_by_key — 缺少 job_key → missing_job_key
+      // ============================================================
+      addTest(
+        "D7", "open_job_by_key 空 key → missing_job_key",
+        "传入空字符串，应返回 success=false + error=missing_job_key",
+        function (c) {
+          makeCard(c, { title: "Test", href: "/job_detail?jobId=t" });
+        },
+        function () {
+          var scanRes = scanVisibleJobs(10);
+          var res = openJobByKey(scanRes._cache, "");
+          return {
+            expected: { success: false, error: "missing_job_key" },
+            actual: { success: res.success, error: res.error },
+          };
+        }
+      );
+
+      // ============================================================
+      // D8: wait_job_detail_ready — 标题匹配 → success
+      // ============================================================
+      addTest(
+        "D8", "wait_job_detail_ready 标题匹配",
+        "pane .job-header-info 含目标标题 → success=true",
+        function (c) {
+          makePane(c, { title: "Python 工程师" });
+        },
+        function () {
+          var res = waitJobDetailReady("Python 工程师");
+          return {
+            expected: { success: true },
+            actual: { success: res.success },
+          };
+        }
+      );
+
+      // ============================================================
+      // D9: wait_job_detail_ready — 标题不匹配 → detail_not_ready
+      // ============================================================
+      addTest(
+        "D9", "wait_job_detail_ready 标题不匹配 → detail_not_ready",
+        "pane .job-header-info 标题与 expected_title 不符 → success=false",
+        function (c) {
+          makePane(c, { title: "Java 工程师" });
+        },
+        function () {
+          var res = waitJobDetailReady("Python 工程师");
+          return {
+            expected: { success: false, error: "detail_not_ready" },
+            actual: { success: res.success, error: res.error },
+          };
+        }
+      );
+
+      // ============================================================
+      // D10: read_jd pane — 提取字段 + 禁采 .job-boss-info
+      // ============================================================
+      addTest(
+        "D10", "read_jd pane 提取字段 + 排除 .job-boss-info",
+        "pane 含 title/description/skills/location，且 .job-boss-info 存在但不应被提取",
+        function (c) {
+          makePane(c, {
+            title: "Python 后端工程师",
+            description: "负责 API 开发，使用 FastAPI。",
+            salary: "20-35K",
+            skills: ["Python", "FastAPI"],
+            location: "北京",
+          });
+        },
+        function () {
+          var jd = extractBossRecommendedPaneV1(8000);
+          // .job-boss-info 的内容（李四 · CEO）不应出现在任何字段中
+          var hasBossInfo = Object.values(jd).some(function (v) {
+            if (v === null || v === undefined) return false;
+            if (Array.isArray(v)) return v.some(function (i) { return String(i).includes("李四"); });
+            return String(v).includes("李四");
+          });
+          return {
+            expected: {
+              title: "Python 后端工程师",
+              description_contains_api: true,
+              skills_count: 2,
+              company: null,
+              boss_info_leaked: false,
+            },
+            actual: {
+              title: jd.title,
+              description_contains_api: (jd.description || "").includes("API"),
+              skills_count: jd.skills.length,
+              company: jd.company,
+              boss_info_leaked: hasBossInfo,
+            },
+            detail: "jd=" + JSON.stringify(jd),
+          };
+        }
+      );
+
+      // ---- 汇总 ----
+      var summary = document.getElementById("summary");
+      summary.textContent = passCount + " / " + total + " 通过";
+      if (passCount === total) {
+        summary.classList.add("all-pass");
+      } else {
+        summary.classList.add("has-fail");
+      }
+    })();
+  </script>
+</body>
+</html>

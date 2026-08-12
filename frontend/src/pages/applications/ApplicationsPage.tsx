@@ -13,6 +13,7 @@ import {
   Select,
   Space,
   Spin,
+  Tabs,
   Tag,
   Timeline,
   Typography,
@@ -36,6 +37,8 @@ import { GuidedSubmitPanel } from "@/features/applications/GuidedSubmitPanel";
 import { ManualSubmitPanel } from "@/features/applications/ManualSubmitPanel";
 import { OutcomePanel } from "@/features/applications/OutcomePanel";
 import { RecommendedJobPilotPanel } from "@/features/applications/RecommendedJobPilotPanel";
+import { BatchModePanel } from "@/features/applications/BatchModePanel";
+import { RecommendedDiscoveryPanel } from "@/features/applications/RecommendedDiscoveryPanel";
 import { ReadinessSummary } from "@/features/applications/ReadinessSummary";
 import { SourceSnapshotPanel } from "@/features/applications/SourceSnapshotPanel";
 import { useBridgeStatus } from "@/features/applications/useBridgeStatus";
@@ -372,6 +375,9 @@ function ApplicationDetail({
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
+  // Active Tab. Reset to the default ("materials") whenever the user switches
+  // application records so a stale Tab choice does not leak across records.
+  const [activeTab, setActiveTab] = useState<string>("materials");
   const [messageApi, contextHolder] = message.useMessage();
 
   const load = useCallback(async () => {
@@ -396,6 +402,13 @@ function ApplicationDetail({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Reset the active Tab whenever the user switches to a different application
+  // record — a stale Tab selection (e.g. the boss-only Pilot Tab) should not
+  // carry over to a non-boss record.
+  useEffect(() => {
+    setActiveTab("materials");
+  }, [applicationId]);
 
   const handleTerminal = useCallback(() => {
     void load();
@@ -467,6 +480,8 @@ function ApplicationDetail({
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       {contextHolder}
 
+      {/* Public header — visible on every Tab. Kept compact so the Tabs row
+          stays reachable without scrolling past the full metadata block. */}
       {/* Job + application metadata */}
       <Card type="inner" title="投递信息" size="small">
         <Descriptions column={2} size="small">
@@ -501,7 +516,8 @@ function ApplicationDetail({
         </Descriptions>
       </Card>
 
-      {/* 1. Readiness summary */}
+      {/* Readiness summary — cross-workflow overview (both manual and Pilot
+          need to see readiness at a glance). */}
       <ReadinessSummary
         application={app}
         generating={generating}
@@ -509,35 +525,9 @@ function ApplicationDetail({
         stale={stale}
       />
 
-      {/* 2. Source snapshot */}
-      <SourceSnapshotPanel
-        application={app}
-        latestArtifact={latestArtifact}
-        stale={stale}
-      />
-
-      {/* 3. Artifact checklist (generation + retry) */}
-      <ArtifactChecklist
-        application={app}
-        autoGenerate={freshCreate === true}
-        onTerminal={() => {
-          handleTerminal();
-          // The checklist manages its own artifact list; we refresh application
-          // detail to pick up the updated readiness_snapshot / timeline.
-        }}
-        resumeMissing={resumeMissing}
-        onStateChange={({ artifacts: arts, generating: gen }) => {
-          setArtifacts(arts);
-          setGenerating(gen);
-        }}
-      />
-
-      {/* 3b. Generate-and-copy path (Phase 4): platform-agnostic delivery —
-          copy the opening message / targeted resume and paste by hand. Never
-          depends on the userscript bridge. */}
-      <ManualSubmitPanel artifacts={artifacts} />
-
-      {/* 4. Failure panel */}
+      {/* Failure panel — failures must always be visible, never hidden inside
+          a Tab. The backend keeps a failed application in its current status,
+          so this shows whenever a latest_error envelope exists. */}
       {failure ? (
         <FailurePanel
           failure={failure}
@@ -546,115 +536,181 @@ function ApplicationDetail({
         />
       ) : null}
 
-      {/* 5. Timeline */}
-      <TimelinePanel
-        timeline={app.timeline}
-        onAddNote={() => setNoteOpen(true)}
-      />
+      {/* Tabs split the two workflows + the boss-only Pilot. AntD Tabs default
+          behavior is lazy first-render + keeping already-mounted panes alive
+          on switch, so ArtifactChecklist's agent-run polling survives Tab
+          switches (AC1). We set destroyInactiveTabPane={false} explicitly to
+          document the invariant. */}
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        destroyInactiveTabPane={false}
+        items={[
+          {
+            key: "materials",
+            label: "材料准备",
+            children: (
+              <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                <SourceSnapshotPanel
+                  application={app}
+                  latestArtifact={latestArtifact}
+                  stale={stale}
+                />
+                <ArtifactChecklist
+                  application={app}
+                  autoGenerate={freshCreate === true}
+                  onTerminal={() => {
+                    handleTerminal();
+                    // The checklist manages its own artifact list; we refresh
+                    // application detail to pick up the updated
+                    // readiness_snapshot / timeline.
+                  }}
+                  resumeMissing={resumeMissing}
+                  onStateChange={({ artifacts: arts, generating: gen }) => {
+                    setArtifacts(arts);
+                    setGenerating(gen);
+                  }}
+                />
+                {/* Generate-and-copy path: platform-agnostic delivery — copy
+                    the opening message / targeted resume and paste by hand.
+                    Never depends on the userscript bridge. */}
+                <ManualSubmitPanel artifacts={artifacts} />
+              </Space>
+            ),
+          },
+          {
+            key: "approval",
+            label: "审批与执行",
+            children: (
+              <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                <GuidedSubmitPanel application={app} onAfterChange={load} />
+                {/* Status actions: pause / resume / mark submitted / manual */}
+                <Card type="inner" title="状态操作" size="small">
+                  <Space wrap>
+                    {canTransition(status, "preparing") && status !== "preparing" ? (
+                      <Popconfirm
+                        title="开始准备？"
+                        description="进入准备中状态后可生成就绪材料。"
+                        onConfirm={() => handleStatusTransition("preparing")}
+                        disabled={acting || resumeMissing}
+                      >
+                        <Button disabled={acting || resumeMissing}>开始准备</Button>
+                      </Popconfirm>
+                    ) : null}
+                    {canTransition(status, "paused") ? (
+                      <Popconfirm
+                        title="暂停投递？"
+                        description="暂停后可恢复到计划中或准备中。"
+                        onConfirm={() => handleStatusTransition("paused")}
+                        disabled={acting}
+                      >
+                        <Button disabled={acting}>暂停</Button>
+                      </Popconfirm>
+                    ) : null}
+                    {canTransition(status, "planned") ? (
+                      <Popconfirm
+                        title="恢复为计划中？"
+                        onConfirm={() => handleStatusTransition("planned")}
+                        disabled={acting}
+                      >
+                        <Button disabled={acting}>恢复计划</Button>
+                      </Popconfirm>
+                    ) : null}
+                    {canTransition(status, "preparing") && status === "paused" ? (
+                      <Popconfirm
+                        title="恢复准备中？"
+                        onConfirm={() => handleStatusTransition("preparing")}
+                        disabled={acting || resumeMissing}
+                      >
+                        <Button disabled={acting || resumeMissing}>恢复准备</Button>
+                      </Popconfirm>
+                    ) : null}
+                    {canTransition(status, "submitted") ? (
+                      <Popconfirm
+                        title="标记为已投递？"
+                        description="手动标记，不代表平台已验证投递结果。"
+                        onConfirm={() => handleStatusTransition("submitted", "手动标记已投递")}
+                        disabled={acting}
+                      >
+                        <Button type="primary" disabled={acting}>
+                          标记已投递
+                        </Button>
+                      </Popconfirm>
+                    ) : null}
+                    {canTransition(status, "interviewing") ? (
+                      <Popconfirm
+                        title="标记为面试中？"
+                        onConfirm={() => handleStatusTransition("interviewing", "进入面试")}
+                        disabled={acting}
+                      >
+                        <Button disabled={acting}>面试中</Button>
+                      </Popconfirm>
+                    ) : null}
+                    {canTransition(status, "rejected") ? (
+                      <Popconfirm
+                        title="标记为已拒绝？"
+                        onConfirm={() => handleStatusTransition("rejected", "未通过")}
+                        disabled={acting}
+                      >
+                        <Button danger disabled={acting}>
+                          已拒绝
+                        </Button>
+                      </Popconfirm>
+                    ) : null}
+                    <Button onClick={() => setNoteOpen(true)}>添加备注</Button>
+                  </Space>
+                  {resumeMissing && status === "planned" ? (
+                    <Text type="secondary" style={{ display: "block", marginTop: 8 }}>
+                      需先在职位详情页绑定简历版本，才能开始准备。
+                    </Text>
+                  ) : null}
+                </Card>
 
-      {/* 6. Status actions: pause / resume / mark submitted / manual */}
-      <Card type="inner" title="状态操作" size="small">
-        <Space wrap>
-          {canTransition(status, "preparing") && status !== "preparing" ? (
-            <Popconfirm
-              title="开始准备？"
-              description="进入准备中状态后可生成就绪材料。"
-              onConfirm={() => handleStatusTransition("preparing")}
-              disabled={acting || resumeMissing}
-            >
-              <Button disabled={acting || resumeMissing}>开始准备</Button>
-            </Popconfirm>
-          ) : null}
-          {canTransition(status, "paused") ? (
-            <Popconfirm
-              title="暂停投递？"
-              description="暂停后可恢复到计划中或准备中。"
-              onConfirm={() => handleStatusTransition("paused")}
-              disabled={acting}
-            >
-              <Button disabled={acting}>暂停</Button>
-            </Popconfirm>
-          ) : null}
-          {canTransition(status, "planned") ? (
-            <Popconfirm
-              title="恢复为计划中？"
-              onConfirm={() => handleStatusTransition("planned")}
-              disabled={acting}
-            >
-              <Button disabled={acting}>恢复计划</Button>
-            </Popconfirm>
-          ) : null}
-          {canTransition(status, "preparing") && status === "paused" ? (
-            <Popconfirm
-              title="恢复准备中？"
-              onConfirm={() => handleStatusTransition("preparing")}
-              disabled={acting || resumeMissing}
-            >
-              <Button disabled={acting || resumeMissing}>恢复准备</Button>
-            </Popconfirm>
-          ) : null}
-          {canTransition(status, "submitted") ? (
-            <Popconfirm
-              title="标记为已投递？"
-              description="手动标记，不代表平台已验证投递结果。"
-              onConfirm={() => handleStatusTransition("submitted", "手动标记已投递")}
-              disabled={acting}
-            >
-              <Button type="primary" disabled={acting}>
-                标记已投递
-              </Button>
-            </Popconfirm>
-          ) : null}
-          {canTransition(status, "interviewing") ? (
-            <Popconfirm
-              title="标记为面试中？"
-              onConfirm={() => handleStatusTransition("interviewing", "进入面试")}
-              disabled={acting}
-            >
-              <Button disabled={acting}>面试中</Button>
-            </Popconfirm>
-          ) : null}
-          {canTransition(status, "rejected") ? (
-            <Popconfirm
-              title="标记为已拒绝？"
-              onConfirm={() => handleStatusTransition("rejected", "未通过")}
-              disabled={acting}
-            >
-              <Button danger disabled={acting}>
-                已拒绝
-              </Button>
-            </Popconfirm>
-          ) : null}
-          <Button onClick={() => setNoteOpen(true)}>添加备注</Button>
-        </Space>
-        {resumeMissing && status === "planned" ? (
-          <Text type="secondary" style={{ display: "block", marginTop: 8 }}>
-            需先在职位详情页绑定简历版本，才能开始准备。
-          </Text>
-        ) : null}
-      </Card>
+                {/* Outcome marking: one-click 已回复/被拒/约面 */}
+                <OutcomePanel applicationId={app.id} onAfterChange={load} />
 
-      {/* 6b. Outcome marking (Phase 1 feedback loop): one-click 已回复/被拒/约面 */}
-      <OutcomePanel applicationId={app.id} onAfterChange={load} />
+                {/* Approval preview slot (existing component) */}
+                <ApplicationActionsPanel
+                  applicationId={app.id}
+                  sourceHash={sourceHash}
+                  resumeVersionId={app.resume_version_id}
+                  jobId={app.job_id}
+                  onActionChange={load}
+                  key={app.id}
+                />
 
-      {/* 7. Guided platform-submit panel (prepare → approve → submit). */}
-      <GuidedSubmitPanel application={app} onAfterChange={load} />
-
-      {/* 7b. BOSS recommended-job pilot panel (inspect → match → prepare →
-           approve → execute with optional semi-auto loop). Shown only for BOSS
-           platform applications; the panel itself gates on bridge status. */}
-      {job?.platform === "boss" ? (
-        <RecommendedJobPilotPanel application={app} onAfterChange={load} />
-      ) : null}
-
-      {/* 8. Approval preview slot (existing component) */}
-      <ApplicationActionsPanel
-        applicationId={app.id}
-        sourceHash={sourceHash}
-        resumeVersionId={app.resume_version_id}
-        jobId={app.job_id}
-        onActionChange={load}
-        key={app.id}
+                <TimelinePanel
+                  timeline={app.timeline}
+                  onAddNote={() => setNoteOpen(true)}
+                />
+              </Space>
+            ),
+          },
+          ...(job?.platform === "boss"
+            ? [
+                {
+                  key: "pilot",
+                  label: "BOSS 自动沟通 Pilot",
+                  children: (
+                    <RecommendedJobPilotPanel
+                      application={app}
+                      onAfterChange={load}
+                    />
+                  ),
+                },
+                {
+                  key: "batch",
+                  label: "批量处理",
+                  children: <BatchModePanel />,
+                },
+                {
+                  key: "discovery",
+                  label: "推荐发现",
+                  children: <RecommendedDiscoveryPanel />,
+                },
+              ]
+            : []),
+        ]}
       />
 
       <NoteModal

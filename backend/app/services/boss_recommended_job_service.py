@@ -165,22 +165,33 @@ def upsert_job_from_browser_jd(
     user_id: str,
     jd_dict: dict[str, Any],
     agent_run_id: str | None,
+    external_id_override: str | None = None,
 ) -> tuple[JobPosting, bool]:
     """Upsert a ``JobPosting`` from a sanitized browser JD dict.
 
-    Dedup key: ``platform="boss"`` + ``external_id = page_url_hash``. If an
-    existing job is found, its JD fields are updated in place. Otherwise a new
-    job is created.
+    Dedup key: ``platform="boss"`` + ``external_id = external_id_override``
+    when provided (discovery path passes ``job_key``), otherwise
+    ``external_id = page_url_hash`` (single-job inspect path, behavior
+    unchanged). If an existing job is found, its JD fields are updated in
+    place. Otherwise a new job is created.
 
     Returns ``(job, is_new)``.
 
-    Raises ``ValueError`` if the JD dict has no ``page_url_hash`` — every
-    BOSS-read JD must carry one for dedup. The caller should check
-    :func:`is_jd_too_sparse` before calling this function.
+    Raises ``ValueError`` if the JD dict has no ``page_url_hash`` AND no
+    ``external_id_override`` is provided — every BOSS-read JD must carry one
+    for dedup. The caller should check :func:`is_jd_too_sparse` before calling
+    this function.
     """
-    page_url_hash = jd_dict.get("page_url_hash")
-    if not isinstance(page_url_hash, str) or not page_url_hash.strip():
-        raise ValueError("JD dict missing page_url_hash for dedup")
+    # The dedup key: discovery passes job_key via external_id_override; the
+    # single-job inspect path passes page_url_hash (default, unchanged).
+    dedup_id = external_id_override
+    if dedup_id is not None:
+        dedup_id = str(dedup_id).strip()
+    if not dedup_id:
+        page_url_hash = jd_dict.get("page_url_hash")
+        if not isinstance(page_url_hash, str) or not page_url_hash.strip():
+            raise ValueError("JD dict missing page_url_hash for dedup")
+        dedup_id = page_url_hash.strip()
 
     title = str(jd_dict.get("title") or "").strip()
     company = str(jd_dict.get("company") or "").strip() or "(未知公司)"
@@ -190,7 +201,7 @@ def upsert_job_from_browser_jd(
     jd_raw = _build_jd_raw(jd_dict)
     jd_normalized = _build_jd_normalized(
         jd_dict,
-        page_url_hash=page_url_hash,
+        page_url_hash=dedup_id,
         agent_run_id=agent_run_id,
     )
 
@@ -198,7 +209,7 @@ def upsert_job_from_browser_jd(
         db,
         user_id=user_id,
         platform=_BOSS_PLATFORM,
-        external_id=page_url_hash,
+        external_id=dedup_id,
     )
     if existing is not None:
         job_repo.update(
@@ -209,7 +220,7 @@ def upsert_job_from_browser_jd(
             location=location,
             salary_range=salary,
             platform=_BOSS_PLATFORM,
-            external_id=page_url_hash,
+            external_id=dedup_id,
             jd_raw=jd_raw,
             jd_normalized=jd_normalized,
         )
@@ -217,7 +228,7 @@ def upsert_job_from_browser_jd(
             "boss_recommended_job.job_updated",
             user_id=user_id,
             job_id=existing.id,
-            page_url_hash=page_url_hash,
+            page_url_hash=dedup_id,
         )
         return existing, False
 
@@ -233,13 +244,13 @@ def upsert_job_from_browser_jd(
         jd_normalized=jd_normalized,
     )
     # Set external_id for future dedup — job_repo.create does not accept it.
-    job.external_id = page_url_hash
+    job.external_id = dedup_id
     db.flush()
     _log.info(
         "boss_recommended_job.job_created",
         user_id=user_id,
         job_id=job.id,
-        page_url_hash=page_url_hash,
+        page_url_hash=dedup_id,
     )
     return job, True
 

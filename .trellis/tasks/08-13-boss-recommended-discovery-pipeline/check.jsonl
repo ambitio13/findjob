@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "Check approval boundary, privacy, hard-stop, route ordering, and dry-run gate behavior."}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "Check explicit state transitions, auditability, and failure explanations."}
+{"file": ".trellis/spec/shared/typescript.md", "reason": "Check frontend types distinguish nullable/optional/empty discovery fields."}
+{"file": "docs/boss-local-dev-runbook.md", "reason": "Check bridge status, wrong-tab/page-hash diagnostics, and e2e smoke interpretation."}
+{"file": "docs/boss-userscript-tests.html", "reason": "Check userscript ops can be exercised without a real BOSS page where possible."}
+{"file": ".trellis/tasks/08-13-boss-recommended-discovery-pipeline/probe-evidence.md", "reason": "Check selectors, forbidden clicks/collects, and zero-navigation invariants against real-page evidence."}

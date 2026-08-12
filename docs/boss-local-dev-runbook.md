@@ -190,7 +190,64 @@ SQL。
 - 本地 DB 全清：`docker compose down -v`（删卷，仅本地）。
 - resume 临时上传：`backend/data/resumes/` 下的测试文件可手动删。
 
-## 5. 相关文档
+## 5. 推荐职位发现流水线（Discovery Pilot）
+
+### 5.1 概述
+
+发现流水线在 BOSS 推荐职位页（`/web/geek/jobs`）执行**零导航**串行采集：
+扫描可见卡片 → 点击卡片根（右侧 pane 原地切换，不跳转）→ 读取 JD → upsert →
+匹配 → 仅准备（prepare-only）。v0.1 **不会自动审批或自动发送**。
+
+- API：`POST /api/v1/boss/recommended-jobs/discovery`
+- 参数：`resume_version_id`（必填）、`limit`（默认 3，上限 10）、`mode`（仅
+  `prepare_only`；`auto_execute` 在 dry-run gate 未通过时返回 422）。
+- 每个职位的结果：`prepared`（communicate → 已创建 approval_required action）、
+  `skipped`（含 `skip_reason=already_persisted`）、`needs_review`、`failed`、
+  `stopped`。
+- 硬停止：连续 3 次 `failed` 或遇到 `unexpected_navigation` / `page_mismatch` /
+  `captcha_required` / `rate_limited` 等硬停止码时立即终止，剩余项标记 `stopped`。
+
+### 5.2 运行步骤
+
+1. 确保后端全栈已启动（见 §1）。
+2. 打开 BOSS 推荐职位页 `/web/geek/jobs`，确认 userscript 已连接（见 §2.2）。
+3. 在前端发现面板选择简历版本，设置 `limit=3`，点击"开始发现"。
+4. 观察面板中的逐项进度（`pending → opening → reading → persisted → matching →
+   prepared/skipped/needs_review`）。
+5. 运行结束后检查结果：`communicate` 的职位会生成 `approval_required` action，
+   可在审批页查看。
+
+### 5.3 零导航确认清单
+
+运行期间应确认：
+
+- [ ] 页面 URL 始终保持在 `/web/geek/jobs`，未发生跳转。
+- [ ] 没有新标签页或新窗口被打开。
+- [ ] 右侧 pane 随每张卡片点击原地切换内容。
+- [ ] `communicate` 结果仅创建 `approval_required` action，未发送任何消息。
+- [ ] 未提交任何简历（无 auto-submit）。
+- [ ] 最多处理 `limit` 个职位（默认 3）。
+
+### 5.4 故障排查
+
+| 症状 | 可能原因 | 修复 |
+| --- | --- | --- |
+| `status=hard_stopped` + `failure_code=unexpected_navigation` | 页面发生跳转（弹窗/广告/手动操作） | 关闭弹窗，回到推荐列表页，重新运行 |
+| `status=hard_stopped` + `failure_code=page_mismatch` | pane 标题与卡片不符 | 刷新页面，确认 userscript 心跳正常后重试 |
+| `status=failed` + `failure_code=scan_failed` | bridge 未连接或页面不在推荐列表 | 见 §2.2；确认 URL 是 `/web/geek/jobs` |
+| 单项 `failed` + `failure_code=item_error` | JD 太稀疏 / upsert 失败 / 匹配异常 | 查看该项 `message` 字段；若仅个别项可忽略 |
+| `bridge_not_connected` (HTTP 400) | userscript 未连接 | 见 §2.2 |
+
+### 5.5 安全边界
+
+- 发现流水线不暴露新的任意 selector/evaluate 接口给前端。
+- `scan_visible_jobs` 不扩大生产探针白名单；`open_job_by_key` 不可从诊断探针端点
+  调用。
+- 禁点：`a.job-name`、`a.more-job-btn`、`.op-btn-chat`、`.op-btn-like`；
+  禁采：`.job-boss-info`。
+- 不持久化或记录原始 URL、原始 HTML、cookie、token、联系人姓名或聊天内容。
+
+## 6. 相关文档
 
 - 人工试点步骤：`docs/manual-boss-pilot.md`
 - 测试路线：`docs/boss-communicate-testing-plan.md`

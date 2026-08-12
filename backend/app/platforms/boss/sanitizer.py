@@ -179,6 +179,54 @@ def sanitize_jd_result(jd: dict | None) -> dict | None:
     return result
 
 
+def sanitize_job_candidates(raw: list | None) -> list[dict] | None:
+    """Sanitize a ``scan_visible_jobs`` candidate list from the userscript.
+
+    Each entry is rebuilt from a strict whitelist: ``job_key``, ``rank``,
+    ``title``, ``company``, ``salary``, ``location``, ``tags``,
+    ``candidate_hash``. Text fields pass through :func:`sanitize_jd_field` with
+    short caps. Entries without a valid ``job_key`` are dropped entirely. The
+    list is capped at 50 entries (defense-in-depth, mirroring the schema's
+    ``max_length=50``).
+
+    Returns ``None`` if the input is ``None`` or not a list.
+    """
+    if not isinstance(raw, list):
+        return None
+    cleaned: list[dict] = []
+    for entry in raw[:50]:
+        if not isinstance(entry, dict):
+            continue
+        job_key = entry.get("job_key")
+        if not isinstance(job_key, str) or not job_key.strip():
+            continue
+        candidate = {
+            "job_key": job_key.strip()[:128],
+            "rank": int(entry["rank"]) if isinstance(entry.get("rank"), int) else 0,
+            "title": sanitize_jd_field(entry.get("title"), max_len=200),
+            "company": sanitize_jd_field(entry.get("company"), max_len=200),
+            "salary": sanitize_jd_field(entry.get("salary"), max_len=100),
+            "location": sanitize_jd_field(entry.get("location"), max_len=100),
+            "candidate_hash": (
+                str(entry["candidate_hash"]).strip()[:128]
+                if isinstance(entry.get("candidate_hash"), str)
+                else None
+            ),
+        }
+        raw_tags = entry.get("tags")
+        if isinstance(raw_tags, list):
+            tags: list[str] = []
+            for t in raw_tags[:30]:
+                cleaned_tag = sanitize_jd_field(t, max_len=60)
+                if cleaned_tag:
+                    tags.append(cleaned_tag)
+            candidate["tags"] = tags
+        else:
+            candidate["tags"] = []
+        cleaned.append(candidate)
+    return cleaned
+
+
 def sanitize_diagnostic(ref: str | None) -> str | None:
     """Sanitize a local diagnostic reference.
 
@@ -202,6 +250,7 @@ __all__ = [
     "sanitize_diagnostic",
     "sanitize_jd_field",
     "sanitize_jd_result",
+    "sanitize_job_candidates",
     "sanitize_title",
     "sanitize_url",
 ]

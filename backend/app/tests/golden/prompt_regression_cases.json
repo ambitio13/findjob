@@ -8,7 +8,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.87,
-        "reasons": ["五年后端经验匹配岗位要求"],
+        "reasons": [
+          "五年后端经验匹配岗位要求"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，我有五年 Python 后端经验，与该岗位要求高度匹配，期待进一步沟通。"
@@ -24,7 +26,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.42,
-        "reasons": ["经验略不足"],
+        "reasons": [
+          "经验略不足"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，我对贵司岗位很感兴趣，希望能有机会沟通。"
@@ -40,7 +44,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.6,
-        "reasons": ["刚好达标"],
+        "reasons": [
+          "刚好达标"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，我的技能与岗位要求相符，期待与您进一步交流。"
@@ -56,9 +62,14 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.9,
-        "reasons": ["整体匹配"],
+        "reasons": [
+          "整体匹配"
+        ],
         "risks": [],
-        "missing_requirements": ["工作年限未确认", "期望薪资未确认"],
+        "missing_requirements": [
+          "工作年限未确认",
+          "期望薪资未确认"
+        ],
         "opening_message": "您好，我的背景与该岗位契合，希望进一步沟通。"
       },
       "expected": {
@@ -72,7 +83,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.85,
-        "reasons": ["匹配"],
+        "reasons": [
+          "匹配"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，感兴趣"
@@ -88,7 +101,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.85,
-        "reasons": ["匹配"],
+        "reasons": [
+          "匹配"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，我对岗位很感兴趣，可拨打 13812345678 联系我。"
@@ -104,7 +119,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.85,
-        "reasons": ["匹配"],
+        "reasons": [
+          "匹配"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，岗位与我匹配，请发邮件到 dev@example.com 详聊。"
@@ -120,7 +137,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.85,
-        "reasons": ["匹配"],
+        "reasons": [
+          "匹配"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，我对这个岗位非常感兴趣！！！！期待沟通。"
@@ -136,7 +155,9 @@
       "model_output": {
         "decision": "skip",
         "score": 0.2,
-        "reasons": ["岗位方向不符"],
+        "reasons": [
+          "岗位方向不符"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": null
@@ -152,7 +173,9 @@
       "model_output": {
         "decision": "needs_review",
         "score": 0.55,
-        "reasons": ["信息不足，需人工确认"],
+        "reasons": [
+          "信息不足，需人工确认"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": null
@@ -169,7 +192,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.65,
-        "reasons": ["中等匹配"],
+        "reasons": [
+          "中等匹配"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，我的经验与岗位较为匹配，期待进一步沟通。"
@@ -186,7 +211,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.78,
-        "reasons": ["匹配度高"],
+        "reasons": [
+          "匹配度高"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，我的技能与该岗位高度匹配，期待与您进一步交流。"
@@ -202,7 +229,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.85,
-        "reasons": ["匹配"],
+        "reasons": [
+          "匹配"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，岗位匹配，我的证件号是 110101199003074518，请查收。"
@@ -218,7 +247,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.85,
-        "reasons": ["匹配"],
+        "reasons": [
+          "匹配"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "   "
@@ -234,7 +265,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.82,
-        "reasons": ["匹配，开场白稍后生成"],
+        "reasons": [
+          "匹配，开场白稍后生成"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": null
@@ -250,7 +283,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.8,
-        "reasons": ["匹配"],
+        "reasons": [
+          "匹配"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "  您好，我对贵司岗位很感兴趣，期待进一步沟通。  "
@@ -267,7 +302,9 @@
       "model_output": {
         "decision": "skip",
         "score": 0.95,
-        "reasons": ["城市不符，主动跳过"],
+        "reasons": [
+          "城市不符，主动跳过"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": null
@@ -284,7 +321,9 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.45,
-        "reasons": ["弱匹配但值得尝试"],
+        "reasons": [
+          "弱匹配但值得尝试"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，感兴趣，加我微信邮箱 hr_test@company.cn 详聊。"
@@ -301,13 +340,37 @@
       "model_output": {
         "decision": "communicate",
         "score": 0.45,
-        "reasons": ["弱匹配但值得尝试"],
+        "reasons": [
+          "弱匹配但值得尝试"
+        ],
         "risks": [],
         "missing_requirements": [],
         "opening_message": "您好，虽然部分要求未覆盖，但我学习能力强，期待沟通。"
       },
       "expected": {
         "decision": "communicate",
+        "opening_message_present": true
+      }
+    },
+    {
+      "id": "needs_review_with_draft_message_passes_through",
+      "description": "A needs_review decision carrying a tentative draft opening message passes the gate unchanged — the draft is preserved for the human review panel (it is never sent automatically).",
+      "model_output": {
+        "decision": "needs_review",
+        "score": 0.62,
+        "reasons": [
+          "部分要求无法从简历验证，需人工确认"
+        ],
+        "risks": [
+          "JD 要求的 openclaw 经验简历未提及"
+        ],
+        "missing_requirements": [
+          "openclaw 使用经验"
+        ],
+        "opening_message": "您好，我有五年 Python 后端经验，对该岗位很感兴趣，期待与您进一步沟通。"
+      },
+      "expected": {
+        "decision": "needs_review",
         "opening_message_present": true
       }
     }

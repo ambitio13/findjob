@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models.models import ApplicationAction
+from app.schemas.application_action import ExternalActionType
 
 #: Sentinel for "the caller explicitly wants to clear this nullable field".
 #: A bare ``None`` means "not provided / skip", matching the convention used by
@@ -206,6 +207,51 @@ def build_approval_record(
         "approved_at": approved_at.isoformat(),
         "approved_payload_hash": approved_payload_hash,
     }
+
+
+def find_reusable_communicate_action(
+    db: Session,
+    *,
+    application_id: str,
+    user_id: str,
+    include_terminal: bool = True,
+) -> ApplicationAction | None:
+    """Return a reusable ``boss_immediate_communicate`` action for the application, or None.
+
+    A action is *reusable* for discovery-skip purposes when either:
+
+    - It is non-terminal (``external_result_status`` is NULL) — a prior prepare
+      already created the action and it is awaiting approval/execution.
+    - It has a terminal external result (``submitted``/``duplicate``/``unknown``
+      /``failed``) — the side effect already happened.
+
+    When ``include_terminal=False`` (the default for the communicate prepare
+    path), only non-terminal actions are returned — matching the original
+    ``_find_active_communicate_action`` semantics so prepare refreshes in place
+    instead of overwriting a terminal audit record.
+
+    Returns the most recent matching action. Discovery uses the default
+    (``include_terminal=True``) to decide whether to skip match/prepare for a
+    job+resume that already has durable communicate state (``already_persisted``
+    skip).
+    """
+    stmt = select(ApplicationAction).where(
+        (ApplicationAction.application_id == application_id)
+        & (ApplicationAction.user_id == user_id)
+        & (
+            ApplicationAction.action_type
+            == ExternalActionType.boss_immediate_communicate.value
+        )
+    )
+    if not include_terminal:
+        stmt = stmt.where(ApplicationAction.external_result_status.is_(None))
+    return (
+        db.execute(
+            stmt.order_by(ApplicationAction.created_at.desc()).limit(1)
+        )
+        .scalars()
+        .first()
+    )
 
 
 def get_terminal_for_idempotency_key(

@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Descriptions,
   Input,
   Popconfirm,
@@ -28,6 +29,7 @@ import type {
   BridgeStatusResponse,
   CommunicateExecuteOut,
   CommunicatePrepareOut,
+  HumanReviewOverride,
   InspectJobOut,
   JobOut,
   MatchDecisionOut,
@@ -126,6 +128,12 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
   // editable opening message (user can tweak before prepare)
   const [openingMessage, setOpeningMessage] = useState("");
 
+  // human-review override state (needs_review path). The textarea is prefilled
+  // with the pre-gate model draft (draft_opening_message) when available.
+  const [humanReviewMessage, setHumanReviewMessage] = useState("");
+  const [humanReviewAck, setHumanReviewAck] = useState(false);
+  const [humanReviewOpen, setHumanReviewOpen] = useState(false);
+
   // error from the last step (cleared on next action)
   const [error, setError] = useState<string | null>(null);
 
@@ -172,6 +180,9 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
     setPrepareResult(null);
     setExecuteResult(null);
     setOpeningMessage("");
+    setHumanReviewMessage("");
+    setHumanReviewAck(false);
+    setHumanReviewOpen(false);
     setError(null);
     setLastAgentRunId(null);
   }, [application.id]);
@@ -258,21 +269,48 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
       if (result.opening_message) {
         setOpeningMessage(result.opening_message);
       }
+      // Prefill the human-review textarea with the pre-gate draft when the
+      // safety gate downgraded the decision (PRD R2). The draft is response-only
+      // and never persisted; the user edits it and re-submits via the override.
+      //
+      // When the gate downgraded but the model produced no draft (e.g. the
+      // downgrade was triggered by an invalid/missing opening message rather
+      // than low score), the textarea is empty and the user must write one from
+      // scratch. We do NOT auto-generate a message — the whole point of the
+      // override is that a human takes responsibility for the exact text.
+      if (result.draft_opening_message) {
+        setHumanReviewMessage(result.draft_opening_message);
+      } else {
+        setHumanReviewMessage("");
+      }
+      setHumanReviewAck(false);
+      setHumanReviewOpen(false);
       if (result.decision === "communicate") {
         setStep("prepare");
         messageApi.success("匹配通过，建议沟通");
       } else if (result.decision === "needs_review") {
-        // needs_review: advance to the prepare step so the user can review
-        // risks/missing requirements and manually decide whether to prepare,
-        // but stop the semi-auto loop — prepare must be a conscious human
-        // action when the match is not a clear "communicate".
-        setStep("prepare");
-        if (semiAuto) setSemiAuto(false);
-        messageApi.info("匹配结果为「需人工审阅」，请查看风险与缺失项后决定是否继续");
-      } else {
-        // skip — hard stop, do not proceed.
+        // needs_review: the backend match safety gate has downgraded the
+        // decision (score below threshold / missing requirements / risky
+        // opening message). The backend refuses prepare with 422, so we must
+        // NOT advance to the prepare step — doing so would surface a button
+        // (prepare) that only ever errors. Stop the semi-auto loop and hand
+        // over to the manual human-review area: when the loop was running we
+        // expand the area so the stop point is visibly a human-review step.
         setStep("match");
-        if (semiAuto) setSemiAuto(false);
+        if (semiAuto) {
+          setSemiAuto(false);
+          setHumanReviewOpen(true);
+        }
+        messageApi.warning("安全门拦截：当前匹配结果不允许准备沟通，请查看拦截说明");
+      } else {
+        // skip — hard stop for the auto path, but like needs_review the
+        // human may take over: stop the loop and hand over to the manual
+        // human-review area (expanded), with a stronger warning in the UI.
+        setStep("match");
+        if (semiAuto) {
+          setSemiAuto(false);
+          setHumanReviewOpen(true);
+        }
         messageApi.info(`匹配结果：${DECISION_LABEL[result.decision] ?? result.decision}`);
       }
     } catch (err) {
@@ -307,6 +345,57 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
       setBusy(false);
     }
   }, [jobId, resumeVersionId, matchArtifactId, messageApi, semiAuto]);
+
+  const handleHumanReviewPrepare = useCallback(async () => {
+    if (!jobId || !resumeVersionId || !matchArtifactId) {
+      setError("缺少必要参数（职位/简历/匹配结果），无法准备");
+      return;
+    }
+    const msg = humanReviewMessage.trim();
+    if (!msg || !humanReviewAck) {
+      setError("请填写开场白并勾选确认后再继续");
+      return;
+    }
+    // Frontend gate: mirror the backend's validate_opening_message minimum
+    // (10 chars) so the user gets immediate feedback instead of a 422 round-
+    // trip. The backend still re-validates; this is UX-only.
+    if (msg.length < 10) {
+      setError("开场白过短，至少 10 个字");
+      return;
+    }
+    // draft_source: if the user left the prefilled model draft unchanged,
+    // record "model_draft"; any edit (or new text) is "human_written".
+    const draftSource: HumanReviewOverride["draft_source"] =
+      matchResult?.draft_opening_message &&
+      msg === matchResult.draft_opening_message.trim()
+        ? "model_draft"
+        : "human_written";
+    setBusy(true);
+    setError(null);
+    setLastAgentRunId(null);
+    try {
+      const result = await prepareCommunicate(jobId, resumeVersionId, matchArtifactId, {
+        opening_message: msg,
+        acknowledged: true,
+        draft_source: draftSource,
+      });
+      setPrepareResult(result);
+      setStep("approve");
+      messageApi.success("人工审阅已通过，沟通动作已创建，等待审批");
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    jobId,
+    resumeVersionId,
+    matchArtifactId,
+    humanReviewMessage,
+    humanReviewAck,
+    matchResult,
+    messageApi,
+  ]);
 
   const handleApprove = useCallback(async () => {
     if (!actionId || !applicationId) return;
@@ -361,6 +450,9 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
     setPrepareResult(null);
     setExecuteResult(null);
     setOpeningMessage("");
+    setHumanReviewMessage("");
+    setHumanReviewAck(false);
+    setHumanReviewOpen(false);
     setError(null);
     setLastAgentRunId(null);
     autoFiredRef.current = "";
@@ -462,12 +554,25 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
             semiAuto={semiAuto}
             canRun={!!jobId && !!resumeVersionId}
             onMatch={handleMatch}
-            onOpeningMessageChange={setOpeningMessage}
+            humanReviewOpen={humanReviewOpen}
+            humanReviewMessage={humanReviewMessage}
+            humanReviewAck={humanReviewAck}
+            onHumanReviewOpenChange={setHumanReviewOpen}
+            onHumanReviewMessageChange={setHumanReviewMessage}
+            onHumanReviewAckChange={setHumanReviewAck}
+            onHumanReviewPrepare={handleHumanReviewPrepare}
+            hasDraft={!!matchResult?.draft_opening_message}
+            canPrepare={!!jobId && !!resumeVersionId && !!matchArtifactId}
           />
         )}
 
-        {/* Step 3+4: Prepare & Approve */}
-        {(step === "prepare" || step === "approve" || prepareResult) && (matchResult?.decision === "communicate" || matchResult?.decision === "needs_review") && (
+        {/* Step 3+4: Prepare & Approve — shown for a clear "communicate"
+            decision, OR after a successful human-review override (needs_review
+            → override prepare → approve step). In the override case the
+            matchResult.decision is still needs_review, but prepareResult is
+            set and step advanced to "approve", so we gate on that too. */}
+        {((step === "prepare" || step === "approve" || prepareResult) &&
+          (matchResult?.decision === "communicate" || prepareResult != null)) ? (
           <PrepareApproveStepCard
             prepareResult={prepareResult}
             step={step}
@@ -478,7 +583,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
             onPrepare={handlePrepare}
             onApprove={handleApprove}
           />
-        )}
+        ) : null}
 
         {/* Step 5: Execute */}
         {(step === "execute" || executeResult) && isApproved && (
@@ -626,7 +731,15 @@ function MatchStepCard({
   semiAuto,
   canRun,
   onMatch,
-  onOpeningMessageChange,
+  humanReviewOpen,
+  humanReviewMessage,
+  humanReviewAck,
+  onHumanReviewOpenChange,
+  onHumanReviewMessageChange,
+  onHumanReviewAckChange,
+  onHumanReviewPrepare,
+  hasDraft,
+  canPrepare,
 }: {
   result: MatchDecisionOut | null;
   openingMessage: string;
@@ -634,8 +747,22 @@ function MatchStepCard({
   semiAuto: boolean;
   canRun: boolean;
   onMatch: () => void;
-  onOpeningMessageChange: (v: string) => void;
+  humanReviewOpen: boolean;
+  humanReviewMessage: string;
+  humanReviewAck: boolean;
+  onHumanReviewOpenChange: (open: boolean) => void;
+  onHumanReviewMessageChange: (msg: string) => void;
+  onHumanReviewAckChange: (ack: boolean) => void;
+  onHumanReviewPrepare: () => void;
+  hasDraft: boolean;
+  canPrepare: boolean;
 }) {
+  // The human-review message is submittable only when non-empty AND meets the
+  // backend's 10-char minimum (validate_opening_message). Pre-compute so the
+  // button + Popconfirm share one disabled gate — without this the user can
+  // click through with a too-short message and get a 422.
+  const humanReviewMessageReady =
+    humanReviewMessage.trim().length >= 10;
   return (
     <Card type="inner" size="small" title="步骤 2：匹配分析">
       <Space direction="vertical" size="small" style={{ width: "100%" }}>
@@ -692,11 +819,140 @@ function MatchStepCard({
 
             {result.decision === "needs_review" ? (
               <Alert
-                type="warning"
+                type="error"
                 showIcon
-                message="需人工审阅"
-                description="匹配评分一般或存在风险项。你可以查看上方风险与缺失要求，确认后点击「准备沟通」继续，或放弃此职位。"
+                message="安全门拦截：当前不允许自动准备沟通"
+                description={
+                  <Space direction="vertical" size={6}>
+                    <Text>
+                      匹配结果为「需人工审阅」，安全门已拦截自动准备。原因可能是评分低于阈值、缺失关键要求或开场白命中风险项。
+                    </Text>
+                    <Text type="secondary">当前评分：{result.score.toFixed(2)}</Text>
+                    {result.risks.length > 0 ? (
+                      <Text type="warning">风险项：{result.risks.join("；")}</Text>
+                    ) : null}
+                    {result.missing_requirements.length > 0 ? (
+                      <Text type="danger">缺失要求：{result.missing_requirements.join("；")}</Text>
+                    ) : null}
+                    <Space wrap>
+                      <Button size="small" onClick={onMatch} loading={busy} disabled={busy || !canRun}>
+                        重新匹配
+                      </Button>
+                    </Space>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      出路：更换职位、调整简历后重新匹配，放弃此职位，或进行人工审阅覆写。
+                    </Text>
+                  </Space>
+                }
               />
+            ) : null}
+
+            {/* Human-review override area (PRD R3/R6). Rendered for every
+                blocked decision (needs_review AND skip), including ones
+                produced while semi-auto was running: the loop stops itself
+                and hands over to this manual area. The auto path never
+                submits human_review — the override is only sent via the
+                explicit human click below, so showing the area cannot bypass
+                the safety gate. skip carries a stronger responsibility
+                warning (the model flagged a clear non-match). The area is
+                collapsible and collapsed by default (expanded on a semi-auto
+                handover) so it does not compete with the "放弃此职位" exit. */}
+            {result.decision === "needs_review" || result.decision === "skip" ? (
+              <Card
+                type="inner"
+                size="small"
+                style={{ marginTop: 4 }}
+                title={
+                  <Space>
+                    <Text strong>人工审阅覆写</Text>
+                    <Tag color="orange">需人工担责</Tag>
+                  </Space>
+                }
+              >
+                <Space direction="vertical" size="small" style={{ width: "100%" }}>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={
+                      result.decision === "skip"
+                        ? "覆写「跳过」判定：模型认为该职位明确不匹配，人工覆写需完全自行担责"
+                        : "覆写是人工显式担责路径，绕过安全门的自动拦截"
+                    }
+                    description={
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        你需要自行确认风险可接受，并对该沟通决定负责。系统仍会复验开场白的长度/PII/语气，且发送前必须经审批。
+                      </Text>
+                    }
+                  />
+                  <Space>
+                    <Button
+                      size="small"
+                      type={humanReviewOpen ? "default" : "link"}
+                      onClick={() => onHumanReviewOpenChange(!humanReviewOpen)}
+                    >
+                      {humanReviewOpen ? "收起人审区" : "展开人工审阅区"}
+                    </Button>
+                  </Space>
+                  {humanReviewOpen ? (
+                    <>
+                      <div>
+                        <Text strong>开场白（可编辑）</Text>
+                        <Input.TextArea
+                          value={humanReviewMessage}
+                          onChange={(e) => onHumanReviewMessageChange(e.target.value)}
+                          autoSize={{ minRows: 3, maxRows: 8 }}
+                          placeholder="填写要发送的开场白（10-500 字，不含手机号/邮箱/身份证号）"
+                          style={{ marginTop: 4 }}
+                        />
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {hasDraft
+                            ? "已预填模型草稿仅供参考，发送内容以审批预览为准。"
+                            : "模型未提供草稿，请自行撰写开场白。"}
+                        </Text>
+                      </div>
+                      <Checkbox
+                        checked={humanReviewAck}
+                        onChange={(e) => onHumanReviewAckChange(e.target.checked)}
+                      >
+                        我已审阅上述风险与缺失要求，确认以本人名义继续准备沟通，并对该决定负责
+                      </Checkbox>
+                      <Space wrap>
+                        <Popconfirm
+                          title="确认人工审阅后继续准备沟通？"
+                          description="此操作将绕过安全门的自动拦截，以你确认的开场白创建待审批的沟通动作。"
+                          onConfirm={onHumanReviewPrepare}
+                          disabled={busy || !humanReviewAck || !humanReviewMessageReady || !canPrepare}
+                        >
+                          <Button
+                            type="primary"
+                            loading={busy}
+                            disabled={
+                              busy ||
+                              !humanReviewAck ||
+                              !humanReviewMessageReady ||
+                              !canPrepare
+                            }
+                          >
+                            人工审阅后继续
+                          </Button>
+                        </Popconfirm>
+                        {!humanReviewAck ? (
+                          <Text type="secondary">请先勾选确认</Text>
+                        ) : null}
+                        {humanReviewMessage.trim().length > 0 &&
+                        humanReviewMessage.trim().length < 10 ? (
+                          <Text type="warning">
+                            开场白过短（{humanReviewMessage.trim().length}/10 字起）
+                          </Text>
+                        ) : null}
+                        {!humanReviewMessage.trim() ? (
+                          <Text type="secondary">请填写开场白</Text>
+                        ) : null}
+                      </Space>
+                    </>
+                  ) : null}
+                </Space>
+              </Card>
             ) : null}
 
             {result.missing_requirements.length > 0 ? (
@@ -712,18 +968,17 @@ function MatchStepCard({
               </div>
             ) : null}
 
-            {(result.decision === "communicate" || result.decision === "needs_review") && openingMessage ? (
+            {result.decision === "communicate" && openingMessage ? (
               <div>
-                <Text strong>开场白（可编辑）：</Text>
-                <Input.TextArea
-                  style={{ marginTop: 4 }}
-                  value={openingMessage}
-                  onChange={(e) => onOpeningMessageChange(e.target.value)}
-                  autoSize={{ minRows: 3, maxRows: 8 }}
-                  disabled={busy}
-                />
+                <Text strong>开场白：</Text>
+                <Paragraph
+                  style={{ marginTop: 4, marginBottom: 0, whiteSpace: "pre-wrap" }}
+                  copyable={{ text: openingMessage }}
+                >
+                  {openingMessage}
+                </Paragraph>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  注意：编辑开场白仅影响本地预览。后端 prepare 阶段使用匹配产物中存储的开场白。
+                  发送内容以审批预览为准；如需调整请重新匹配。
                 </Text>
               </div>
             ) : null}

@@ -56,7 +56,8 @@ class InstructionOut(BaseModel):
             "read_title, read_url, read_content, read_jd, "
             "click_immediate_communicate, fill_opening_message, "
             "send_opening_message, read_communication_result, "
-            "scan_conversations, probe_elements."
+            "scan_conversations, probe_elements, "
+            "scan_visible_jobs, open_job_by_key, wait_job_detail_ready."
         )
     )
     selector_kind: str | None = Field(
@@ -108,6 +109,27 @@ class InstructionOut(BaseModel):
             "between the backend and the userscript."
         ),
     )
+    job_key: str | None = Field(
+        default=None,
+        description=(
+            "sha256 hash of the card title-link href path, identifying a scan "
+            "candidate for open_job_by_key and wait_job_detail_ready."
+        ),
+    )
+    expected_title: str | None = Field(
+        default=None,
+        description=(
+            "Sanitized card title for wait_job_detail_ready — the userscript "
+            "verifies the pane header matches before reading the JD."
+        ),
+    )
+    max_items: int | None = Field(
+        default=None,
+        description=(
+            "Maximum number of candidates to return from scan_visible_jobs. "
+            "The userscript truncates its result list to this value."
+        ),
+    )
 
 
 class JDResultIn(BaseModel):
@@ -147,6 +169,32 @@ class ConversationStatusIn(BaseModel):
     )
     status: Literal["replied", "read", "unread", "unknown"] = Field(
         description="Coarse conversation state observed on the chat list page."
+    )
+
+
+class JobCandidateIn(BaseModel):
+    """One sanitized job candidate from ``scan_visible_jobs``.
+
+    Privacy contract: only short sanitized fields (title, company, salary,
+    location, tags) cross the channel — never raw hrefs, raw HTML, contact
+    names, or cookies. ``job_key`` is a sha256 hash of the card title-link
+    href path (computed client-side), never the raw URL. ``candidate_hash`` is
+    a content hash for duplicate detection.
+    """
+
+    job_key: str = Field(
+        min_length=1, max_length=128,
+        description="sha256 hash of the card title-link href path.",
+    )
+    rank: int = Field(ge=1, description="1-based position in the visible list.")
+    title: str | None = Field(default=None, max_length=200)
+    company: str | None = Field(default=None, max_length=200)
+    salary: str | None = Field(default=None, max_length=100)
+    location: str | None = Field(default=None, max_length=100)
+    tags: list[str] | None = Field(default=None, max_length=30)
+    candidate_hash: str | None = Field(
+        default=None, max_length=128,
+        description="Content hash for duplicate detection.",
     )
 
 
@@ -198,6 +246,15 @@ class ResultIn(BaseModel):
             "results. Hashed keys + status flags only — never chat text."
         ),
     )
+    job_candidates: list[JobCandidateIn] | None = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Sanitized job candidates, only for scan_visible_jobs results. "
+            "Short sanitized fields only — never raw hrefs, raw HTML, or "
+            "contact names."
+        ),
+    )
 
 
 class HeartbeatIn(BaseModel):
@@ -228,5 +285,6 @@ __all__ = [
     "HeartbeatIn",
     "InstructionOut",
     "JDResultIn",
+    "JobCandidateIn",
     "ResultIn",
 ]

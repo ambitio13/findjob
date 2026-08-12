@@ -194,17 +194,24 @@
       page_url_hash: null,
     };
 
-    // Title: the job title heading on the job detail/recommended card.
+    // Title: the job title heading on the job detail/recommended card. On the
+    // current detail page the title is ``p.name`` inside the banner —
+    // ``span.name`` is reserved for company/location, so ``p.name`` must be
+    // tried before any bare ``.name`` selector.
     var titleEl =
       document.querySelector(".job-name") ||
       document.querySelector(".job-title") ||
       document.querySelector("h1.name") ||
-      document.querySelector('[class*="job-name"]');
+      document.querySelector('[class*="job-name"]') ||
+      document.querySelector(".job-banner p.name") ||
+      document.querySelector(".info-primary p.name");
     jd.title = sanitizeJdField(titleEl ? titleEl.innerText : null, 200);
 
-    // Company name.
+    // Company name. ``.sider-company .company-info`` is the current detail
+    // page's company card. Bare ``.company-name`` is probed LAST: it also
+    // matches hidden "similar jobs" cards at the bottom of the page.
     var companyEl =
-      document.querySelector(".company-name") ||
+      document.querySelector(".sider-company .company-info") ||
       document.querySelector(".boss-name") ||
       document.querySelector('[class*="company-name"]');
     jd.company = sanitizeJdField(companyEl ? companyEl.innerText : null, 200);
@@ -215,8 +222,29 @@
       document.querySelector('[class*="salary"]');
     jd.salary = sanitizeJdField(salaryEl ? salaryEl.innerText : null, 100);
 
-    // Location, experience, education — typically in a .job-info / .tag-list
-    // section with <li> elements.
+    // Location, experience, education. On the current detail page the banner
+    // carries dedicated elements (``.text-city`` / ``.text-experiece`` — the
+    // misspelling is BOSS's own class name — / ``.text-degree``). Probe those
+    // first; ``[class*=]`` wildcards survive BOSS class renames better than
+    // exact descendant selectors.
+    var locationEl =
+      document.querySelector('[class*="text-city"]') ||
+      document.querySelector('[class*="location"]');
+    if (locationEl) {
+      jd.location = sanitizeJdField(locationEl.innerText, 100);
+    }
+    var experienceEl = document.querySelector('[class*="text-exper"]');
+    if (experienceEl) {
+      jd.experience = sanitizeJdField(experienceEl.innerText, 50);
+    }
+    var educationEl = document.querySelector('[class*="text-degree"]');
+    if (educationEl) {
+      jd.education = sanitizeJdField(educationEl.innerText, 50);
+    }
+
+    // Fallback: .job-info / .tag-list style li sections. Each li is split
+    // into tokens first so a mixed "city + experience" item no longer gets
+    // discarded whole by the exclusion patterns.
     var infoItems = document.querySelectorAll(
       ".job-info li, .tag-list li, .info-primary li, .job-detail .info li",
     );
@@ -225,22 +253,27 @@
       var t = stripHtml(li.innerText);
       if (t) infoTexts.push(t);
     });
-    // Heuristic: match known patterns for location/experience/education.
+    var EXCLUDE_RE = /经验|学历|本科|硕士|博士|大专|高中|初中|不限|年|薪|K|k/;
     for (var i = 0; i < infoTexts.length && i < 6; i++) {
-      var t = infoTexts[i];
-      if (
-        !jd.location &&
-        /[\u4e00-\u9fa5·-]/.test(t) &&
-        t.length <= 20 &&
-        !/经验|学历|本科|硕士|博士|大专|高中|初中/.test(t)
-      ) {
-        jd.location = sanitizeJdField(t, 100);
-      }
-      if (!jd.experience && /经验|年/.test(t)) {
-        jd.experience = sanitizeJdField(t, 50);
-      }
-      if (!jd.education && /学历|本科|硕士|博士|大专|高中|初中|不限/.test(t)) {
-        jd.education = sanitizeJdField(t, 50);
+      var tokens = infoTexts[i].split(/[\s\n·|,，]+/);
+      for (var j = 0; j < tokens.length; j++) {
+        var t = tokens[j];
+        if (!t) continue;
+        if (
+          !jd.location &&
+          /^[\u4e00-\u9fa5A-Za-z0-9·\-]+$/.test(t) &&
+          t.length <= 12 &&
+          !EXCLUDE_RE.test(t)
+        ) {
+          jd.location = sanitizeJdField(t, 100);
+        }
+        if (!jd.experience && /经验|年/.test(t)) {
+          jd.experience = sanitizeJdField(t, 50);
+        }
+        // "经验不限" contains 不限 but is not an education value.
+        if (!jd.education && !/经验/.test(t) && /学历|本科|硕士|博士|大专|高中|初中|不限/.test(t)) {
+          jd.education = sanitizeJdField(t, 50);
+        }
       }
     }
 
@@ -269,6 +302,113 @@
     }
 
     return jd;
+  }
+
+  // --- In-place pane extraction (boss_recommended_pane_v1) ----------------
+  //
+  // On the recommended list page (/web/geek/jobs) the right-hand detail pane
+  // switches in place when a card is clicked — no navigation occurs. This
+  // profile reads JD fields scoped to `.job-detail-container .job-detail-box`,
+  // per probe-evidence.md §3. Excluded forever: `.job-boss-info` (recruiter
+  // PII), `.c-job-tools`, `.c-hot-link`, `.c-breadcrumb`, `.job-detail-op`
+  // (buttons). Company is NOT in the pane (taken from the scan candidate).
+  function extractBossRecommendedPaneV1(maxTextChars) {
+    var budget = maxTextChars || 8000;
+    var jd = {
+      title: null,
+      company: null,
+      location: null,
+      salary: null,
+      experience: null,
+      education: null,
+      skills: [],
+      description: null,
+      source_kind: "boss_recommended_job",
+      page_url_hash: null,
+    };
+
+    var pane = document.querySelector(".job-detail-container");
+    if (!pane) return jd;
+
+    // Title + salary: `.job-detail-header .job-header-info`
+    var headerInfo = pane.querySelector(".job-header-info");
+    jd.title = sanitizeJdField(
+      headerInfo ? headerInfo.innerText : null,
+      200,
+    );
+    var salaryEl = headerInfo
+      ? headerInfo.querySelector("[class*=salary]")
+      : null;
+    jd.salary = sanitizeJdField(
+      salaryEl ? salaryEl.innerText : null,
+      100,
+    );
+
+    // Description: `.job-detail-body p.desc`
+    var descEl = pane.querySelector(".job-detail-body p.desc");
+    if (descEl) {
+      jd.description = sanitizeJdField(
+        stripHtml(descEl.innerText),
+        budget,
+      );
+    }
+
+    // Tags / skills: `.job-detail-body ul.job-label-list li`
+    var tagEls = pane.querySelectorAll(
+      ".job-detail-body ul.job-label-list li",
+    );
+    var tags = [];
+    tagEls.forEach(function (el) {
+      var t = sanitizeJdField(el.innerText, 60);
+      if (t && tags.length < 30) tags.push(t);
+    });
+    jd.skills = tags;
+
+    // Location: `.job-detail-body .job-address`
+    var addrEl = pane.querySelector(".job-detail-body .job-address");
+    if (addrEl) {
+      jd.location = sanitizeJdField(addrEl.innerText, 100);
+    }
+
+    // Company: NOT available in the pane (probe-evidence §3).
+    // The service merges the candidate's company after read.
+    jd.company = null;
+
+    return jd;
+  }
+
+  // --- Scan candidate cache ------------------------------------------------
+  //
+  // In-memory map: job_key -> card element. Populated by scan_visible_jobs,
+  // consumed by open_job_by_key. Cleared on URL change or new scan. With
+  // zero-navigation the cache survives the entire run.
+  var lastScanCandidates = {};
+  var lastScanUrlHash = null;
+
+  function clearScanCacheIfUrlChanged() {
+    var currentHash = sha256ShortSync(window.location.href);
+    if (lastScanUrlHash !== null && lastScanUrlHash !== currentHash) {
+      lastScanCandidates = {};
+      lastScanUrlHash = null;
+    }
+  }
+
+  // Synchronous sha256 fallback for cache management (non-async context).
+  // Uses the same Web Crypto API but returns a placeholder on failure.
+  function sha256ShortSync(input) {
+    try {
+      // crypto.subtle.digest is async-only, so we use a simple hash for
+      // cache invalidation purposes. This is NOT used for privacy-sensitive
+      // data — only to detect URL changes between scans.
+      var str = String(input);
+      var h = 0;
+      for (var i = 0; i < str.length; i++) {
+        h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+      }
+      return "hash:" + h;
+    } catch (_e) {
+      return "hash:unknown";
+    }
   }
 
   // --- Selector resolution --------------------------------------------------
@@ -445,6 +585,12 @@
         // (title, company, salary, description, etc.) — never innerHTML.
         // The selector_profile determines which extraction logic to use.
         const profile = ins.selector_profile || "boss_recommended_job_v1";
+        if (profile === "boss_recommended_pane_v1") {
+          const jd = extractBossRecommendedPaneV1(ins.max_text_chars || 8000);
+          jd.page_url_hash = await sha256Short(window.location.href);
+          result.jd = jd;
+          return result;
+        }
         if (profile !== "boss_recommended_job_v1") {
           result.success = false;
           result.error = sanitizeError("unknown_selector_profile:" + profile);
@@ -453,6 +599,199 @@
         const jd = extractBossRecommendedJobV1(ins.max_text_chars || 8000);
         jd.page_url_hash = await sha256Short(window.location.href);
         result.jd = jd;
+        return result;
+      }
+
+      // --- Discovery ops (zero-navigation master-detail flow) --------------
+      //
+      // These ops do NOT use resolveLocator — they operate on the
+      // recommended-list card/pane DOM directly. See design.md §Userscript
+      // Contract and probe-evidence.md for selector evidence.
+
+      if (ins.op === "scan_visible_jobs") {
+        // READ-ONLY scan of visible div.job-card-wrap cards. Derive job_key
+        // from sha256(a.job-name href path). Return sanitized candidates
+        // only — never raw hrefs, HTML, or contact names.
+        clearScanCacheIfUrlChanged();
+        var maxItems = ins.max_items || 50;
+
+        var cardEls = document.querySelectorAll("div.job-card-wrap");
+        if (cardEls.length === 0) {
+          // Distinguish "not on the recommended list page" (no card
+          // container at all) from "page is valid but empty". The geek
+          // recommendation list page always has the master-detail structure;
+          // if no cards are found the page shape is wrong.
+          result.success = false;
+          result.error = sanitizeError("not_recommended_list_page");
+          return result;
+        }
+
+        var candidates = [];
+        var newCache = {};
+        for (var ci = 0; ci < cardEls.length && candidates.length < maxItems; ci++) {
+          var card = cardEls[ci];
+          if (!isElementVisible(card)) continue;
+
+          // job_key: sha256 of a.job-name href path (query stripped).
+          var nameLink = card.querySelector("a.job-name");
+          if (!nameLink) continue;
+          var href = nameLink.getAttribute("href") || "";
+          // Strip query string, keep only the path portion.
+          var pathOnly = href.split("?")[0].split("#")[0];
+          if (!pathOnly) continue;
+          var jobKey = await sha256Short(pathOnly);
+
+          // Field selectors (probe-evidence §2).
+          var titleEl = card.querySelector(".job-name");
+          var salaryEl = card.querySelector(".job-salary");
+          var companyEl = card.querySelector("[class*=company]");
+          var areaEl = card.querySelector("[class*=area]");
+          var tagEls2 = card.querySelectorAll(".tag-list li");
+
+          var tags = [];
+          tagEls2.forEach(function (el) {
+            var t = sanitizeJdField(el.innerText, 60);
+            if (t && tags.length < 30) tags.push(t);
+          });
+
+          // candidate_hash: content hash for duplicate detection.
+          var contentForHash = [
+            sanitizeJdField(titleEl ? titleEl.innerText : null, 200) || "",
+            sanitizeJdField(salaryEl ? salaryEl.innerText : null, 100) || "",
+          ].join("|");
+          var candidateHash = await sha256Short(contentForHash);
+
+          var candidate = {
+            job_key: jobKey,
+            rank: candidates.length + 1,
+            title: sanitizeJdField(
+              titleEl ? titleEl.innerText : null,
+              200,
+            ),
+            company: sanitizeJdField(
+              companyEl ? companyEl.innerText : null,
+              200,
+            ),
+            salary: sanitizeJdField(
+              salaryEl ? salaryEl.innerText : null,
+              100,
+            ),
+            location: sanitizeJdField(
+              areaEl ? areaEl.innerText : null,
+              100,
+            ),
+            tags: tags.length > 0 ? tags : null,
+            candidate_hash: candidateHash,
+          };
+          candidates.push(candidate);
+          newCache[jobKey] = card;
+        }
+
+        // Update the in-memory cache. Cleared on URL change or new scan.
+        lastScanCandidates = newCache;
+        lastScanUrlHash = sha256ShortSync(window.location.href);
+
+        result.job_candidates = candidates;
+        result.count = candidates.length;
+        return result;
+      }
+
+      if (ins.op === "open_job_by_key") {
+        // Click one cached card ROOT only. Never click a.job-name,
+        // a.more-job-btn, .op-btn-chat, .op-btn-like. Verify URL didn't
+        // change after click (else unexpected_navigation hard-stop).
+        clearScanCacheIfUrlChanged();
+
+        var targetKey = ins.job_key;
+        if (!targetKey) {
+          result.success = false;
+          result.error = sanitizeError("missing_job_key");
+          return result;
+        }
+        var cardEl = lastScanCandidates[targetKey];
+        if (!cardEl) {
+          result.success = false;
+          result.error = sanitizeError("candidate_not_found");
+          return result;
+        }
+
+        // Safety: the matched element MUST be a div.job-card-wrap. If the
+        // cache was corrupted and points to a different node, refuse.
+        if (!cardEl.classList || !cardEl.classList.contains("job-card-wrap")) {
+          result.success = false;
+          result.error = sanitizeError("candidate_not_found");
+          return result;
+        }
+
+        // Verify URL hasn't changed before clicking.
+        var urlBefore = window.location.href;
+
+        // Synthetic click on the card root. We do NOT click any descendant
+        // anchor/button. The root click triggers BOSS's pane-switch JS
+        // without opening a new tab or navigating.
+        try {
+          cardEl.click();
+        } catch (clickErr) {
+          result.success = false;
+          result.error = sanitizeError("click_failed");
+          return result;
+        }
+
+        // Brief microtask delay to let BOSS JS run.
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 50);
+        });
+
+        // Verify URL did not change.
+        if (window.location.href !== urlBefore) {
+          result.success = false;
+          result.error = sanitizeError("unexpected_navigation");
+          return result;
+        }
+
+        result.url = await sha256Short(window.location.href);
+        return result;
+      }
+
+      if (ins.op === "wait_job_detail_ready") {
+        // Bounded readiness check: poll .job-detail-container .job-header-info
+        // until its text contains expected_title. Never read .job-boss-info.
+        var expectedTitle = ins.expected_title || "";
+        if (!expectedTitle) {
+          result.success = false;
+          result.error = sanitizeError("missing_expected_title");
+          return result;
+        }
+
+        var maxWaitMs = 5000;
+        var pollIntervalMs = 200;
+        var elapsed = 0;
+        var ready = false;
+
+        while (elapsed < maxWaitMs) {
+          var pane2 = document.querySelector(".job-detail-container");
+          if (pane2) {
+            var headerInfo2 = pane2.querySelector(".job-header-info");
+            if (headerInfo2 && typeof headerInfo2.innerText === "string") {
+              var headerText = headerInfo2.innerText;
+              if (headerText.includes(expectedTitle)) {
+                ready = true;
+                break;
+              }
+            }
+          }
+          await new Promise(function (resolve) {
+            setTimeout(resolve, pollIntervalMs);
+          });
+          elapsed += pollIntervalMs;
+        }
+
+        if (!ready) {
+          result.success = false;
+          result.error = sanitizeError("detail_not_ready");
+          return result;
+        }
+        result.success = true;
         return result;
       }
 

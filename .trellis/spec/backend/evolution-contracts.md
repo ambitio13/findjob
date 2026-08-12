@@ -129,6 +129,97 @@ Deterministic and auditable, no LLM in the loop:
 - Static route segments (e.g. `/applications/follow-up-suggestions`) must be
   registered before parameterized segments (`/{application_id}`).
 
+## 12. Human Review Override (blocked-decision escape hatch)
+
+The safety gate can downgrade a `communicate` decision to `needs_review`,
+which clears `opening_message` and leaves prepare unable to proceed
+(non-override prepare hard-requires a `communicate` decision → 422). The
+human-review override is the **explicit, audited, approval-bound** path out
+of that dead-end — for `needs_review` **and** `skip` alike. It never
+weakens the gate; it adds a separate path *outside* it.
+
+- **`needs_review` and `skip` can be overridden; `communicate` cannot.**
+  Carrying `human_review` with a `communicate` decision → 422
+  `human_review_not_applicable` (communicate needs no override). `skip`
+  override means the human accepts responsibility for contacting a
+  model-flagged non-match; the UI must warn more strongly for `skip`.
+- **The human message is re-validated.** `validate_opening_message` runs
+  against `human_review.opening_message` on the override path; length / PII
+  / tone failures → 422 `human_review_message_invalid`. The gate's own
+  validation is not bypassed — the human input must pass the same rules.
+- **`acknowledged` is a `Literal[True]`.** The schema rejects `false` (and
+  any non-`true` value) at parse time. The frontend checkbox maps to it; no
+  silent default.
+- **The approval boundary still holds.** Override only *prepares* the
+  action in `approval_required`. Execute still requires explicit user
+  approval keyed on `payload_hash` (which includes the human message). The
+  override never auto-executes.
+- **The audit key is mandatory.** A successful override prepare appends
+  `source_snapshot["human_review"]` with `acknowledged`, `acknowledged_at`,
+  `actor_user_id`, and `draft_source` (`"model_draft"` if the user kept the
+  pre-gate draft verbatim, else `"human_written"`). Staleness detection
+  compares only `source_hash`, so the extra key is safe.
+- **The pre-gate draft is response-only.** `MatchDecisionOut.draft_opening_message`
+  carries the model's pre-gate message (when one exists) so the UI can
+  prefill the override textarea; the match prompt requires a tentative draft
+  for both `communicate` and `needs_review`, and null only for `skip`. The
+  draft is **never persisted**; the persisted artifact stores the post-gate
+  message. The draft travels back through the human-review payload and is
+  re-validated on the override path.
+- **The semi-auto loop never *submits* an override, but must hand over to
+  one.** On any blocked decision (`needs_review` or `skip`) the loop stops
+  (sets `semiAuto` to `false`); the frontend may then render — and on a
+  loop-stop handover, expand — the human-review area. The invariant is that
+  `human_review` is only ever sent by an explicit human click; the auto
+  effect (inspect/match/prepare) never carries it. The override is a
+  manual, attended action only.
+
+## 13. BOSS DOM Adaptation (probe-first selector evolution)
+
+- Userscript selector adaptation is **diagnosis-first**: the real BOSS DOM
+  is probed via the dev-only `/userscript-bridge/probe` op
+  (`probe_elements` returns tag/class/text of matched elements). New
+  selectors must trace back to a probe result — never guesswork. The probe
+  endpoint stays dev-only with its read-only op whitelist.
+- Selectors evolve as **ordered fallback chains**; `[class*=]` wildcards are
+  preferred for resilience against BOSS class renames (e.g. their own
+  misspelled `text-experiece`). Unmatched fields stay `null` — never
+  garbage values; backend fallbacks (`(未知公司)`) only apply to nulls.
+
+## 14. Batch Loop (prepare-only first, auto-execute gated)
+
+`POST /boss/recommended-jobs/batch-loop` (+ `GET /{run_id}`, `/pause`,
+`/resume`) serially runs inspect → match → prepare over a caller-supplied
+`job_ids` list (capped by `limit`), reusing the single-job services — no
+business rule is duplicated in the batch path. Per-item progress lives in
+`AgentRun.result` (`workflow_type` batch marker); no new table.
+
+- **`prepare_only` is the only available mode.** The loop stops each item at
+  `approval_required` / `needs_review`; approve and execute remain explicit
+  human actions (§1). `mode=auto_execute` is rejected with 422
+  `auto_execute_gate_not_passed` by `boss_dry_run_gate.assert_auto_execute_allowed`
+  **at the API layer** — the service never sees the mode until the gate
+  passes. Hiding the frontend button is not the control.
+- **The gate is file-backed, not a flag.** It reads the append-only
+  `.trellis/tasks/08-03-boss-dry-run-gate/dry-run-log.jsonl`: pass requires
+  the last 10 entries all `incident: false` AND ≥2 entries whose
+  `read_communication_result` contains `duplicate`. Any incident resets the
+  streak. Do not replace the log with a config toggle.
+- **Hard-stop: 3 consecutive `failed` items** stop the run
+  (`hard_stopped`) and mark remaining items. `skip` / `needs_review` are
+  item outcomes, not incidents, and `skip`-like successes reset the failure
+  streak.
+- **Pause semantics are synchronous.** Processing runs inside the
+  start/resume request; `pause` cannot interrupt an in-flight request — it
+  marks non-terminal runs (e.g. a stuck `running` left by a crash) as
+  `paused` for later `resume`. Terminal runs are a no-op. If a worker/queue
+  strategy is introduced, pause must become cooperative (check flag between
+  items) and bind `agent_run_id` + `QUEUE_NAMESPACE`.
+- **User boundary & serialization.** All four endpoints require
+  `X-User-Id`; cross-user access → 404. Never process items concurrently —
+  the single-active-page/application invariant means one bridge instruction
+  at a time.
+
 ## Forbidden Patterns
 
 - Trusting `X-User-Id` in prod.
@@ -140,3 +231,8 @@ Deterministic and auditable, no LLM in the loop:
 - Letting suggestions or calibration execute external actions.
 - Generating resume content that cannot be traced to a resume fact.
 - Introducing a second alembic head without a merge migration.
+- Carrying `human_review` on a `communicate` decision, or accepting it
+  without the `acknowledged: true` flag and a re-validated message.
+- Enabling batch-loop `auto_execute` via a config flag or frontend check
+  instead of the dry-run-log gate, or auto-approving/auto-executing in
+  `prepare_only` mode.

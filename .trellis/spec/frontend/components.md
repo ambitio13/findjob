@@ -53,4 +53,29 @@ Implementation conventions:
   StrictMode double-firing the same auto-step.
 - Auto-stop (set `semiAuto` to `false`) on any failure or non-`communicate`
   decision, and surface the reason in an `Alert`.
+- On a blocked decision (`needs_review` or `skip`), the frontend must
+  **stay on the match step** — never advance to a step the backend will
+  reject — and **hand over to the human-review area**: render it (the
+  `!semiAuto` gate was a dead-end and is forbidden) and expand it on a
+  loop-stop handover. The override is only ever submitted by an explicit
+  human click, never by the auto effect (see
+  `backend/evolution-contracts.md §12`). The backend match safety gate only
+  downgrades (never upgrades; see `backend/evolution-contracts.md §2`), so a
+  blocked result means non-override `prepare_communicate_action` returns
+  422. Surface the interception (score / risks / missing requirements)
+  verbatim from the backend — do not recompute or re-evaluate the decision
+  in the frontend.
+
+## Editable Content Boundary
+
+- "Make generated content editable before approval" applies to artifacts the
+  user regenerates and re-submits through a generation API (e.g. resume
+  optimization suggestions, JD analysis notes).
+- It does **not** apply to the match opening message: the `prepare` API reads
+  the persisted match artifact by `match_artifact_id`, and the approval
+  boundary is keyed on `payload_hash`. A frontend edit box for the opening
+  message is a false promise — edits never reach the backend and would, if
+  honored, bypass the `payload_hash` approval boundary. Show the opening
+  message as read-only with a copy affordance; tell the user to re-match if
+  they need a different message.
 

@@ -17,17 +17,42 @@ durable action representation lives in
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.schemas.application_action import ApplicationActionOut
 from app.schemas.common import BaseSchema
 
 
+class HumanReviewOverride(BaseModel):
+    """Human-review override payload for the prepare endpoint.
+
+    Carries the human-edited opening message and an explicit ``acknowledged``
+    flag (must be the literal ``True`` — the frontend checkbox maps to it) so
+    the backend can distinguish an intentional human override from a stray
+    field. ``draft_source`` records whether the message is the model's pre-gate
+    draft (unchanged) or human-written/edited, for audit traceability.
+    """
+
+    opening_message: str = Field(min_length=1)
+    acknowledged: Literal[True]
+    draft_source: Literal["model_draft", "human_written"] = "human_written"
+
+
 class CommunicatePrepareRequest(BaseModel):
-    """Body of ``POST /boss/recommended-jobs/{job_id}/communicate/prepare``."""
+    """Body of ``POST /boss/recommended-jobs/{job_id}/communicate/prepare``.
+
+    ``human_review`` is optional and honored when the match artifact's
+    decision is ``needs_review`` or ``skip`` — both are human-takeover paths
+    (skip carries a stronger responsibility warning in the UI). Carrying it
+    with a ``communicate`` decision is a 422 (see
+    ``prepare_communicate_action``).
+    """
 
     resume_version_id: str = Field(min_length=1)
     match_artifact_id: str = Field(min_length=1)
+    human_review: HumanReviewOverride | None = None
 
 
 class CommunicatePrepareOut(BaseSchema):
@@ -69,4 +94,5 @@ __all__ = [
     "CommunicateExecuteRequest",
     "CommunicatePrepareOut",
     "CommunicatePrepareRequest",
+    "HumanReviewOverride",
 ]

@@ -161,7 +161,7 @@ async def _run_match(
     """
     user = _get_user(ids["user_id"])
     with SessionLocal() as db:
-        _, artifact, _, _ = await run_boss_match_decision(
+        _, artifact, _, _, _ = await run_boss_match_decision(
             db,
             user,
             job_id=ids["job_id"],
@@ -1142,3 +1142,449 @@ async def test_execute_wrong_action_type_returns_404(client) -> None:
                 action_id=other_action_id,
             )
     assert exc_info.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Human-review override (PRD R1) — AC1 positive
+# ---------------------------------------------------------------------------
+
+_HUMAN_MESSAGE = (
+    "您好，我是一名有5年Python后端开发经验的工程师，"
+    "对贵司的后端工程师职位非常感兴趣，希望能进一步沟通。"
+)
+
+
+@pytest.mark.asyncio
+async def test_prepare_human_review_override_needs_review_succeeds(client) -> None:
+    """AC1: needs_review + valid human message + acknowledged → prepare succeeds.
+
+    The action's ``outgoing_text`` is the human message (not the artifact's
+    null opening_message), the status is ``approval_required``, and
+    ``source_snapshot`` carries the ``human_review`` audit key.
+    """
+    from app.schemas.boss_communicate import HumanReviewOverride
+
+    ids = _seed()
+    # Seed a needs_review artifact directly (post-gate shape: opening_message=None).
+    artifact_id = _seed_artifact_directly(
+        ids,
+        decision="needs_review",
+        score=0.55,
+        opening_message=None,
+    )
+    user = _get_user(ids["user_id"])
+
+    override = HumanReviewOverride(
+        opening_message=_HUMAN_MESSAGE,
+        acknowledged=True,
+        draft_source="human_written",
+    )
+
+    with SessionLocal() as db:
+        action = prepare_communicate_action(
+            db,
+            user,
+            ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+            match_artifact_id=artifact_id,
+            human_review=override,
+        )
+
+    assert action.action_type == "boss_immediate_communicate"
+    assert action.status == "approval_required"
+    assert action.payload_hash.startswith("sha256:")
+    # The outgoing text is the human message, not the artifact's null.
+    assert action.payload_preview["outgoing_text"] == _HUMAN_MESSAGE
+    # Audit key present.
+    snap = action.source_snapshot
+    assert snap["human_review"]["acknowledged"] is True
+    assert snap["human_review"]["actor_user_id"] == ids["user_id"]
+    assert snap["human_review"]["draft_source"] == "human_written"
+    assert "acknowledged_at" in snap["human_review"]
+    # Staleness hash is unaffected by the audit key.
+    assert "source_hash" in snap
+
+
+@pytest.mark.asyncio
+async def test_prepare_human_review_override_then_approve_execute(client, monkeypatch) -> None:
+    """AC1 end-to-end: override prepare → approve → execute succeeds.
+
+    The override path converges with the normal path at ``outgoing_text``, so
+    approve→execute is unchanged.
+    """
+    from app.schemas.boss_communicate import HumanReviewOverride
+
+    ids = _seed()
+    artifact_id = _seed_artifact_directly(
+        ids,
+        decision="needs_review",
+        score=0.55,
+        opening_message=None,
+    )
+    user = _get_user(ids["user_id"])
+
+    override = HumanReviewOverride(
+        opening_message=_HUMAN_MESSAGE,
+        acknowledged=True,
+    )
+
+    with SessionLocal() as db:
+        action = prepare_communicate_action(
+            db,
+            user,
+            ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+            match_artifact_id=artifact_id,
+            human_review=override,
+        )
+        application_id = action.application_id
+        action_id = action.id
+
+    _approve_action(action_id, application_id, ids["user_id"])
+
+    from app.platforms.boss.fake_adapter import FakeBossAdapter
+
+    fake = FakeBossAdapter(scenario="communicate_succeeded")
+    monkeypatch.setattr(
+        "app.services.boss_communicate_service.get_adapter",
+        lambda: fake,
+    )
+
+    with SessionLocal() as db:
+        record, action_out, _ = await run_boss_communicate_execute(
+            db,
+            current_user=user,
+            job_id=ids["job_id"],
+            application_id=application_id,
+            action_id=action_id,
+        )
+
+    assert action_out.external_result_status == "submitted"
+    assert len(fake.communicate_calls) == 1
+    # The adapter received the human message.
+    assert fake.communicate_calls[0].opening_message == _HUMAN_MESSAGE
+
+
+# ---------------------------------------------------------------------------
+# Human-review override — AC2 422 matrix
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prepare_human_review_on_communicate_returns_422(client) -> None:
+    """AC2: communicate + override → 422 (override not applicable)."""
+    from app.schemas.boss_communicate import HumanReviewOverride
+
+    ids = _seed()
+    artifact_id = await _run_match(ids)  # communicate decision
+    user = _get_user(ids["user_id"])
+
+    override = HumanReviewOverride(opening_message=_HUMAN_MESSAGE, acknowledged=True)
+
+    with SessionLocal() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            prepare_communicate_action(
+                db,
+                user,
+                ids["job_id"],
+                resume_version_id=ids["resume_version_id"],
+                match_artifact_id=artifact_id,
+                human_review=override,
+            )
+    assert exc_info.value.status_code == 422
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail["code"] == "human_review_not_applicable"
+
+
+@pytest.mark.asyncio
+async def test_prepare_human_review_override_skip_succeeds(client) -> None:
+    """R6: skip + valid human message + acknowledged → prepare succeeds.
+
+    A human may explicitly take responsibility for a model-flagged non-match
+    (``skip``); the outgoing text is the human message, the status is
+    ``approval_required``, and the audit key records the override. Only
+    ``communicate`` + override remains a 422.
+    """
+    from app.schemas.boss_communicate import HumanReviewOverride
+
+    ids = _seed()
+    artifact_id = _seed_artifact_directly(
+        ids,
+        decision="skip",
+        score=0.25,
+        opening_message=None,
+    )
+    user = _get_user(ids["user_id"])
+
+    override = HumanReviewOverride(opening_message=_HUMAN_MESSAGE, acknowledged=True)
+
+    with SessionLocal() as db:
+        action = prepare_communicate_action(
+            db,
+            user,
+            ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+            match_artifact_id=artifact_id,
+            human_review=override,
+        )
+
+    assert action.status == "approval_required"
+    assert action.payload_preview["outgoing_text"] == _HUMAN_MESSAGE
+    snap = action.source_snapshot
+    assert snap["human_review"]["acknowledged"] is True
+    assert snap["human_review"]["actor_user_id"] == ids["user_id"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_human_review_message_too_short_returns_422(client) -> None:
+    """AC2: human message too short → 422 (human_review_message_invalid)."""
+    from app.schemas.boss_communicate import HumanReviewOverride
+
+    ids = _seed()
+    artifact_id = _seed_artifact_directly(
+        ids,
+        decision="needs_review",
+        score=0.55,
+        opening_message=None,
+    )
+    user = _get_user(ids["user_id"])
+
+    override = HumanReviewOverride(opening_message="您好", acknowledged=True)
+
+    with SessionLocal() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            prepare_communicate_action(
+                db,
+                user,
+                ids["job_id"],
+                resume_version_id=ids["resume_version_id"],
+                match_artifact_id=artifact_id,
+                human_review=override,
+            )
+    assert exc_info.value.status_code == 422
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail["code"] == "human_review_message_invalid"
+
+
+@pytest.mark.asyncio
+async def test_prepare_human_review_message_with_pii_returns_422(client) -> None:
+    """AC2: human message containing a phone number → 422."""
+    from app.schemas.boss_communicate import HumanReviewOverride
+
+    ids = _seed()
+    artifact_id = _seed_artifact_directly(
+        ids,
+        decision="needs_review",
+        score=0.55,
+        opening_message=None,
+    )
+    user = _get_user(ids["user_id"])
+
+    pii_message = (
+        "您好，我是一名有5年Python后端开发经验的工程师，"
+        "我的手机号是13812345678，希望能进一步沟通。"
+    )
+    override = HumanReviewOverride(opening_message=pii_message, acknowledged=True)
+
+    with SessionLocal() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            prepare_communicate_action(
+                db,
+                user,
+                ids["job_id"],
+                resume_version_id=ids["resume_version_id"],
+                match_artifact_id=artifact_id,
+                human_review=override,
+            )
+    assert exc_info.value.status_code == 422
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail["code"] == "human_review_message_invalid"
+
+
+@pytest.mark.asyncio
+async def test_prepare_human_review_message_excessive_punctuation_returns_422(
+    client,
+) -> None:
+    """AC2: human message with excessive punctuation → 422."""
+    from app.schemas.boss_communicate import HumanReviewOverride
+
+    ids = _seed()
+    artifact_id = _seed_artifact_directly(
+        ids,
+        decision="needs_review",
+        score=0.55,
+        opening_message=None,
+    )
+    user = _get_user(ids["user_id"])
+
+    # Excessive exclamation marks trigger the tone guard.
+    shouty_message = (
+        "您好您好您好您好您好您好您好您好您好您好"
+        "！！！！！！！！！！！！！！！！！！！！"
+    )
+    override = HumanReviewOverride(opening_message=shouty_message, acknowledged=True)
+
+    with SessionLocal() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            prepare_communicate_action(
+                db,
+                user,
+                ids["job_id"],
+                resume_version_id=ids["resume_version_id"],
+                match_artifact_id=artifact_id,
+                human_review=override,
+            )
+    assert exc_info.value.status_code == 422
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail["code"] == "human_review_message_invalid"
+
+
+@pytest.mark.asyncio
+async def test_prepare_human_review_acknowledged_false_rejected_by_schema(client) -> None:
+    """AC2: ``acknowledged`` must be the literal ``True`` — the schema rejects
+    anything else before the service is reached."""
+    from pydantic import ValidationError
+
+    from app.schemas.boss_communicate import HumanReviewOverride
+
+    # acknowledged=False is not a valid Literal[True].
+    with pytest.raises(ValidationError):
+        HumanReviewOverride(opening_message=_HUMAN_MESSAGE, acknowledged=False)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Human-review override — AC3 draft field (match response carries pre-gate draft)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_match_downgraded_returns_draft_opening_message(client) -> None:
+    """AC3: when the safety gate downgrades communicate → needs_review, the
+    service returns the pre-gate draft as ``raw_opening_message`` (the 5th
+    element of the tuple). The persisted artifact's opening_message is None."""
+    from unittest.mock import patch
+
+    from app.models_gateway.fake import _BOSS_MATCH_FAKE_OUTPUTS, FakeModelGateway
+
+    ids = _seed()
+    user = _get_user(ids["user_id"])
+
+    draft_msg = "您好，我对该职位非常感兴趣，希望能进一步沟通。"
+    low_score_output = {
+        "decision": "communicate",
+        "score": 0.45,
+        "reasons": ["Weak match"],
+        "risks": [],
+        "missing_requirements": [],
+        "opening_message": draft_msg,
+    }
+    with patch(
+        "app.models_gateway.fake._BOSS_MATCH_FAKE_OUTPUTS",
+        {
+            "communicate": low_score_output,
+            "skip": _BOSS_MATCH_FAKE_OUTPUTS["skip"],
+            "needs_review": _BOSS_MATCH_FAKE_OUTPUTS["needs_review"],
+        },
+    ):
+        with SessionLocal() as db:
+            _, artifact, execution, downgraded, raw_opening_message = (
+                await run_boss_match_decision(
+                    db,
+                    user,
+                    job_id=ids["job_id"],
+                    resume_version_id=ids["resume_version_id"],
+                    gateway=FakeModelGateway(),
+                )
+            )
+
+    assert downgraded is True
+    assert execution.output.decision.value == "needs_review"
+    assert execution.output.opening_message is None
+    # The pre-gate draft is returned for the human-review UI.
+    assert raw_opening_message == draft_msg
+    # The persisted artifact stores the post-gate output (no opening_message).
+    assert "opening_message" not in artifact.content or (
+        json.loads(artifact.content)["opening_message"] is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_match_not_downgraded_returns_null_draft(client) -> None:
+    """AC3: when no downgrade happens, ``raw_opening_message`` is None."""
+    from app.models_gateway.fake import FakeModelGateway
+
+    ids = _seed()
+    user = _get_user(ids["user_id"])
+
+    with SessionLocal() as db:
+        _, _, _, downgraded, raw_opening_message = await run_boss_match_decision(
+            db,
+            user,
+            job_id=ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+            gateway=FakeModelGateway(),
+        )
+
+    assert downgraded is False
+    assert raw_opening_message is None
+
+
+# ---------------------------------------------------------------------------
+# Human-review override — AC5 no-override regression
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prepare_no_human_review_field_is_identical_to_before(client) -> None:
+    """AC5: when ``human_review`` is omitted (default None), the prepare path
+    behaves exactly as before — communicate required, opening_message
+    re-validated, no ``human_review`` key in source_snapshot."""
+    ids = _seed()
+    artifact_id = await _run_match(ids)
+    user = _get_user(ids["user_id"])
+
+    with SessionLocal() as db:
+        action = prepare_communicate_action(
+            db,
+            user,
+            ids["job_id"],
+            resume_version_id=ids["resume_version_id"],
+            match_artifact_id=artifact_id,
+            # human_review omitted — default None
+        )
+
+    assert action.status == "approval_required"
+    snap = action.source_snapshot
+    assert "human_review" not in snap
+    # The outgoing text is the artifact's opening message.
+    assert action.payload_preview["outgoing_text"] is not None
+    assert len(action.payload_preview["outgoing_text"]) >= 10
+
+
+@pytest.mark.asyncio
+async def test_prepare_no_human_review_needs_review_still_returns_422(client) -> None:
+    """AC5: without the override, needs_review still 422s (the dead-end is
+    only escapeable via the explicit human_review path)."""
+    ids = _seed()
+    artifact_id = _seed_artifact_directly(
+        ids,
+        decision="needs_review",
+        score=0.55,
+        opening_message=None,
+    )
+    user = _get_user(ids["user_id"])
+
+    with SessionLocal() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            prepare_communicate_action(
+                db,
+                user,
+                ids["job_id"],
+                resume_version_id=ids["resume_version_id"],
+                match_artifact_id=artifact_id,
+            )
+    assert exc_info.value.status_code == 422

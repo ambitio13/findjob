@@ -77,6 +77,10 @@ OpKind = Literal[
     "read_communication_result",
     "scan_conversations",
     "probe_elements",
+    # --- Discovery ops (zero-navigation master-detail flow) ---
+    "scan_visible_jobs",
+    "open_job_by_key",
+    "wait_job_detail_ready",
 ]
 
 
@@ -107,6 +111,19 @@ class Instruction:
     userscript reads selectors from the backend instead of hardcoding them —
     eliminating selector drift (B1 root cause). Values are raw CSS selector
     strings from :mod:`app.platforms.boss.selectors`.
+
+    ``job_key`` identifies a scan candidate for the discovery ops
+    ``open_job_by_key`` and ``wait_job_detail_ready``. It is a sha256 hash
+    computed by the userscript from the card's title-link href path — never a
+    raw URL.
+
+    ``expected_title`` is the sanitized card title used by
+    ``wait_job_detail_ready`` to verify the inline pane has switched to the
+    expected job before reading its JD.
+
+    ``max_items`` caps the number of candidates returned by
+    ``scan_visible_jobs``. The userscript truncates its result list to this
+    value.
     """
 
     instruction_id: str
@@ -120,6 +137,9 @@ class Instruction:
     max_text_chars: int | None = None
     selector_profile: str | None = None
     extra_selectors: dict[str, str] | None = None
+    job_key: str | None = None
+    expected_title: str | None = None
+    max_items: int | None = None
 
 
 @dataclass
@@ -145,6 +165,12 @@ class InstructionResult:
     status flags (``replied``/``read``/``unread``) — never chat text, never
     contact names. Sanitized by the API layer before reaching the channel.
 
+    ``job_candidates`` is returned by the ``scan_visible_jobs`` op. Each entry
+    carries a short sanitized summary (``job_key``, ``rank``, ``title``,
+    ``company``, ``salary``, ``location``, ``tags``) — never raw hrefs, raw
+    HTML, or contact names. Sanitized by the API layer before reaching the
+    channel.
+
     ``page_id`` identifies which browser tab produced the result. The channel
     rejects results whose ``page_id`` does not match the instruction's
     ``page_id``, preventing a wrong tab from consuming another tab's
@@ -162,6 +188,7 @@ class InstructionResult:
     jd: dict | None = None
     marker_counts: dict[str, int] | None = None
     conversations: list[dict] | None = None
+    job_candidates: list[dict] | None = None
 
 
 @dataclass
@@ -323,6 +350,9 @@ class UserscriptChannel:
                 max_text_chars=instruction.max_text_chars,
                 selector_profile=instruction.selector_profile,
                 extra_selectors=instruction.extra_selectors,
+                job_key=instruction.job_key,
+                expected_title=instruction.expected_title,
+                max_items=instruction.max_items,
             )
 
         await self._queue.put(instruction)
@@ -485,6 +515,9 @@ def make_instruction(
     max_text_chars: int | None = None,
     selector_profile: str | None = None,
     extra_selectors: dict[str, str] | None = None,
+    job_key: str | None = None,
+    expected_title: str | None = None,
+    max_items: int | None = None,
 ) -> Instruction:
     """Construct an :class:`Instruction` with a generated id."""
     return Instruction(
@@ -499,6 +532,9 @@ def make_instruction(
         max_text_chars=max_text_chars,
         selector_profile=selector_profile,
         extra_selectors=extra_selectors,
+        job_key=job_key,
+        expected_title=expected_title,
+        max_items=max_items,
     )
 
 

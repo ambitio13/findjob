@@ -175,7 +175,7 @@ async def test_happy_path_persists_artifact_and_steps(client) -> None:
     user = _get_user(ids["user_id"])
 
     with SessionLocal() as db:
-        run, artifact, execution, downgraded = await run_boss_match_decision(
+        run, artifact, execution, downgraded, _draft = await run_boss_match_decision(
             db,
             user,
             job_id=ids["job_id"],
@@ -213,7 +213,7 @@ async def test_artifact_source_ids_contain_provenance(client) -> None:
     user = _get_user(ids["user_id"])
 
     with SessionLocal() as db:
-        run, artifact, _, _ = await run_boss_match_decision(
+        run, artifact, _, _, _ = await run_boss_match_decision(
             db,
             user,
             job_id=ids["job_id"],
@@ -243,7 +243,7 @@ async def test_artifact_content_is_valid_match_decision_json(client) -> None:
     user = _get_user(ids["user_id"])
 
     with SessionLocal() as db:
-        _, artifact, _, _ = await run_boss_match_decision(
+        _, artifact, _, _, _ = await run_boss_match_decision(
             db,
             user,
             job_id=ids["job_id"],
@@ -413,7 +413,7 @@ async def test_low_score_communicate_downgraded_to_needs_review(client) -> None:
         _patched_communicate(bad_output),
     ):
         with SessionLocal() as db:
-            run, artifact, execution, downgraded = await run_boss_match_decision(
+            run, artifact, execution, downgraded, _draft = await run_boss_match_decision(
                 db,
                 user,
                 job_id=ids["job_id"],
@@ -447,7 +447,7 @@ async def test_missing_requirements_communicate_downgraded(client) -> None:
         _patched_communicate(bad_output),
     ):
         with SessionLocal() as db:
-            run, artifact, execution, downgraded = await run_boss_match_decision(
+            run, artifact, execution, downgraded, _draft = await run_boss_match_decision(
                 db,
                 user,
                 job_id=ids["job_id"],
@@ -479,7 +479,7 @@ async def test_pii_opening_message_downgraded(client) -> None:
         _patched_communicate(bad_output),
     ):
         with SessionLocal() as db:
-            run, artifact, execution, downgraded = await run_boss_match_decision(
+            run, artifact, execution, downgraded, _draft = await run_boss_match_decision(
                 db,
                 user,
                 job_id=ids["job_id"],
@@ -503,7 +503,7 @@ async def test_rerun_creates_new_artifact(client) -> None:
     user = _get_user(ids["user_id"])
 
     with SessionLocal() as db:
-        run1, artifact1, _, _ = await run_boss_match_decision(
+        run1, artifact1, _, _, _ = await run_boss_match_decision(
             db,
             user,
             job_id=ids["job_id"],
@@ -511,7 +511,7 @@ async def test_rerun_creates_new_artifact(client) -> None:
             gateway=FakeModelGateway(),
         )
     with SessionLocal() as db:
-        run2, artifact2, _, _ = await run_boss_match_decision(
+        run2, artifact2, _, _, _ = await run_boss_match_decision(
             db,
             user,
             job_id=ids["job_id"],

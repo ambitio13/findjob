@@ -912,7 +912,7 @@ export interface InspectJobOut {
 /** Allowed match-decision values (mirrors ``MatchDecision``). */
 export type MatchDecision = "communicate" | "skip" | "needs_review";
 
-/** Response for ``POST /boss/recommended-jobs/{job_id}/match``. */
+/** Response for `POST /boss/recommended-jobs/{job_id}/match`. */
 export interface MatchDecisionOut {
   decision: MatchDecision;
   score: number;
@@ -920,13 +920,33 @@ export interface MatchDecisionOut {
   risks: string[];
   missing_requirements: string[];
   opening_message: string | null;
+  /**
+   * The **pre-gate** model opening message, returned only when the safety gate
+   * downgraded the decision and the model produced a message. Lets the
+   * human-review UI prefill the draft the user edits. Response-only — never
+   * persisted. `null` when no downgrade happened or the model produced no
+   * message. (mirrors `MatchDecisionOut.draft_opening_message`)
+   */
+  draft_opening_message: string | null;
   job_id: string;
   agent_run_id: string | null;
   artifact_id: string | null;
   message: string | null;
 }
 
-/** Response for ``POST /boss/recommended-jobs/{job_id}/communicate/prepare``. */
+/**
+ * Human-review override payload for the prepare endpoint (mirrors
+ * `HumanReviewOverride`). `acknowledged` must be the literal `true` — the
+ * frontend checkbox maps to it. `draft_source` records whether the message is
+ * the model's pre-gate draft (unchanged) or human-written/edited.
+ */
+export interface HumanReviewOverride {
+  opening_message: string;
+  acknowledged: true;
+  draft_source?: "model_draft" | "human_written";
+}
+
+/** Response for `POST /boss/recommended-jobs/{job_id}/communicate/prepare`. */
 export interface CommunicatePrepareOut {
   action: ApplicationActionOut;
   message: string;
@@ -935,6 +955,147 @@ export interface CommunicatePrepareOut {
 /** Response for ``POST /boss/recommended-jobs/{job_id}/communicate/{action_id}/execute``. */
 export interface CommunicateExecuteOut {
   action: ApplicationActionOut;
+  message: string;
+}
+
+// --- BOSS recommended-job batch loop ---
+//
+// These types mirror the backend Pydantic schemas in
+// ``backend/app/schemas/boss_batch_loop.py``. They back the batch mode panel
+// which serially processes the recommended-jobs list (inspect → match →
+// prepare), stopping at approval_required or needs_review.
+
+/** Batch run lifecycle status (mirrors ``BatchRunStatus``). */
+export type BatchRunStatus =
+  | "running"
+  | "paused"
+  | "completed"
+  | "hard_stopped"
+  | "failed";
+
+/** Per-item processing status (mirrors ``BatchItemStatus``). */
+export type BatchItemStatus =
+  | "pending"
+  | "inspecting"
+  | "prepared"
+  | "needs_review"
+  | "skipped"
+  | "failed"
+  | "stopped";
+
+/** Body of ``POST /boss/recommended-jobs/batch-loop``. */
+export interface BatchLoopRequest {
+  resume_version_id: string;
+  job_ids: string[];
+  limit?: number;
+  mode?: "prepare_only" | "auto_execute";
+}
+
+/** One item in a batch run (mirrors ``BatchLoopItemOut``). */
+export interface BatchLoopItemOut {
+  job_id: string;
+  status: BatchItemStatus;
+  decision: MatchDecision | null;
+  score: number | null;
+  match_artifact_id: string | null;
+  action_id: string | null;
+  application_id: string | null;
+  error: string | null;
+}
+
+/** Full batch run status (mirrors ``BatchLoopStatusOut``). */
+export interface BatchLoopStatusOut {
+  run_id: string;
+  status: BatchRunStatus;
+  mode: "prepare_only" | "auto_execute";
+  resume_version_id: string;
+  total: number;
+  processed: number;
+  consecutive_failures: number;
+  hard_stop_threshold: number;
+  items: BatchLoopItemOut[];
+  message: string | null;
+}
+
+/** Response for ``POST /boss/recommended-jobs/batch-loop/{run_id}/pause``. */
+export interface BatchLoopPauseOut {
+  run_id: string;
+  status: BatchRunStatus;
+  message: string;
+}
+
+// --- BOSS recommended-job discovery pipeline ---
+//
+// These types mirror the backend Pydantic schemas in
+// ``backend/app/schemas/boss_recommended_discovery.py``. They back the
+// RecommendedDiscoveryPanel which orchestrates the zero-navigation serial
+// discovery pipeline (scan → open → read → upsert → match → prepare) on the
+// BOSS recommended list page (/web/geek/jobs).
+
+/** Discovery run lifecycle status (mirrors ``DiscoveryRunStatus``). */
+export type DiscoveryRunStatus =
+  | "running"
+  | "paused"
+  | "completed"
+  | "hard_stopped"
+  | "failed";
+
+/** Per-item processing status (mirrors ``DiscoveryItemStatus``). */
+export type DiscoveryItemStatus =
+  | "pending"
+  | "opening"
+  | "reading"
+  | "persisted"
+  | "matching"
+  | "prepared"
+  | "needs_review"
+  | "skipped"
+  | "failed"
+  | "stopped";
+
+/** Body of ``POST /boss/recommended-jobs/discovery``. */
+export interface DiscoveryRequest {
+  resume_version_id: string;
+  limit?: number;
+  mode?: "prepare_only" | "auto_execute";
+}
+
+/** One item in a discovery run (mirrors ``DiscoveryItemOut``). */
+export interface DiscoveryItemOut {
+  job_key: string;
+  rank: number;
+  status: DiscoveryItemStatus;
+  title: string | null;
+  company: string | null;
+  job_id: string | null;
+  application_id: string | null;
+  decision: MatchDecision | null;
+  score: number | null;
+  match_artifact_id: string | null;
+  action_id: string | null;
+  failure_code: string | null;
+  skip_reason: string | null;
+  message: string | null;
+}
+
+/** Full discovery run status (mirrors ``DiscoveryStatusOut``). */
+export interface DiscoveryStatusOut {
+  run_id: string;
+  status: DiscoveryRunStatus;
+  mode: "prepare_only" | "auto_execute";
+  resume_version_id: string;
+  total: number;
+  processed: number;
+  consecutive_failures: number;
+  hard_stop_threshold: number;
+  items: DiscoveryItemOut[];
+  message: string | null;
+}
+
+/** Response for ``POST /boss/recommended-jobs/discovery/{run_id}/pause``. */
+export interface DiscoveryPauseOut {
+  run_id: string;
+  status: DiscoveryRunStatus;
   message: string;
 }
 

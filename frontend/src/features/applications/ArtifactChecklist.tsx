@@ -220,6 +220,32 @@ export function ArtifactChecklist({
     [application.id, resumeMissing, refresh, onTerminal, messageApi],
   );
 
+  /**
+   * Enqueue generation for all artifact types in order, collecting their
+   * runIds into ``pollRunIds`` (which re-arms the shared polling hook). The
+   * ``silent`` flag controls the "正在自动生成就绪材料…" toast — auto
+   * generation on mount shows it, while the manual "一键生成全部" button does
+   * not (the Popconfirm already signals intent).
+   */
+  const generateAll = useCallback(
+    async (silent: boolean): Promise<void> => {
+      if (silent) messageApi.info("正在自动生成就绪材料…");
+      const entries: [ReadinessArtifactType, string][] = [];
+      for (const type of ARTIFACT_TYPES) {
+        const runId = await enqueueGeneration(type, { silentOn409: true });
+        if (runId) entries.push([type, runId]);
+      }
+      if (entries.length > 0) {
+        setPollRunIds((prev) => {
+          const next = new Map(prev);
+          for (const [type, runId] of entries) next.set(type, runId);
+          return next;
+        });
+      }
+    },
+    [enqueueGeneration, messageApi],
+  );
+
   const handleGenerate = async (type: ReadinessArtifactType) => {
     setSelectedType(type);
     const runId = await enqueueGeneration(type);
@@ -249,21 +275,7 @@ export function ArtifactChecklist({
     if (pollRunIds.size > 0) return;
 
     autoGenFiredRef.current = true;
-    (async () => {
-      messageApi.info("正在自动生成就绪材料…");
-      const entries: [ReadinessArtifactType, string][] = [];
-      for (const type of ARTIFACT_TYPES) {
-        const runId = await enqueueGeneration(type, { silentOn409: true });
-        if (runId) entries.push([type, runId]);
-      }
-      if (entries.length > 0) {
-        setPollRunIds((prev) => {
-          const next = new Map(prev);
-          for (const [type, runId] of entries) next.set(type, runId);
-          return next;
-        });
-      }
-    })();
+    void generateAll(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoGenerate, resumeMissing, pollRunIds.size]);
 
@@ -302,6 +314,19 @@ export function ArtifactChecklist({
           {resumeMissing ? (
             <Text type="secondary">需先绑定简历版本</Text>
           ) : null}
+          <Popconfirm
+            title="一键生成全部材料？"
+            description="将按顺序串行生成全部五类就绪材料，已有材料会被保留。"
+            onConfirm={() => void generateAll(false)}
+            disabled={resumeMissing || generating}
+          >
+            <Button
+              loading={generating}
+              disabled={resumeMissing || generating}
+            >
+              一键生成全部
+            </Button>
+          </Popconfirm>
         </Space>
 
         {generating ? (

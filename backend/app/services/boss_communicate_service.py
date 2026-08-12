@@ -37,7 +37,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.opening_message_guard import validate_opening_message
@@ -76,6 +75,7 @@ from app.schemas.application_action import (
     ExternalActionStatus,
     ExternalActionType,
 )
+from app.schemas.boss_communicate import HumanReviewOverride
 from app.schemas.boss_match_decision import MatchDecision, MatchDecisionModelOutput
 from app.services.application_state import (
     build_failure_envelope,
@@ -127,6 +127,7 @@ def prepare_communicate_action(
     *,
     resume_version_id: str,
     match_artifact_id: str,
+    human_review: HumanReviewOverride | None = None,
 ) -> ApplicationAction:
     """Draft a ``boss_immediate_communicate`` action from a match-decision artifact.
 
@@ -134,6 +135,17 @@ def prepare_communicate_action(
     ``communicate`` with a non-null ``opening_message``, re-validates the
     opening message, and creates/refreshes a ``boss_immediate_communicate``
     :class:`ApplicationAction` in ``approval_required`` status.
+
+    Human-review override (PRD R1/R6): when ``human_review`` is supplied, the
+    artifact decision must be ``needs_review`` or ``skip`` — the override is the
+    explicit human-takeover path out of a blocked decision (a ``skip`` override
+    means the human accepts responsibility for contacting a model-flagged
+    non-match; the UI warns more strongly). ``communicate`` needs no override
+    and returns 422. The human message is re-validated via
+    :func:`validate_opening_message` (length/PII/tone) and becomes the action's
+    ``outgoing_text``, participating in the payload hash normally;
+    approve→execute is unchanged. An audit key ``human_review`` is appended to
+    ``source_snapshot``.
 
     Raises ``HTTPException`` (404/422) on ownership, missing-data, or
     decision-state failures.
@@ -213,37 +225,86 @@ def prepare_communicate_action(
             detail="match artifact content is invalid",
         ) from exc
 
-    # --- Assert the decision is communicate. ---
-    if match_output.decision is not MatchDecision.communicate:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "match decision must be 'communicate' to prepare a communicate "
-                f"action (got '{match_output.decision.value}')"
-            ),
-        )
+    # --- Resolve the outgoing opening message + decision assertion. ---
+    #
+    # Two paths share everything downstream (preview / payload_hash /
+    # idempotency / approve→execute):
+    #
+    # 1. No override (``human_review is None``) — the existing path. Decision
+    #    must be ``communicate`` with a non-null, re-valid ``opening_message``.
+    # 2. Human-review override (``human_review`` supplied) — ``needs_review``
+    #    and ``skip`` may both be overridden: the gate blocks automation, but
+    #    a human may explicitly take responsibility for either borderline or
+    #    non-match decisions (skip carries a stronger warning in the UI).
+    #    ``communicate`` needs no override → 422. The human message is
+    #    re-validated and becomes the outgoing text.
+    if human_review is None:
+        if match_output.decision is not MatchDecision.communicate:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "match decision must be 'communicate' to prepare a communicate "
+                    f"action (got '{match_output.decision.value}')"
+                ),
+            )
 
-    # --- Assert the opening message is present. ---
-    if match_output.opening_message is None:
-        raise HTTPException(
-            status_code=422,
-            detail="match decision has no opening message",
-        )
+        if match_output.opening_message is None:
+            raise HTTPException(
+                status_code=422,
+                detail="match decision has no opening message",
+            )
 
-    # --- Re-validate the opening message (defensive — safety gate should have
-    # cleared invalid messages, but we double-check before binding the payload). ---
-    _, msg_error = validate_opening_message(match_output.opening_message)
-    if msg_error is not None:
-        _log.warning(
-            "boss_communicate.opening_message_invalid",
-            user_id=current_user.id,
-            artifact_id=match_artifact_id,
-            error=msg_error,
+        cleaned_msg, msg_error = validate_opening_message(match_output.opening_message)
+        if msg_error is not None:
+            _log.warning(
+                "boss_communicate.opening_message_invalid",
+                user_id=current_user.id,
+                artifact_id=match_artifact_id,
+                error=msg_error,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"opening message is no longer valid: {msg_error}",
+            )
+    else:
+        # --- Human-review override path. ---
+        if match_output.decision is MatchDecision.communicate:
+            # communicate already has a usable message; the override is
+            # not applicable — the normal prepare path should be used.
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "human_review_not_applicable",
+                    "message": (
+                        "human_review override is only applicable to 'needs_review' "
+                        "or 'skip' decisions; this decision is 'communicate' — "
+                        "prepare without human_review"
+                    ),
+                },
+            )
+        # decision is needs_review or skip — override is the intended path.
+
+        cleaned_msg, msg_error = validate_opening_message(
+            human_review.opening_message
         )
-        raise HTTPException(
-            status_code=422,
-            detail=f"opening message is no longer valid: {msg_error}",
-        )
+        if cleaned_msg is None:
+            _log.warning(
+                "boss_communicate.human_review_message_invalid",
+                user_id=current_user.id,
+                artifact_id=match_artifact_id,
+                error=msg_error,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "human_review_message_invalid",
+                    "message": f"human-reviewed opening message is invalid: {msg_error}",
+                },
+            )
+
+    # At this point ``cleaned_msg`` is the validated outgoing message for both
+    # paths. Bind it once so the rest of the flow is path-agnostic.
+    outgoing_text = cleaned_msg
 
     # --- Find or create the application record. ---
     record = application_repo.find_duplicate(
@@ -279,7 +340,7 @@ def prepare_communicate_action(
         target_platform="boss",
         target_resource=job.id,
         selected_artifact_ids=[match_artifact_id],
-        outgoing_text=match_output.opening_message,
+        outgoing_text=outgoing_text,
         resume_file_reference=resume_version_id,
     )
     payload_hash = compute_payload_hash(preview)
@@ -314,6 +375,19 @@ def prepare_communicate_action(
     ).model_dump()
     source_snapshot_dict["job_url_hash"] = job.external_id
     source_snapshot_dict["decision_trace"] = decision_trace
+
+    # --- Human-review audit key (PRD R1). ---
+    # Appended as a top-level key on source_snapshot. Staleness detection only
+    # compares the ``source_hash`` value inside the snapshot, so this extra key
+    # does not affect staleness checks (AC1). Records who acknowledged, when,
+    # the actor, and whether the message came from the model draft or human.
+    if human_review is not None:
+        source_snapshot_dict["human_review"] = {
+            "acknowledged": True,
+            "acknowledged_at": datetime.now(UTC).isoformat(),
+            "actor_user_id": current_user.id,
+            "draft_source": human_review.draft_source,
+        }
 
     # --- Reuse an existing non-terminal boss_immediate_communicate action, or
     # create a new one (mirrors _persist_filled_preview). ---
@@ -383,22 +457,11 @@ def _find_active_communicate_action(
     in place instead of creating duplicates (mirrors
     ``_find_active_platform_submit_action``).
     """
-    return (
-        db.execute(
-            select(ApplicationAction).where(
-                (ApplicationAction.application_id == application_id)
-                & (ApplicationAction.user_id == user_id)
-                & (
-                    ApplicationAction.action_type
-                    == ExternalActionType.boss_immediate_communicate.value
-                )
-                & (ApplicationAction.external_result_status.is_(None))
-            )
-            .order_by(ApplicationAction.created_at.desc())
-            .limit(1)
-        )
-        .scalars()
-        .first()
+    return application_action_repo.find_reusable_communicate_action(
+        db,
+        application_id=application_id,
+        user_id=user_id,
+        include_terminal=False,
     )
 
 

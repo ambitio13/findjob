@@ -38,7 +38,7 @@ score rules:
 - Consider: tech-stack overlap, city match, salary fit, experience level,
   deal-breaker absence, and requirement coverage.
 
-opening_message rules (only when decision is "communicate"):
+opening_message rules (when decision is "communicate" or "needs_review"):
 - Must be 10–500 characters, written in Chinese.
 - Must be a concise, professional self-introduction expressing interest in the
   specific role, referencing a relevant skill or experience from the resume.
@@ -46,7 +46,10 @@ opening_message rules (only when decision is "communicate"):
   addresses, or any other personal contact information.
 - Must NOT contain exaggerated claims, false qualifications, or content not
   supported by the resume.
-- Set opening_message to null when decision is "skip" or "needs_review".
+- When decision is "needs_review", opening_message is a tentative draft for a
+  human reviewer to edit or replace — it is never sent automatically. Apply
+  the same quality rules as for "communicate".
+- Set opening_message to null only when decision is "skip".
 
 reasons: list of concise strings explaining why the decision was made, each
 tied to a concrete match or mismatch factor.

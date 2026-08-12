@@ -37,6 +37,13 @@ Each job detail should show:
 ## Interaction Rules
 
 - Keep analysis, generated artifacts, and external execution visually separate.
+  For long detail pages (e.g. application detail), split the workflows into
+  Tabs so a manual chain and a separate pilot/auto flow do not pile into one
+  column. Keep a compact public header (metadata + readiness summary + failure
+  panel) visible on every Tab — failures must never be hidden inside a Tab.
+- Tab switching must not destroy already-mounted panes (AntD
+  `destroyInactiveTabPane={false}`): agent-run polling and in-flight generation
+  must survive a Tab switch.
 - Users must be able to inspect generated messages and resume rewrite snippets
   before approval.
 - Preserve record IDs in routes or query state so refresh and sharing are stable.

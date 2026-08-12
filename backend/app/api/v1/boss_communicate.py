@@ -68,6 +68,7 @@ async def prepare_communicate(
         job_id,
         resume_version_id=payload.resume_version_id,
         match_artifact_id=payload.match_artifact_id,
+        human_review=payload.human_review,
     )
     return CommunicatePrepareOut(
         action=ApplicationActionOut.model_validate(action),
