@@ -1040,3 +1040,36 @@ Implemented and reviewed the P0-P6 job-search agent evolution plan, accepted enc
 ### Next Steps
 
 - None - task complete
+
+
+## Session 25: BOSS recommended discovery pipeline
+
+**Date**: 2026-08-13
+**Task**: BOSS recommended discovery pipeline
+**Branch**: `wanzhen`
+
+### Summary
+
+Implemented and validated the zero-navigation BOSS recommended-list discovery pipeline, including userscript scan/open/read ops, backend workflow, frontend panel, tests, and task archive.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b82c67c` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
