@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "验收时核对:门逻辑零改动、发送三层契约(prepare→approve→execute)未被绕过"}
+{"file": ".trellis/spec/frontend/components.md", "reason": "验收时核对:semi-auto 不携带 human_review、草稿仅进人审 textarea"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "pytest -q + ruff check 全绿与 golden set 不回归的检查口径"}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "选择器必须对应诊断输出、失配回落 null 的质量核对"}

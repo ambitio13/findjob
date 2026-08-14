@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "安全门/审批边界不变量与 Forbidden Patterns,prompt 放开草稿前必须核对不违反"}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Semi-Auto Loop Safety:自动路径止于副作用前、needs_review 即停,确认草稿不进入自动路径"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "后端测试与 golden set 回归要求,Phase C 验证依据"}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "改动最小化与可回滚约束,userscript/prompt 双处修改的落地标准"}
