@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "审查覆写实现未削弱审批边界/安全门（golden 不变、skip 禁止、审计键必备）"}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "审查新增字段与 422 矩阵符合 API 契约规约"}
+{"file": ".trellis/spec/frontend/components.md", "reason": "审查 semi-auto 不出现人审入口、停止规则保持"}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "审查 client/types 扩展与错误 UX"}
+{"file": ".trellis/spec/backend/quality.md", "reason": "质量门验证标准"}

@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "审批边界与匹配安全门不变量：覆写路径不得削弱（skip 禁止、消息复验、approve 仍必需）"}
+{"file": ".trellis/spec/backend/api-contracts.md", "reason": "prepare/match 端点契约扩展（可选字段、422 语义）需遵守 API 契约规约"}
+{"file": ".trellis/spec/backend/quality.md", "reason": "后端质量门与测试要求"}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "client.ts 扩展与错误 UX 规约"}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Semi-Auto Loop Safety：自动路径不得携带 human_review"}
