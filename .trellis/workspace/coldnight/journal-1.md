@@ -1073,3 +1073,36 @@ Implemented and validated the zero-navigation BOSS recommended-list discovery pi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 26: 归档已完成任务并盘点未完成项
+
+**Date**: 2026-08-14
+**Task**: 归档已完成任务并盘点未完成项
+**Branch**: `wanzhen`
+
+### Summary
+
+归档 4 个已完成任务：boss-recommended-list-batch-loop、jd-capture-fields-and-review-draft、apply-page-ux-and-gate-alignment、human-review-override（AC7 经用户确认补勾）。盘点剩余未完成项：dry-run 门槛（1/10）、showcase-demo-deployment（planning）、lightweight-medical-dosage-guard（PRD TBD）、父任务 hardening 的 CDP fallback 遗留项。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b82c67c` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
