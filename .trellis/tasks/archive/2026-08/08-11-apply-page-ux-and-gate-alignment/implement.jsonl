@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/components.md", "reason": "组件边界与 Semi-Auto Loop Safety 契约：半自动 loop 停止规则、不复制后端决策规则"}
+{"file": ".trellis/spec/frontend/table-detail-views.md", "reason": "分析/生成材料/外部执行视觉分离的交互规则，Tabs 拆分的依据"}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "集中式 client、agent-run 轮询约定、错误 UX 与超时规约"}
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "审批边界与匹配安全门不变量：本任务只改前端对齐，不得削弱"}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "前端质量门（lint/type-check/build）验收要求"}

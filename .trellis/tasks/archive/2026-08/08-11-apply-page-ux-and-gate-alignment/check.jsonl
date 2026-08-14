@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/components.md", "reason": "审查 PilotPanel 改动是否保持 Semi-Auto Loop Safety 与组件边界"}
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "审查确认改动未削弱审批边界/安全门不变量（前端未重算阈值、未绕过审批）"}
+{"file": ".trellis/spec/frontend/table-detail-views.md", "reason": "审查 Tabs 分区是否满足分析/材料/执行视觉分离"}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "审查轮询复用、错误消息与 copy 文案助手是否遵守"}
+{"file": ".trellis/spec/frontend/quality.md", "reason": "质量门验证标准"}
