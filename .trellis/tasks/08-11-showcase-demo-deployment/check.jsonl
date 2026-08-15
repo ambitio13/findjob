@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/authentication.md", "reason": "验收鉴权实现是否符合契约（prod 401、邀请码、token 形态）"}
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "对抗性验收安全不变量：审批边界/安全门/隐私不得被本任务削弱"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "后端改动质量验收依据"}
+{"file": ".trellis/spec/frontend/authentication.md", "reason": "前端 token 存储与 401 处理验收依据"}
+{"file": ".trellis/spec/shared/code-quality.md", "reason": "跨层代码质量验收依据"}

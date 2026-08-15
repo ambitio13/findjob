@@ -1,0 +1,20 @@
+张三 | 高级前端工程师
+联系方式：zhangsan@example.com | 138-0000-0000
+
+教育背景
+2015-2019 某大学 计算机科学与技术 本科
+
+工作经历
+2021-至今 ABC科技 高级前端工程师
+- 负责公司核心SaaS产品前端架构，使用React+TypeScript+Vite
+- 主导前端微服务化改造，首屏加载性能提升40%
+- 建设前端组件库与工程化体系，覆盖30+业务页面
+
+2019-2021 XYZ互联网 前端工程师
+- 使用Vue.js开发营销活动平台，服务千万级日活
+- 参与Node.js BFF层建设，优化接口聚合策略
+
+技能
+- 前端：React, Vue, TypeScript, Webpack, Vite
+- 后端：Node.js, Express, 基础Java
+- 工具：Git, Docker, CI/CD

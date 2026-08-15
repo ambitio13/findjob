@@ -1,11 +1,13 @@
 import React, { Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { ConfigProvider } from "antd";
+import { ConfigProvider, App as AntdApp } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { RouteLoading } from "@/components/common/RouteLoading";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
+import { RequireAuth } from "@/features/auth/RequireAuth";
+import { LoginPage } from "@/pages/login/LoginPage";
 
 // Route-level code splitting: the heavy detail/pilot pages are lazy-loaded so
 // they don't bloat the initial entry chunk. The shell (AppLayout + antd
@@ -40,61 +42,70 @@ const ProfilePage = React.lazy(() =>
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ConfigProvider locale={zhCN}>
-      <BrowserRouter>
-        <Routes>
-          <Route element={<AppLayout />}>
-            <Route path="/" element={<DashboardPage />} />
+      <AntdApp>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
             <Route
-              path="/jobs"
               element={
-                <Suspense fallback={<RouteLoading />}>
-                  <JobsPage />
-                </Suspense>
+                <RequireAuth>
+                  <AppLayout />
+                </RequireAuth>
               }
-            />
-            <Route
-              path="/jobs/:id"
-              element={
-                <Suspense fallback={<RouteLoading />}>
-                  <JobDetailPage />
-                </Suspense>
-              }
-            />
-            <Route
-              path="/resumes"
-              element={
-                <Suspense fallback={<RouteLoading />}>
-                  <ResumesPage />
-                </Suspense>
-              }
-            />
-            <Route
-              path="/resumes/:id"
-              element={
-                <Suspense fallback={<RouteLoading />}>
-                  <ResumeDetailPage />
-                </Suspense>
-              }
-            />
-            <Route
-              path="/applications"
-              element={
-                <Suspense fallback={<RouteLoading />}>
-                  <ApplicationsPage />
-                </Suspense>
-              }
-            />
-            <Route
-              path="/profile"
-              element={
-                <Suspense fallback={<RouteLoading />}>
-                  <ProfilePage />
-                </Suspense>
-              }
-            />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+            >
+              <Route path="/" element={<DashboardPage />} />
+              <Route
+                path="/jobs"
+                element={
+                  <Suspense fallback={<RouteLoading />}>
+                    <JobsPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/jobs/:id"
+                element={
+                  <Suspense fallback={<RouteLoading />}>
+                    <JobDetailPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/resumes"
+                element={
+                  <Suspense fallback={<RouteLoading />}>
+                    <ResumesPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/resumes/:id"
+                element={
+                  <Suspense fallback={<RouteLoading />}>
+                    <ResumeDetailPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/applications"
+                element={
+                  <Suspense fallback={<RouteLoading />}>
+                    <ApplicationsPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/profile"
+                element={
+                  <Suspense fallback={<RouteLoading />}>
+                    <ProfilePage />
+                  </Suspense>
+                }
+              />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </AntdApp>
     </ConfigProvider>
   </React.StrictMode>,
 );

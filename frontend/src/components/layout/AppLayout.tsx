@@ -1,6 +1,10 @@
-import { Link, Outlet, useLocation } from "react-router-dom";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { ProLayout } from "@ant-design/pro-components";
-import { DesktopOutlined, FileTextOutlined, SolutionOutlined, UserOutlined, AppstoreOutlined } from "@ant-design/icons";
+import { DesktopOutlined, FileTextOutlined, SolutionOutlined, UserOutlined, AppstoreOutlined, LogoutOutlined } from "@ant-design/icons";
+import { Button, Space, Typography } from "antd";
+import { useAuth } from "@/features/auth/useAuth";
+
+const { Text } = Typography;
 
 const menuRoutes = {
   path: "/",
@@ -15,6 +19,14 @@ const menuRoutes = {
 
 export function AppLayout() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { displayName, username, logout } = useAuth();
+
+  const handleLogout = () => {
+    logout();
+    navigate("/login", { replace: true });
+  };
+
   return (
     <ProLayout
       title="求职智能助手"
@@ -26,6 +38,18 @@ export function AppLayout() {
         item.path ? <Link to={item.path}>{dom}</Link> : dom
       }
       fixSiderbar
+      actionsRender={() => [
+        <Space key="user" align="center">
+          <Text type="secondary">{displayName ?? username}</Text>
+          <Button
+            type="text"
+            icon={<LogoutOutlined />}
+            onClick={handleLogout}
+          >
+            退出
+          </Button>
+        </Space>,
+      ]}
     >
       <Outlet />
     </ProLayout>

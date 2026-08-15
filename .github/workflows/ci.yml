@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  backend:
+    name: Backend (pytest + ruff)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: job_search_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d job_search_agent_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      APP_ENV: test
+      MODEL_PROVIDER: fake
+      DATABASE_URL: postgresql+psycopg://app:app@localhost:5432/job_search_agent_test
+      REDIS_URL: redis://localhost:6379/1
+      QUEUE_NAMESPACE: ci-test
+      RATE_LIMIT_ENABLED: "false"
+      AUTH_SECRET_KEY: ci-test-secret-not-for-production
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install "psycopg[binary]>=3.2"
+          pip install -e ".[dev]"
+
+      - name: Ruff check
+        run: ruff check app/
+
+      - name: Pytest
+        run: pytest app/tests -q
+
+  frontend:
+    name: Frontend (lint + type-check + build)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+
+      - name: Build
+        run: pnpm build
+
+  compose-config:
+    name: Compose config validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate dev compose
+        run: docker compose config -q
+
+      - name: Validate prod compose
+        run: |
+          # Fill placeholders with dummy values for config validation.
+          cp .env.prod.example .env.prod.tmp
+          sed -i 's/CHANGE_ME_openssl_rand_hex_24/fakepassword1234567890ab/g' .env.prod.tmp
+          sed -i 's/CHANGE_ME_openssl_rand_hex_32/fakesecretkey1234567890abcdef1234567890/g' .env.prod.tmp
+          sed -i 's/CHANGE_ME_openssl_rand_hex_8/fakeinv8/g' .env.prod.tmp
+          sed -i 's/CHANGE_ME_fernet_generate_key/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=/g' .env.prod.tmp
+          sed -i 's/CHANGE_ME_real_provider_api_key/sk-fakekey123456/g' .env.prod.tmp
+          docker compose --env-file .env.prod.tmp -f docker-compose.prod.yml config -q

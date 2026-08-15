@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # unavailable so an outage cannot take down reads.
     rate_limit_enabled: bool = True
     rate_limit_global_per_minute: int = 300
-    rate_limit_model_per_minute: int = 30
+    rate_limit_model_per_minute: int = 10
     rate_limit_auth_per_minute: int = 10
 
     # --- Resume upload (MVP local storage) ---

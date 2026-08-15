@@ -55,7 +55,12 @@ import type {
   FollowUpScanOut,
   MatchThresholdOut,
   SuggestionStatus,
+  AuthLoginRequest,
+  AuthRegisterRequest,
+  AuthTokenResponse,
+  AuthUserOut,
 } from "@/types";
+import { getToken, clearAuth } from "@/features/auth/token";
 
 const baseURL = "/api/v1";
 
@@ -64,6 +69,34 @@ export const apiClient = axios.create({
   timeout: 15000,
   headers: { "Content-Type": "application/json" },
 });
+
+// Request interceptor: inject the bearer token on every authenticated call.
+apiClient.interceptors.request.use((config) => {
+  const token = getToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Response interceptor: on a 401 from a non-/auth/* endpoint, clear auth state
+// and redirect to /login. Auth endpoints themselves return 401 for bad
+// credentials — we must not loop the redirect there.
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError) => {
+    if (error.response?.status === 401) {
+      const url = error.config?.url ?? "";
+      if (!url.startsWith("/auth/")) {
+        clearAuth();
+        if (window.location.pathname !== "/login") {
+          window.location.href = "/login";
+        }
+      }
+    }
+    return Promise.reject(error);
+  },
+);
 
 export async function getHealth(): Promise<HealthResponse> {
   const { data } = await apiClient.get<HealthResponse>("/health");
@@ -827,6 +860,18 @@ export async function getMatchThresholdCalibration(): Promise<MatchThresholdOut>
   const { data } = await apiClient.get<MatchThresholdOut>(
     "/metrics/match-threshold-calibration",
   );
+  return data;
+}
+
+// --- Auth ---
+
+export async function login(payload: AuthLoginRequest): Promise<AuthTokenResponse> {
+  const { data } = await apiClient.post<AuthTokenResponse>("/auth/login", payload);
+  return data;
+}
+
+export async function register(payload: AuthRegisterRequest): Promise<AuthUserOut> {
+  const { data } = await apiClient.post<AuthUserOut>("/auth/register", payload);
   return data;
 }
 

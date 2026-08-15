@@ -113,7 +113,15 @@ interface Props {
  */
 export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) {
   // --- flow state -------------------------------------------------------
-  const [step, setStep] = useState<PilotStep>("inspect");
+  // Demo mode: when the application already has a job_id (seeded data) we
+  // start at "match" instead of "inspect". Inspect reads JD via the
+  // userscript bridge, which is local-dev only; in the showcase deployment
+  // the bridge is always disconnected and the job already exists with JD
+  // data, so skipping inspect lets the match → prepare → approve → execute
+  // chain proceed.
+  const [step, setStep] = useState<PilotStep>(
+    application.job_id ? "match" : "inspect",
+  );
   const [semiAuto, setSemiAuto] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -174,7 +182,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
 
   // Reset everything when the application record changes (user switched).
   useEffect(() => {
-    setStep("inspect");
+    setStep(application.job_id ? "match" : "inspect");
     setInspectResult(null);
     setMatchResult(null);
     setPrepareResult(null);
@@ -185,7 +193,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
     setHumanReviewOpen(false);
     setError(null);
     setLastAgentRunId(null);
-  }, [application.id]);
+  }, [application.id, application.job_id]);
 
   // --- semi-auto loop driver -------------------------------------------
   //
@@ -444,7 +452,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
   }, [jobId, actionId, applicationId, messageApi, onAfterChange]);
 
   const handleReset = useCallback(() => {
-    setStep("inspect");
+    setStep(application.job_id ? "match" : "inspect");
     setInspectResult(null);
     setMatchResult(null);
     setPrepareResult(null);
@@ -456,7 +464,7 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
     setError(null);
     setLastAgentRunId(null);
     autoFiredRef.current = "";
-  }, []);
+  }, [application.job_id]);
 
   // --- render helpers ---------------------------------------------------
 
@@ -534,8 +542,12 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
           />
         ) : null}
 
-        {/* Step 1: Inspect */}
-        {(step === "inspect" || inspectResult) && (
+        {/* Step 1: Inspect
+            Hidden in demo mode when the job is already seeded (jobId present
+            with no inspect result) — the bridge is not connected in the
+            showcase deployment, so inspect would always fail. */}
+        {(step === "inspect" || inspectResult) &&
+         !(!!jobId && !inspectResult) && (
           <InspectStepCard
             result={inspectResult}
             busy={busy}
@@ -545,8 +557,13 @@ export function RecommendedJobPilotPanel({ application, onAfterChange }: Props) 
           />
         )}
 
-        {/* Step 2: Match */}
-        {(step === "match" || matchResult) && inspectResult?.inspect_status === "ok" && (
+        {/* Step 2: Match
+            In the demo flow (bridge disconnected, seeded job), inspect is
+            skipped — the job already exists with JD data. We show the match
+            card when step is "match" OR matchResult exists, as long as the
+            job is ready (either via inspect success or a pre-seeded job_id). */}
+        {(step === "match" || matchResult) &&
+         (inspectResult?.inspect_status === "ok" || (!inspectResult && !!jobId)) && (
           <MatchStepCard
             result={matchResult}
             openingMessage={openingMessage}

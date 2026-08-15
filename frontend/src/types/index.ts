@@ -1211,3 +1211,29 @@ export interface MatchThresholdOut {
   details: Record<string, unknown> | null;
   calibrated_at: string | null;
 }
+
+// --- Authentication types (mirror backend schemas/auth.py) ---
+
+export interface AuthLoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface AuthRegisterRequest {
+  username: string;
+  password: string;
+  display_name?: string | null;
+  invite_code?: string | null;
+}
+
+export interface AuthTokenResponse {
+  access_token: string;
+  token_type: "bearer";
+  expires_in: number;
+}
+
+export interface AuthUserOut {
+  id: string;
+  username: string;
+  display_name: string;
+}

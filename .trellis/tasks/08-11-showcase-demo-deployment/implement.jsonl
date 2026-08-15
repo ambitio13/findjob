@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/authentication.md", "reason": "鉴权契约与 bridge 通道安全规约，前端接 token 与限流修复必须遵守"}
+{"file": ".trellis/spec/backend/evolution-contracts.md", "reason": "P0–P6 安全不变量（审批边界/安全门/隐私），任何改动不得削弱"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "后端代码质量与禁止模式"}
+{"file": ".trellis/spec/frontend/authentication.md", "reason": "前端鉴权实现规约（token 存储/拦截器/路由守卫）"}
+{"file": ".trellis/spec/frontend/api-integration.md", "reason": "client.ts 拦截器改动需遵守的 API 集成约定"}

@@ -1,0 +1,21 @@
+# Caddyfile template for the showcase demo deployment.
+#
+# Replace SHOWCASE_DOMAIN with your real domain (e.g. demo.example.com).
+# Caddy automatically provisions and renews TLS certificates via Let's Encrypt
+# on first start — no manual certbot step required.
+#
+# The backend trusts X-Forwarded-For only from the frontend container IP
+# (172.28.0.10), so Caddy must set that header (Caddy does this by default via
+# its reverse_proxy directive). Do NOT add client-supplied XFF passthrough.
+
+SHOWCASE_DOMAIN {
+	# API requests → backend (uvicorn, single replica)
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	# Everything else → frontend (nginx static SPA)
+	handle {
+		reverse_proxy frontend:80
+	}
+}

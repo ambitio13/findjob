@@ -1,0 +1,188 @@
+# Production deployment overlay for the showcase demo.
+#
+# Differences from the dev compose file (docker-compose.yml):
+#   - postgres/redis have NO published ports (only reachable within appnet)
+#   - Caddy is the sole public entry point (80/443) with automatic TLS
+#   - backend/worker get resource limits sized for a 2C4G VPS
+#   - all secrets come from the environment (see .env.prod.example); missing
+#     required values cause startup failure (composed required fields + the
+#     app's own prod guards in content_crypto / security / deps)
+#
+# Usage:
+#   cp .env.prod.example .env.prod   # fill in real secrets
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml config -q
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: ${POSTGRES_DB:?required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - appnet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - appnet
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Same proxy-headers trust chain as dev: only the frontend container IP
+    # is trusted to set X-Forwarded-For. NEVER use "*".
+    command: >
+      sh -c "alembic upgrade head &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000
+      --proxy-headers
+      --forwarded-allow-ips=$${FORWARDED_ALLOW_IPS:-172.28.0.10}"
+    environment:
+      APP_ENV: prod
+      DATABASE_URL: ${DATABASE_URL:?required}
+      REDIS_URL: ${REDIS_URL:?required}
+      QUEUE_NAMESPACE: ${QUEUE_NAMESPACE:-job-search-agent}
+      QUEUE_JOB_TIMEOUT: ${QUEUE_JOB_TIMEOUT:-300}
+      QUEUE_MAX_RETRIES: ${QUEUE_MAX_RETRIES:-2}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-auto}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.deepseek.com}
+      MODEL_API_KEY: ${MODEL_API_KEY:?required}
+      MODEL_DEFAULT_MODEL: ${MODEL_DEFAULT_MODEL:-deepseek-chat}
+      MODEL_DAILY_CALL_LIMIT: ${MODEL_DAILY_CALL_LIMIT:-500}
+      MODEL_DAILY_BUDGET_ENABLED: ${MODEL_DAILY_BUDGET_ENABLED:-true}
+      MODEL_BUDGET_FAIL_OPEN: ${MODEL_BUDGET_FAIL_OPEN:-true}
+      RESUME_UPLOAD_DIR: ${RESUME_UPLOAD_DIR:-/data/resumes}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?required}
+      AUTH_TOKEN_TTL_MINUTES: ${AUTH_TOKEN_TTL_MINUTES:-720}
+      AUTH_INVITE_CODE: ${AUTH_INVITE_CODE:?required}
+      AUTH_LOGIN_MAX_FAILURES: ${AUTH_LOGIN_MAX_FAILURES:-5}
+      AUTH_LOCKOUT_MINUTES: ${AUTH_LOCKOUT_MINUTES:-15}
+      CONTENT_ENCRYPTION_KEY: ${CONTENT_ENCRYPTION_KEY:?required}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:?required}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_GLOBAL_PER_MINUTE: ${RATE_LIMIT_GLOBAL_PER_MINUTE:-300}
+      RATE_LIMIT_MODEL_PER_MINUTE: ${RATE_LIMIT_MODEL_PER_MINUTE:-10}
+      RATE_LIMIT_AUTH_PER_MINUTE: ${RATE_LIMIT_AUTH_PER_MINUTE:-10}
+      BOSS_USERSCRIPT_BRIDGE_ENABLED: "0"
+      BOSS_ADAPTER_ENABLED: "false"
+    volumes:
+      - resume_data:/data/resumes
+    networks:
+      - appnet
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: arq app.queue.worker.WorkerSettings
+    environment:
+      APP_ENV: prod
+      DATABASE_URL: ${DATABASE_URL:?required}
+      REDIS_URL: ${REDIS_URL:?required}
+      QUEUE_NAMESPACE: ${QUEUE_NAMESPACE:-job-search-agent}
+      QUEUE_JOB_TIMEOUT: ${QUEUE_JOB_TIMEOUT:-300}
+      QUEUE_MAX_RETRIES: ${QUEUE_MAX_RETRIES:-2}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-auto}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.deepseek.com}
+      MODEL_API_KEY: ${MODEL_API_KEY:?required}
+      MODEL_DEFAULT_MODEL: ${MODEL_DEFAULT_MODEL:-deepseek-chat}
+      MODEL_DAILY_CALL_LIMIT: ${MODEL_DAILY_CALL_LIMIT:-500}
+      MODEL_DAILY_BUDGET_ENABLED: ${MODEL_DAILY_BUDGET_ENABLED:-true}
+      MODEL_BUDGET_FAIL_OPEN: ${MODEL_BUDGET_FAIL_OPEN:-true}
+      RESUME_UPLOAD_DIR: ${RESUME_UPLOAD_DIR:-/data/resumes}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?required}
+      CONTENT_ENCRYPTION_KEY: ${CONTENT_ENCRYPTION_KEY:?required}
+      BOSS_USERSCRIPT_BRIDGE_ENABLED: "0"
+      BOSS_ADAPTER_ENABLED: "false"
+    volumes:
+      - resume_data:/data/resumes
+    networks:
+      - appnet
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1536m
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Build-time injection of the demo password. This is a deliberately
+        # public demo credential (see design.md §2); it is NOT a secret.
+        VITE_DEMO_PASSWORD: ${VITE_DEMO_PASSWORD:?required}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      appnet:
+        ipv4_address: 172.28.0.10
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - appnet
+
+volumes:
+  postgres_data:
+  redis_data:
+  resume_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  appnet:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

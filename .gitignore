@@ -5,6 +5,12 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.prod
+.env.prod.*
+!.env.prod.example
+
+# Editor / tool local config
+.qoder/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
