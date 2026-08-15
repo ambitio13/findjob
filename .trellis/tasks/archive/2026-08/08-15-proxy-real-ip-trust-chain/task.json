@@ -3,7 +3,7 @@
   "name": "proxy-real-ip-trust-chain",
   "title": "反代真实 IP 信任链与限流防伪造",
   "description": "uvicorn proxy-headers 信任 IP 策略 + XFF 伪造防护（A2）",
-  "status": "done",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
