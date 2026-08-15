@@ -3,7 +3,7 @@
   "name": "adversarial-security-remediation",
   "title": "对抗性审查整改：上线阻断级安全修复",
   "description": "2026-08-15 对抗性审查发现的规划外漏洞整改总控任务，子任务按依赖顺序执行",
-  "status": "done",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
