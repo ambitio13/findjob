@@ -3,7 +3,7 @@
   "name": "model-gateway-budget-circuit",
   "title": "模型日预算熔断下沉到 ModelGateway 调用层",
   "description": "修复限流/日预算按 HTTP 路径分类的计费盲区（A1）",
-  "status": "done",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
