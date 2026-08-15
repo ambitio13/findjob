@@ -3,7 +3,7 @@
   "name": "runtime-guardrails",
   "title": "运行时护栏：熔断告警、账号锁定、容器资源限制",
   "description": "预算熔断触发告警与 health 可见、账号级登录锁定、compose 资源限制与健康检查（D2+D4+E2）",
-  "status": "done",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
