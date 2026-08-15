@@ -22,6 +22,7 @@ from app.api.v1 import (
     users,
     userscript_bridge,
 )
+from app.core.config import get_settings
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -33,7 +34,9 @@ api_router.include_router(applications.router)
 api_router.include_router(approval_actions.router)
 api_router.include_router(agent_runs.router)
 api_router.include_router(metrics.router)
-api_router.include_router(userscript_bridge.router)
+# The userscript bridge is a local-dev convenience endpoint; never expose it in prod.
+if get_settings().app_env != "prod":
+    api_router.include_router(userscript_bridge.router)
 api_router.include_router(boss_recommended_jobs.router)
 # Register the batch-loop and discovery routers BEFORE boss_match/
 # boss_communicate so the static ``/batch-loop`` and ``/discovery`` segments

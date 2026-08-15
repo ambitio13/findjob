@@ -28,6 +28,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.repositories import agent_run_repo
 from app.db.session import SessionLocal
+from app.models_gateway.budget import BUDGET_EXCEEDED_ERROR, ModelBudgetExceeded
 from app.queue.payloads import (
     JdPasteParsePayload,
     PlatformGuidedSubmitPreparePayload,
@@ -207,6 +208,9 @@ async def jd_paste_parsing(
                 status=run.status,
             )
             return run.id
+    except ModelBudgetExceeded:
+        fail_run(payload.agent_run_id, error=BUDGET_EXCEEDED_ERROR)
+        return "failed"
     except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
         _log.warning(
             "queue.jd_paste_parsing_error",
@@ -295,6 +299,9 @@ async def resume_fact_extraction(
             queue_namespace=_queue_namespace(),
         )
         return payload.agent_run_id
+    except ModelBudgetExceeded:
+        fail_run(payload.agent_run_id, error=BUDGET_EXCEEDED_ERROR)
+        return "failed"
     except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
         _log.warning(
             "queue.resume_fact_extraction_error",
@@ -386,6 +393,9 @@ async def resume_aware_jd_analysis(
             job_id=payload.job_id,
         )
         return payload.agent_run_id
+    except ModelBudgetExceeded:
+        fail_run(payload.agent_run_id, error=BUDGET_EXCEEDED_ERROR)
+        return "failed"
     except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
         _log.warning(
             "queue.resume_aware_jd_analysis_error",
@@ -484,6 +494,9 @@ async def readiness_generation(
             application_id=payload.application_id,
         )
         return payload.agent_run_id
+    except ModelBudgetExceeded:
+        fail_run(payload.agent_run_id, error=BUDGET_EXCEEDED_ERROR)
+        return "failed"
     except Exception as exc:  # noqa: BLE001 — sanitize and fail the run
         _log.warning(
             "queue.readiness_generation_error",

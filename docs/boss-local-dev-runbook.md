@@ -27,6 +27,17 @@ cd frontend && pnpm lint && pnpm type-check && pnpm build
 > 没有模型 Key 时本地测试照常通过（Fake 提供者，不发起网络请求）。BOSS 真实页面
 > 交互需要先在浏览器安装 `docs/boss-userscript.user.js` 并打开 BOSS 标签页。
 
+> **启用 userscript bridge（本地开发）**：compose 默认
+> `BOSS_USERSCRIPT_BRIDGE_ENABLED=0`（出于安全考虑，新部署默认不暴露 bridge）。
+> 需要本地 bridge 链路时，在启动前导出该变量：
+>
+> ```bash
+> export BOSS_USERSCRIPT_BRIDGE_ENABLED=1
+> docker compose up -d --build
+> ```
+>
+> 注意：即便启用，`APP_ENV=prod` 时 bridge 路由也不会注册（见 08-15 暴露面收敛）。
+
 ## 2. 故障地图（症状 → 原因 → 证据 → 修复）
 
 ### 2.1 backend / worker / Redis / Postgres 未就绪

@@ -17,6 +17,10 @@ class HealthResponse(BaseModel):
     version: str = "0.1.0"
     db: str | None = None
     redis: str | None = None
+    #: True when the daily model call budget has been tripped today (UTC).
+    #: Monitoring scripts must check this field, not ``status`` — a tripped
+    #: budget does not change ``status`` (still ``"ok"``).
+    model_budget_tripped: bool = False
 
 
 class PaginatedMeta(BaseModel):

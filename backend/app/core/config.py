@@ -35,6 +35,24 @@ class Settings(BaseSettings):
     # Empty string disables the gate.
     auth_invite_code: str = ""
 
+    # --- Account login lockout (08-15-runtime-guardrails) ---
+    # Username-dimension Redis counter: after ``auth_login_max_failures``
+    # consecutive failures the account is locked for ``auth_lockout_minutes``.
+    # Redis failure is fail-open (login proceeds) to match the rate-limiter
+    # strategy. Locked accounts return the same ``invalid_credentials`` 401
+    # as a wrong password so the lock cannot be enumerated.
+    auth_login_max_failures: int = 5
+    auth_lockout_minutes: int = 15
+
+    # --- Content-at-rest encryption (08-15-content-key-decouple) ---
+    # Dedicated Fernet key for encrypting user-supplied long text (e.g. jd_raw).
+    # Must be a valid Fernet key (32-byte urlsafe base64). When empty in prod
+    # the app fails fast at first encrypt/decrypt; in non-prod it falls back
+    # to the legacy AUTH_SECRET_KEY-derived key so local/test works unchanged.
+    # Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    content_encryption_key: str = ""
+
     # --- Current user (legacy dev fallback; no auth) ---
     # When no ``X-User-Id`` header is present AND no bearer token is provided,
     # requests in non-prod environments are attributed to this fixed
@@ -77,6 +95,18 @@ class Settings(BaseSettings):
     model_base_url: str = "https://api.deepseek.com"
     model_api_key: str = ""
     model_default_model: str = "deepseek-chat"
+    # Daily call budget for the model gateway (08-15-model-gateway-budget-circuit).
+    # Every real LLM call (chat + structured) increments a Redis daily counter;
+    # when the limit is exceeded a ModelBudgetExceeded exception is raised and
+    # the run fails with a sanitized error. This is the cost defense line —
+    # RateLimitMiddleware is only per-minute request-experience protection.
+    model_daily_call_limit: int = 500
+    model_daily_budget_enabled: bool = True
+    # When Redis is unavailable, fail-open (allow the call) vs fail-closed
+    # (reject). Default fail-open mirrors RateLimitMiddleware: a Redis outage
+    # must not take down normal operation. The provider-side API key quota is
+    # the mandatory second line of defense.
+    model_budget_fail_open: bool = True
 
     # --- BOSS platform adapter (env-gated pilot) ---
     # The real Playwright-backed BOSS adapter is enabled only when this flag is

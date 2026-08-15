@@ -1,0 +1,32 @@
+{
+  "id": "adversarial-security-remediation",
+  "name": "adversarial-security-remediation",
+  "title": "对抗性审查整改：上线阻断级安全修复",
+  "description": "2026-08-15 对抗性审查发现的规划外漏洞整改总控任务，子任务按依赖顺序执行",
+  "status": "done",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "coldnight",
+  "assignee": "coldnight",
+  "createdAt": "2026-08-15",
+  "completedAt": "2026-08-15",
+  "branch": null,
+  "base_branch": "feat/showcase-demo-deployment",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-15-model-gateway-budget-circuit",
+    "08-15-proxy-real-ip-trust-chain",
+    "08-15-public-exposure-surface",
+    "08-15-content-key-decouple",
+    "08-15-runtime-guardrails"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

@@ -7,6 +7,8 @@ export interface HealthResponse {
   version: string;
   db: string | null;
   redis: string | null;
+  /** True when the daily model call budget has been tripped today (UTC). */
+  model_budget_tripped?: boolean;
 }
 
 export interface PaginatedMeta {

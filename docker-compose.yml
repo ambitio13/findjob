@@ -10,6 +10,8 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - appnet
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-job_search_agent}"]
       interval: 5s
@@ -23,6 +25,8 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - appnet
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -37,6 +41,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # uvicorn --proxy-headers trusts X-Forwarded-For only from IPs listed in
+    # --forwarded-allow-ips. That list must be the frontend container's IP and
+    # NEVER "*": a wildcard lets any client forge an arbitrary XFF header and
+    # bypass all per-IP rate limiting. Default 127.0.0.1 keeps direct local
+    # runs (no reverse proxy) behaving exactly as before.
+    command: >
+      sh -c "alembic upgrade head &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000
+      --proxy-headers
+      --forwarded-allow-ips=$${FORWARDED_ALLOW_IPS:-127.0.0.1}"
     environment:
       APP_ENV: ${APP_ENV:-local}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://app:app@postgres:5432/job_search_agent}
@@ -49,11 +63,30 @@ services:
       MODEL_API_KEY: ${MODEL_API_KEY:-}
       MODEL_DEFAULT_MODEL: ${MODEL_DEFAULT_MODEL:-deepseek-chat}
       RESUME_UPLOAD_DIR: ${RESUME_UPLOAD_DIR:-/data/resumes}
-      BOSS_USERSCRIPT_BRIDGE_ENABLED: ${BOSS_USERSCRIPT_BRIDGE_ENABLED:-1}
+      BOSS_USERSCRIPT_BRIDGE_ENABLED: ${BOSS_USERSCRIPT_BRIDGE_ENABLED:-0}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "8000:8000"
     volumes:
       - resume_data:/data/resumes
+    networks:
+      - appnet
+    # Resource limits prevent a single runaway task or concurrent LLM call
+    # from OOM-killing the 2C4G VPS. Backend gets 1g; exceeded → OOM-kill →
+    # restart (better than taking down the whole machine).
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    # Health check uses the health endpoint so compose can detect a wedged
+    # backend. python is always available in the slim image (no curl/wget).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   worker:
     build: ./backend
@@ -78,16 +111,39 @@ services:
       RESUME_UPLOAD_DIR: ${RESUME_UPLOAD_DIR:-/data/resumes}
     volumes:
       - resume_data:/data/resumes
+    networks:
+      - appnet
+    # Worker carries parsing + LLM work, so it gets a higher memory ceiling.
+    # No healthcheck: arq has no HTTP surface and the slim image lacks pgrep.
+    # The `restart: unless-stopped` policy recovers from OOM/crash; verify
+    # liveness with `docker compose ps` (see runbook).
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1536m
 
   frontend:
     build: ./frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "5173:80"
+    # Fixed IP so uvicorn --forwarded-allow-ips can trust exactly this
+    # container as the sole reverse proxy. See backend command comment.
+    networks:
+      appnet:
+        ipv4_address: 172.28.0.10
 
 volumes:
   postgres_data:
   redis_data:
   resume_data:
+
+networks:
+  appnet:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

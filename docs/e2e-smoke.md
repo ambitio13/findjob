@@ -101,6 +101,28 @@ worker from consuming smoke jobs.
 | Frontend / did not respond           | Nginx not started                   | `docker compose logs frontend`       |
 | Worker not running                   | Worker crashed on startup           | `docker compose logs worker`         |
 
+#### Health endpoint & budget circuit-breaker monitoring
+
+The `/api/v1/health` endpoint returns a `model_budget_tripped` boolean that is
+`true` once the daily model call budget has been exhausted (see
+`08-15-model-gateway-budget-circuit`). **Monitoring scripts must check the
+`model_budget_tripped` field, not `status`** — `status` stays `"ok"` even when
+the budget is tripped, so a status-only check will silently miss the trip.
+
+```bash
+# Correct: check model_budget_tripped
+curl -s http://localhost:8000/api/v1/health \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if not d['model_budget_tripped'] else 1)"
+
+# WRONG: status is "ok" even when the budget is tripped
+curl -s http://localhost:8000/api/v1/health | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])"
+```
+
+When `model_budget_tripped` is `true`, the model gateway rejects all further
+LLM calls with 429 until UTC midnight (or Redis key expiry). Recovery is
+automatic — no manual intervention is needed unless the daily cap needs to be
+raised (set `MODEL_DAILY_CALL_LIMIT` and restart the backend/worker).
+
 ### Phase 3: Bridge Protocol
 
 | Failure                              | Likely Cause                        | Fix                                  |

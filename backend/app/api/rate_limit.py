@@ -3,8 +3,12 @@
 Three buckets are enforced per client IP, keyed by path class:
 
 - ``auth``      — ``/auth/*`` (brute-force protection on login/register);
-- ``model``     — endpoints that trigger LLM calls (cost + abuse protection);
+- ``model``     — endpoints that trigger LLM calls (request-experience protection);
 - ``global``    — every other request.
+
+This is **per-minute request-experience protection** only. The cost defense
+line — a daily call budget enforced on every real LLM invocation — lives in
+``app/models_gateway/budget.py`` and is enforced by ``BudgetedModelGateway``.
 
 Design choices:
 
@@ -31,6 +35,8 @@ from app.core.logging import get_logger
 _log = get_logger("app.api.rate_limit")
 
 #: Path fragments identifying model-call endpoints (LLM cost exposure).
+#: Note: this is per-minute request-experience protection only. The daily
+#: cost budget is enforced at the gateway layer (app.models_gateway.budget).
 _MODEL_PATH_FRAGMENTS: tuple[str, ...] = (
     "/analysis",
     "/match",
