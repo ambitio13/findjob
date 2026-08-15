@@ -3,7 +3,7 @@
   "name": "public-exposure-surface",
   "title": "公网暴露面收敛：docs/bridge/nginx 请求体限制",
   "description": "prod 关闭 /docs、不挂载 userscript-bridge 路由、nginx client_max_body_size（B1+B2+B3）",
-  "status": "done",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
